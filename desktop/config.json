@@ -1,0 +1,13 @@
+{
+    "com_port": "COM14",
+    "update_interval_ms": 500,
+    "settings": {
+        "sleep_after_seconds": 5,
+        "acceleration_percentage": 60,
+        "continuous_scroll": true,
+        "volume_min_color": [0, 0, 255],
+        "volume_max_color": [255, 0, 0],
+        "mix_channel_a_color": [0, 0, 255],
+        "mix_channel_b_color": [255, 0, 255]
+    }
+}
