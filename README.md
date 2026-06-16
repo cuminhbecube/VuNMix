@@ -11,7 +11,7 @@
 
 The highlight of **VuNMix** is its modern **Cyber-Tactile** graphical user interface, built entirely from scratch using **LVGL 8.3**. The UI delivers a stunning high-tech (Cyberpunk) visual experience with glassmorphism effects, high-contrast neon accents, and buttery-smooth animations.
 
-VuNMix communicates directly with the **MaxMix Desktop** app on your PC via the USB-CDC protocol, allowing you to independently adjust app volumes, switch audio devices, and balance Game/Voice chat levels intuitively right on your desk.
+VuNMix communicates directly with its custom **VuNMix Desktop** app (written in Python) on your PC via the USB-CDC protocol, allowing you to independently adjust app volumes, switch audio devices, and balance Game/Voice chat levels intuitively right on your desk.
 
 ---
 
@@ -145,22 +145,22 @@ This project is built on the Arduino framework and managed using **PlatformIO**.
 
 ---
 
-## 🖥 PC Control Software (MaxMix Desktop App)
+## 🖥 PC Control Software (VuNMix Desktop App)
 
-VuNMix acts as the display and controller interface. To actually manipulate Windows volume, you need to run the companion background app on your PC called **MaxMix Desktop**.
-The original C# Desktop app source code is located in the `maxmix-software/` directory.
+VuNMix acts as the display and controller interface. To actually manipulate Windows volume, you need to run the companion background app on your PC. 
+While the project's concept was originally inspired by the open-source MaxMix project, the entire system (both the ESP32 firmware and the Windows Desktop application) has been completely rewritten from scratch to support our specific hardware. The new custom desktop software is built using Python and is located in the `desktop/` directory.
 
-1. Navigate to the `maxmix-software` folder or visit the [Maxmix Software GitHub](https://github.com/t3knomanzer/maxmix-software) for the latest release.
-2. Download, install, and run the `MaxMix` application on your Windows machine.
-3. The ESP32-S3 device will automatically be recognized and establish a connection via a Virtual COM port (USB-CDC).
-4. The "VuNMix" splash screen on the device will disappear, transitioning to the control interface. Start mixing your audio!
+1. Open a terminal and navigate to the `desktop/` folder.
+2. Install the required Python dependencies: `pip install -r requirements.txt`
+3. Run the application: `python vunmix.py`
+4. The ESP32-S3 device will automatically be recognized and establish a connection via a Virtual COM port (USB-CDC). The splash screen on the device will disappear, transitioning to the control interface.
 
 ---
 
 ## 📜 Credits & License
 
 - **UI Design / Hardware / ESP32-S3 Firmware:** Developed and optimized by VuN.
-- **Original Project:** Based on the architecture of the [MaxMix Project](https://maxmixproject.com) - Created by [t3knomanzer](https://github.com/t3knomanzer).
+- **Inspiration:** Inspired by the concept and protocol idea of the [MaxMix Project](https://maxmixproject.com) by [t3knomanzer](https://github.com/t3knomanzer).
 
 <br><br><br>
 
@@ -174,7 +174,7 @@ The original C# Desktop app source code is located in the `maxmix-software/` dir
 
 Điểm nhấn của **VuNMix** là giao diện đồ hoạ **Cyber-Tactile** hiện đại được thiết kế hoàn toàn mới bằng thư viện **LVGL 8.3**. Giao diện mang lại trải nghiệm thị giác High-tech (Cyberpunk) cực kỳ đẹp mắt với hiệu ứng kính mờ (Glassmorphism), màu sắc tương phản cao (Neon accents) và hình ảnh chuyển động mượt mà.
 
-VuNMix giao tiếp với phần mềm **MaxMix Desktop** trên PC thông qua giao thức USB-CDC, cho phép bạn điều chỉnh âm lượng của từng ứng dụng riêng biệt, chuyển đổi thiết bị âm thanh, và cân bằng âm lượng Game/Voice chat một cách trực quan ngay trên bàn làm việc của bạn.
+VuNMix giao tiếp trực tiếp với phần mềm **VuNMix Desktop** (được viết bằng Python) trên PC thông qua giao thức USB-CDC, cho phép bạn điều chỉnh âm lượng của từng ứng dụng riêng biệt, chuyển đổi thiết bị âm thanh, và cân bằng âm lượng Game/Voice chat một cách trực quan ngay trên bàn làm việc của bạn.
 
 ---
 
@@ -308,19 +308,19 @@ Dự án được xây dựng trên framework Arduino và quản lý thư viện
 
 ---
 
-## 🖥 Phần mềm điều khiển trên PC (MaxMix Desktop App)
+## 🖥 Phần mềm điều khiển trên PC (VuNMix Desktop App)
 
-VuNMix chỉ là màn hình hiển thị và bộ điều khiển, để thiết bị có thể thay đổi âm lượng trên Windows, bạn cần cài đặt ứng dụng chạy ngầm trên PC là **MaxMix Desktop**.
-Mã nguồn phần mềm C# Desktop gốc được lưu trong thư mục `maxmix-software/`.
+VuNMix chỉ là màn hình hiển thị và bộ điều khiển, để thiết bị có thể thay đổi âm lượng trên Windows, bạn cần chạy ứng dụng nền trên PC.
+Mặc dù ý tưởng ban đầu được lấy cảm hứng từ dự án mã nguồn mở MaxMix, toàn bộ hệ thống (từ Firmware ESP32 cho tới phần mềm Desktop) đều đã được viết lại hoàn toàn từ đầu bằng Python để phù hợp và tối ưu hoá cho kiến trúc phần cứng mới. Mã nguồn phần mềm Desktop được lưu trong thư mục `desktop/`.
 
-1. Vào thư mục `maxmix-software` hoặc truy cập [Github Maxmix Software](https://github.com/t3knomanzer/maxmix-software) để xem phiên bản phần mềm PC mới nhất.
-2. Tải, cài đặt và chạy ứng dụng `MaxMix` trên máy tính Windows.
-3. Thiết bị ESP32-S3 sẽ tự động được nhận dạng và thiết lập kết nối qua cổng COM ảo (Virtual USB-CDC).
-4. Bạn sẽ thấy màn hình Splash "VuNMix" trên thiết bị biến mất và chuyển sang giao diện điều khiển. Xoay phím/bấm để bắt đầu Mix âm thanh theo ý thích!
+1. Mở Terminal (hoặc Command Prompt) và trỏ vào thư mục `desktop/`.
+2. Cài đặt các thư viện Python cần thiết: `pip install -r requirements.txt`
+3. Chạy ứng dụng: `python vunmix.py`
+4. Thiết bị ESP32-S3 sẽ tự động được nhận dạng và thiết lập kết nối qua cổng COM ảo (Virtual USB-CDC). Màn hình Splash "VuNMix" trên thiết bị sẽ tự động biến mất và chuyển sang giao diện điều khiển.
 
 ---
 
 ## 📜 Giấy phép & Tác giả
 
 - **Thiết kế UI / Phần cứng / Firmware ESP32-S3:** Phát triển và tối ưu hoá giao thức bởi VuN.
-- **Tôn vinh dự án gốc:** Dựa trên cấu trúc phần mềm của [MaxMix Project](https://maxmixproject.com) - Tác giả [t3knomanzer](https://github.com/t3knomanzer).
+- **Cảm hứng dự án:** Ý tưởng giao thức và dự án được lấy cảm hứng từ [MaxMix Project](https://maxmixproject.com) của tác giả [t3knomanzer](https://github.com/t3knomanzer).
