@@ -324,5 +324,5 @@ Mặc dù ý tưởng ban đầu được lấy cảm hứng từ dự án mã n
 
 ## 📜 Giấy phép & Tác giả
 
-- **Thiết kế UI / Phần cứng / Firmware ESP32-S3:** Phát triển và tối ưu hoá giao thức bởi VuN.
+- **Thiết kế UI / Phần cứng / Firmware ESP32-S3:** Phát triển và tối ưu hoá giao thức bởi VuNL.
 - **Cảm hứng dự án:** Ý tưởng giao thức và dự án được lấy cảm hứng từ [MaxMix Project](https://maxmixproject.com) của tác giả [t3knomanzer](https://github.com/t3knomanzer).
