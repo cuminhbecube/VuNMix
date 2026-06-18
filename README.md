@@ -77,8 +77,9 @@ The device utilizes a Matrix Keypad combined with software simulation instead of
 *(Note: The hardware integrates a CST816S capacitive touch IC. Swipe and touch gestures will be supported in future firmware updates.)*
 
 ### NeoPixel LED & Sleep Mode
-- **RGB Backlight (NeoPixel):** Displays a breathing effect during sleep mode, a color wave effect on the splash screen, and acts as a dynamic audio level meter colored according to the active app/mode.
-- **Power Saving (Sleep Mode):** Automatically turns off the TFT backlight and transitions LED effects if no user input is detected. Press any key to wake the device.
+- **RGB Backlight (NeoPixel):** Acts as a dynamic audio level meter colored according to the active app/mode during normal operation. On startup, it shows a color wave splash screen.
+- **16 Standby Effects:** When entering Sleep Mode, the LED transitions to one of 16 stunning standby effects (including Aura, Fire, Meteor, Rainbow, Ocean, Lava, and more) inspired by WLED.
+- **Power Saving (Sleep Mode):** Automatically turns off the TFT backlight and transitions to the standby LED effect if no user input is detected. You can configure the sleep timeout, toggle sleep mode on/off, and select your preferred standby LED effect directly from the VuNMix Desktop App's custom Red GUI. Press any key to wake the device.
 
 ---
 
@@ -240,8 +241,9 @@ Thiết bị loại bỏ núm vặn truyền thống và sử dụng Bàn phím 
 *(Ghi chú: Thiết bị phần cứng đã tích hợp sẵn IC cảm ứng điện dung CST816S trên màn hình. Tính năng vuốt chạm sẽ được hỗ trợ trong các bản firmware tương lai.)*
 
 ### LED NeoPixel & Chế độ Chờ (Sleep Mode)
-- **Đèn nền RGB (NeoPixel):** Chớp tắt nhẹ nhàng (Breathing effect) khi ở trạng thái chờ, hiển thị hiệu ứng sóng màu (Color wave) khi ở Splash Screen, và hoạt động như thanh Audio Level tương ứng với màu sắc của từng ứng dụng/chế độ.
-- **Chế độ tiết kiệm điện (Sleep):** Tự động tắt đèn nền màn hình TFT và chuyển hiệu ứng LED nếu không có thao tác nào từ người dùng trong một thời gian cài đặt. Chạm phím bất kỳ để đánh thức màn hình.
+- **Đèn nền RGB (NeoPixel):** Hoạt động như thanh Audio Level tương ứng với màu sắc của từng ứng dụng/chế độ trong quá trình sử dụng. Khi khởi động, hiển thị hiệu ứng sóng màu (Color wave).
+- **16 Hiệu ứng chờ (Standby Effects):** Khi thiết bị bước vào chế độ Sleep, đèn LED sẽ tự động chuyển sang 1 trong 16 hiệu ứng chờ tuyệt đẹp (như Aura, Lửa, Sao băng, Cầu vồng, Đại dương...) được lấy cảm hứng từ thư viện WLED.
+- **Chế độ tiết kiệm điện (Sleep):** Tự động tắt đèn nền màn hình TFT và chuyển sang hiệu ứng LED chờ nếu không có thao tác nào từ người dùng. Bạn có thể dễ dàng thiết lập thời gian chờ (timeout), bật/tắt chế độ Sleep, cũng như chọn hiệu ứng LED yêu thích trực tiếp ngay trên giao diện màu Đỏ cá tính của App VuNMix Desktop trên PC. Chạm phím bất kỳ để đánh thức màn hình.
 
 ---
 
