@@ -48,6 +48,43 @@ class DisplayMode(IntEnum):
     MODE_MAX         = 5
 
 
+class StandbyLedMode(IntEnum):
+    COLOR_WAVE     = 0
+    RAINBOW        = 1
+    METEOR         = 2
+    TWINKLE        = 3
+    BREATHE        = 4
+    CONFETTI       = 5
+    FIRE           = 6
+    OCEAN          = 7
+    LAVA           = 8
+    SCANNER        = 9
+    THEATER_CHASE  = 10
+    RUNNING_LIGHTS = 11
+    GRADIENT       = 12
+    SPARKLE        = 13
+    AURORA         = 14
+    LED_OFF        = 15
+
+STANDBY_LED_NAMES = [
+    "Color Wave",
+    "Rainbow",
+    "Meteor",
+    "Twinkle",
+    "Breathe",
+    "Confetti",
+    "Fire",
+    "Ocean",
+    "Lava",
+    "Scanner",
+    "Theater Chase",
+    "Running Lights",
+    "Gradient",
+    "Sparkle",
+    "Aurora",
+    "Off",
+]
+
 # ─── Data Structures ───────────────────────────────────────────────────────
 @dataclass
 class Color:
@@ -160,9 +197,11 @@ class SessionInfo:
 @dataclass
 class DeviceSettings:
     """
-    14 bytes:
-      sleepAfterSeconds:      uint8
+    17 bytes:
+      sleepAfterSeconds:      uint16
       accelerationPercentage: 7 bits | continuousScroll: 1 bit (MSB)
+      sleepEnabled:           uint8 (bool)
+      standbyLedMode:         uint8 (StandbyLedMode enum)
       volumeMinColor:         Color (3 bytes)
       volumeMaxColor:         Color (3 bytes)
       mixChannelAColor:       Color (3 bytes)
@@ -171,14 +210,18 @@ class DeviceSettings:
     sleep_after_seconds: int = 5
     acceleration_percentage: int = 60
     continuous_scroll: bool = True
+    sleep_enabled: bool = True
+    standby_led_mode: int = 0  # StandbyLedMode.COLOR_WAVE
     volume_min_color: Color = field(default_factory=lambda: Color(0, 0, 255))
     volume_max_color: Color = field(default_factory=lambda: Color(255, 0, 0))
     mix_channel_a_color: Color = field(default_factory=lambda: Color(0, 0, 255))
     mix_channel_b_color: Color = field(default_factory=lambda: Color(255, 0, 255))
 
     def pack(self) -> bytes:
-        byte1 = (self.acceleration_percentage & 0x7F) | (0x80 if self.continuous_scroll else 0)
-        return bytes([self.sleep_after_seconds, byte1]) + \
+        byte2 = (self.acceleration_percentage & 0x7F) | (0x80 if self.continuous_scroll else 0)
+        byte3 = 1 if self.sleep_enabled else 0
+        byte4 = self.standby_led_mode & 0xFF
+        return struct.pack('<HBBB', self.sleep_after_seconds, byte2, byte3, byte4) + \
                self.volume_min_color.pack() + \
                self.volume_max_color.pack() + \
                self.mix_channel_a_color.pack() + \
@@ -186,22 +229,27 @@ class DeviceSettings:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'DeviceSettings':
+        sleep_secs, byte2, byte3, byte4 = struct.unpack('<HBBB', data[:5])
         return cls(
-            sleep_after_seconds=data[0],
-            acceleration_percentage=data[1] & 0x7F,
-            continuous_scroll=bool(data[1] & 0x80),
-            volume_min_color=Color.unpack(data[2:5]),
-            volume_max_color=Color.unpack(data[5:8]),
-            mix_channel_a_color=Color.unpack(data[8:11]),
-            mix_channel_b_color=Color.unpack(data[11:14]),
+            sleep_after_seconds=sleep_secs,
+            acceleration_percentage=byte2 & 0x7F,
+            continuous_scroll=bool(byte2 & 0x80),
+            sleep_enabled=bool(byte3),
+            standby_led_mode=byte4,
+            volume_min_color=Color.unpack(data[5:8]),
+            volume_max_color=Color.unpack(data[8:11]),
+            mix_channel_a_color=Color.unpack(data[11:14]),
+            mix_channel_b_color=Color.unpack(data[14:17]),
         )
 
     @classmethod
     def from_config(cls, cfg: dict) -> 'DeviceSettings':
         return cls(
-            sleep_after_seconds=cfg.get('sleep_after_seconds', 5),
+            sleep_after_seconds=cfg.get('sleep_after_seconds', 300),
             acceleration_percentage=cfg.get('acceleration_percentage', 60),
             continuous_scroll=cfg.get('continuous_scroll', True),
+            sleep_enabled=cfg.get('sleep_enabled', True),
+            standby_led_mode=cfg.get('standby_led_mode', 0),
             volume_min_color=Color.from_list(cfg.get('volume_min_color', [0, 0, 255])),
             volume_max_color=Color.from_list(cfg.get('volume_max_color', [255, 0, 0])),
             mix_channel_a_color=Color.from_list(cfg.get('mix_channel_a_color', [0, 0, 255])),
@@ -231,7 +279,7 @@ class ModeStates:
 COMMAND_PAYLOAD_SIZE = {
     Command.TEST:               0,   # followed by version string + newline
     Command.OK:                 0,
-    Command.SETTINGS:           14,
+    Command.SETTINGS:           17,
     Command.SESSION_INFO:       5,
     Command.CURRENT_SESSION:    32,
     Command.ALTERNATE_SESSION:  32,

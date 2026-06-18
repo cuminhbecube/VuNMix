@@ -49,19 +49,21 @@ static_assert(sizeof(Color) == 3, "Invalid Expected Message Size");
 
 struct __attribute__((__packed__)) DeviceSettings
 {
-    uint8_t sleepAfterSeconds;          // 8 Bits
+    uint16_t sleepAfterSeconds;         // 16 Bits
     uint8_t accelerationPercentage : 7; // 7 Bits
     bool continuousScroll : 1;          // 1 Bit
+    bool sleepEnabled;                  // 8 Bits (bool)
+    uint8_t standbyLedMode;             // 8 Bits (0=ColorWave,1=Rainbow,2=Meteor,3=Twinkle,4=Breathe,5=Confetti,6=Off)
     Color volumeMinColor;               // 24 Bits
     Color volumeMaxColor;               // 24 Bits
     Color mixChannelAColor;             // 24 Bits
     Color mixChannelBColor;             // 24 Bits
-    // 112 bits - 14 bytes
+    // 17 bytes
 
-    DeviceSettings() : sleepAfterSeconds(5), accelerationPercentage(60), continuousScroll(true),
+    DeviceSettings() : sleepAfterSeconds(300), accelerationPercentage(60), continuousScroll(true), sleepEnabled(true), standbyLedMode(0),
                  volumeMinColor(0, 0, 255), volumeMaxColor(255, 0, 0), mixChannelAColor(0, 0, 255), mixChannelBColor(255, 0, 255) {}
 };
-static_assert(sizeof(DeviceSettings) == 14, "Invalid Expected Message Size");
+static_assert(sizeof(DeviceSettings) == 17, "Invalid Expected Message Size");
 
 struct __attribute__((__packed__)) ModeStates
 {

@@ -22,6 +22,14 @@ from PIL import Image, ImageDraw
 log = logging.getLogger(__name__)
 
 
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 def set_run_on_startup(enable: bool):
     """Enable or disable Windows startup via the registry."""
     try:
@@ -58,25 +66,26 @@ def set_run_on_startup(enable: bool):
 
 
 def create_tray_icon(connected: bool) -> Image.Image:
-    """Generate a 64x64 tray icon. Green circle = connected, red = disconnected."""
-    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    """Generate a 64x64 tray icon."""
+    try:
+        img = Image.open(resource_path(os.path.join("assets", "logo.png"))).convert("RGBA")
+        img = img.resize((64, 64), Image.Resampling.LANCZOS)
+    except Exception as e:
+        log.warning(f"Could not load logo: {e}")
+        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        bg_color = (20, 20, 30, 255)
+        draw.ellipse([2, 2, 62, 62], fill=bg_color, outline=(60, 60, 80, 255), width=2)
+        draw.text((22, 15), "V", fill=(255, 255, 255, 200))
+
     draw = ImageDraw.Draw(img)
-
-    # Background circle
-    bg_color = (20, 20, 30, 255)
-    draw.ellipse([2, 2, 62, 62], fill=bg_color, outline=(60, 60, 80, 255), width=2)
-
-    # Status dot
     if connected:
         dot_color = (0, 212, 255, 255)  # Cyan
     else:
         dot_color = (255, 60, 60, 255)  # Red
 
-    draw.ellipse([18, 18, 46, 46], fill=dot_color)
-
-    # "V" letter overlay
-    draw.text((22, 15), "V", fill=(255, 255, 255, 200))
-
+    # Draw status dot at bottom right
+    draw.ellipse([46, 46, 60, 60], fill=dot_color, outline=(255, 255, 255, 255), width=2)
     return img
 
 
@@ -100,8 +109,13 @@ class SettingsDialog:
 
         self._window = ctk.CTk()
         self._window.title("VuNMix Settings")
-        self._window.geometry("400x420")
+        self._window.geometry("400x500")
         self._window.resizable(False, False)
+        
+        try:
+            self._window.iconbitmap(resource_path(os.path.join("assets", "icon.ico")))
+        except Exception as e:
+            log.warning(f"Could not set window icon: {e}")
 
         # Title
         title = ctk.CTkLabel(self._window, text="VuNMix Settings", font=ctk.CTkFont(size=20, weight="bold"))
@@ -143,6 +157,21 @@ class SettingsDialog:
         self._sleep_var = tk.StringVar(value=str(self.config.device_settings.sleep_after_seconds))
         sleep_entry = ctk.CTkEntry(frame3, textvariable=self._sleep_var, width=100)
         sleep_entry.pack(side='right')
+
+        # Sleep Enabled
+        self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
+        sleep_en_cb = ctk.CTkSwitch(self._window, text="Sleep Enabled", variable=self._sleep_enabled_var, font=ctk.CTkFont(size=13))
+        sleep_en_cb.pack(pady=10)
+
+        # Standby LED Mode
+        from protocol import STANDBY_LED_NAMES
+        frame4 = ctk.CTkFrame(self._window, fg_color="transparent")
+        frame4.pack(fill='x', padx=30, pady=10)
+        ctk.CTkLabel(frame4, text="Standby LED:", font=ctk.CTkFont(size=13)).pack(side='left')
+        current_led_name = STANDBY_LED_NAMES[self.config.device_settings.standby_led_mode] if self.config.device_settings.standby_led_mode < len(STANDBY_LED_NAMES) else STANDBY_LED_NAMES[0]
+        self._led_mode_var = tk.StringVar(value=current_led_name)
+        led_menu = ctk.CTkOptionMenu(frame4, variable=self._led_mode_var, values=STANDBY_LED_NAMES, width=150)
+        led_menu.pack(side='right')
 
         # Continuous Scroll
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
@@ -188,6 +217,10 @@ class SettingsDialog:
             self.config.update_interval_ms = int(self._interval_var.get())
             self.config.run_on_startup = self._startup_var.get()
             self.config.device_settings.sleep_after_seconds = int(self._sleep_var.get())
+            self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
+            from protocol import STANDBY_LED_NAMES
+            led_name = self._led_mode_var.get()
+            self.config.device_settings.standby_led_mode = STANDBY_LED_NAMES.index(led_name) if led_name in STANDBY_LED_NAMES else 0
             self.config.device_settings.continuous_scroll = self._scroll_var.get()
             self.config.save()
             
@@ -221,7 +254,7 @@ class TrayApp:
         menu = Menu(
             MenuItem('VuNMix', None, enabled=False),
             Menu.SEPARATOR,
-            MenuItem('Status: Disconnected', None, enabled=False),
+            MenuItem(lambda item: f"Status: {'Connected' if self.controller._device_connected else 'Disconnected'}", None, enabled=False),
             Menu.SEPARATOR,
             MenuItem('Settings', self._on_settings),
             MenuItem('Reconnect', self._on_reconnect),
@@ -242,6 +275,7 @@ class TrayApp:
             self._icon.icon = create_tray_icon(connected)
             status = "Connected" if connected else "Disconnected"
             self._icon.title = f"VuNMix - {status}"
+            self._icon.update_menu()
 
     def _on_settings(self, icon, item):
         dialog = SettingsDialog(self.config, self.controller, on_save=self._on_settings_saved)

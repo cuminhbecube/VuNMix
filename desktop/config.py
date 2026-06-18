@@ -18,7 +18,9 @@ _DEFAULT_CONFIG = {
     "update_interval_ms": 500,
     "run_on_startup": False,
     "settings": {
-        "sleep_after_seconds": 5,
+        "sleep_after_seconds": 300,
+        "sleep_enabled": True,
+        "standby_led_mode": 0,
         "acceleration_percentage": 60,
         "continuous_scroll": True,
         "volume_min_color": [0, 0, 255],
@@ -63,6 +65,8 @@ class AppConfig:
             "run_on_startup": self.run_on_startup,
             "settings": {
                 "sleep_after_seconds": self.device_settings.sleep_after_seconds,
+                "sleep_enabled": self.device_settings.sleep_enabled,
+                "standby_led_mode": self.device_settings.standby_led_mode,
                 "acceleration_percentage": self.device_settings.acceleration_percentage,
                 "continuous_scroll": self.device_settings.continuous_scroll,
                 "volume_min_color": self.device_settings.volume_min_color.to_list(),

@@ -5,8 +5,8 @@ a = Analysis(
     ['vunmix.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\Users\\adimi\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\customtkinter', 'customtkinter/')],
-    hiddenimports=['customtkinter'],
+    datas=[('assets', 'assets')],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -32,6 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['assets\\icon.ico'],
 )
 coll = COLLECT(
     exe,
