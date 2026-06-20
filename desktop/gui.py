@@ -113,7 +113,7 @@ class SettingsDialog:
         self._window.overrideredirect(True)
         
         window_width = 320
-        window_height = 460
+        window_height = 425
         screen_width = self._window.winfo_screenwidth()
         screen_height = self._window.winfo_screenheight()
         x = screen_width - window_width - 15
@@ -199,9 +199,7 @@ class SettingsDialog:
         self._brightness_var = tk.DoubleVar(value=self.config.device_settings.led_brightness)
         add_row(content, "LED Brightness", lambda r: ctk.CTkSlider(r, from_=0, to=255, variable=self._brightness_var, width=120, height=14, command=self._on_brightness_change))
 
-        # Sync Interval
-        self._interval_var = tk.StringVar(value=str(self.config.update_interval_ms))
-        add_row(content, "Sync Interval (ms)", lambda r: ctk.CTkEntry(r, textvariable=self._interval_var, width=55, height=24))
+
 
         # Sleep Timeout (default 60s)
         self._sleep_var = tk.StringVar(value=str(self.config.device_settings.sleep_after_seconds))
@@ -268,7 +266,7 @@ class SettingsDialog:
             new_port = self._com_var.get().strip()
             
             self.config.com_port = new_port
-            self.config.update_interval_ms = int(self._interval_var.get())
+
             self.config.run_on_startup = self._startup_var.get()
             self.config.device_settings.sleep_after_seconds = int(self._sleep_var.get())
             self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
