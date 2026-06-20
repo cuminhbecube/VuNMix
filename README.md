@@ -26,7 +26,7 @@ The UI was completely rebuilt following the **Cyber-Tactile** design philosophy:
 - **Large Circular Gauges:** High-resolution circular volume gauges with drop-shadow effects.
 
 ### 2. Communication Protocol (Firmware) Upgrades
-The USB-CDC connection protocol between the ESP32-S3 and the C# PC software has been re-architected for maximum speed and stability:
+The USB-CDC connection protocol between the ESP32-S3 and the Python PC software has been re-architected for maximum speed and stability:
 - **USB Packet Framing:** Command Bytes and Data Payloads are now combined into a single buffer before transmission over USB-CDC. This completely fixes the "Split Packet Timeout" bug that previously caused the PC to randomly ignore messages.
 - **Rate-Limited TX:** A compression algorithm and transmission rate limiter ensure the device only reports its status to the PC at an ultra-fast 33Hz (1 command per 30ms). This prevents data bottlenecks and ensures the PC responds smoothly even during rapid volume adjustments.
 - **Anti-Echo Debounce:** Eradicates the "Race Condition" bug that caused volume levels to ping-pong (e.g., jumping from 26 down to 25 and back to 26). When the user interacts with the hardware, the ESP32 temporarily ignores incoming Windows Audio Events for 500ms. This makes VuNMix the "Absolute Truth" controller and eliminates all echo/bounce effects.
@@ -151,16 +151,31 @@ This project is built on the Arduino framework and managed using **PlatformIO**.
 VuNMix acts as the display and controller interface. To actually manipulate Windows volume, you need to run the companion background app on your PC. 
 While the project's concept was originally inspired by the open-source MaxMix project, the entire system (both the ESP32 firmware and the Windows Desktop application) has been completely rewritten from scratch to support our specific hardware. The new custom desktop software is built using Python and is located in the `desktop/` directory.
 
+**Desktop App Highlights:**
+- **Minimalist Design:** Inspired by the Microsoft PC Manager, the Settings UI is designed as a compact, frameless popup with Native Windows Rounded Corners.
+- **Single-Instance:** Limits the settings window to a single instance at any given time, keeping your screen clutter-free.
+- **Draggable:** Supports drag-and-drop to easily reposition the settings window.
+- **System Tray:** Operates entirely in the background via a system tray icon, offering quick 1-click access to the settings.
+
+You can either run the pre-built executable or run the app from source:
+
+**Option A: Pre-built Executable (Recommended)**
+1. Navigate to the `desktop/dist/VuNMix` folder (if available).
+2. Run `VuNMix.exe`.
+3. The app will run in the background (check the system tray icon).
+
+**Option B: Run from Source**
 1. Open a terminal and navigate to the `desktop/` folder.
 2. Install the required Python dependencies: `pip install -r requirements.txt`
 3. Run the application: `python vunmix.py`
-4. The ESP32-S3 device will automatically be recognized and establish a connection via a Virtual COM port (USB-CDC). The splash screen on the device will disappear, transitioning to the control interface.
+
+Once running, the ESP32-S3 device will automatically be recognized and establish a connection via a Virtual COM port (USB-CDC). The splash screen on the device will disappear, transitioning to the control interface.
 
 ---
 
 ## 📜 Credits & License
 
-- **UI Design / Hardware / ESP32-S3 Firmware:** Developed and optimized by VuN.
+- **UI Design / Hardware / ESP32-S3 Firmware / Desktop App:** Developed and optimized by VuNL.
 - **Inspiration:** Inspired by the concept and protocol idea of the [MaxMix Project](https://maxmixproject.com) by [t3knomanzer](https://github.com/t3knomanzer).
 
 <br><br><br>
@@ -190,7 +205,7 @@ Giao diện được đập đi xây lại theo triết lý thiết kế **Cyber
 - **Large Circular Gauges:** Thanh hiển thị âm lượng dạng cung tròn lớn với độ phân giải cao và hiệu ứng đổ bóng.
 
 ### 2. Nâng cấp Giao thức Giao tiếp (Firmware)
-Dự án VuNMix đã tái thiết kế giao thức kết nối USB-CDC giữa ESP32-S3 và phần mềm C# PC để đạt tốc độ và sự ổn định cao nhất:
+Dự án VuNMix đã tái thiết kế giao thức kết nối USB-CDC giữa ESP32-S3 và phần mềm Python PC để đạt tốc độ và sự ổn định cao nhất:
 - **USB Packet Framing:** Toàn bộ Command Byte và Data Payload được gộp chung thành một bộ đệm (buffer) duy nhất trước khi gửi qua USB-CDC. Điều này khắc phục triệt để lỗi "Split Packet Timeout" khiến phần mềm PC thỉnh thoảng bỏ qua tin nhắn.
 - **Băng thông mượt mà (Rate-Limited TX):** Thuật toán nén tín hiệu và giới hạn tốc độ gửi (Rate limit) đảm bảo thiết bị chỉ báo cáo trạng thái cho PC với tần số cực nhanh 33Hz (1 lệnh mỗi 30ms). PC sẽ luôn phản hồi mượt mà kể cả khi bạn tăng/giảm âm lượng với tốc độ chóng mặt, loại bỏ hoàn toàn hiện tượng giật lag (Bottleneck) khi truyền dữ liệu.
 - **Chống Dội Âm thanh (Anti-Echo Debounce):** Giải quyết triệt để lỗi "Race Condition" khiến mức âm lượng nhảy giật lùi (Ví dụ: vặn lên 26 nhưng nhảy về 25 rồi mới lên 26). Khi người dùng thao tác phần cứng, ESP32 sẽ tạm thời "khóa" không nhận phản hồi ngược từ Windows Audio Event trong vòng 500ms, biến VuNMix thành thiết bị ưu tiên tuyệt đối (Absolute Truth) và loại bỏ hoàn toàn hiện tượng dội lệnh (Ping-Pong Effect).
@@ -315,14 +330,29 @@ Dự án được xây dựng trên framework Arduino và quản lý thư viện
 VuNMix chỉ là màn hình hiển thị và bộ điều khiển, để thiết bị có thể thay đổi âm lượng trên Windows, bạn cần chạy ứng dụng nền trên PC.
 Mặc dù ý tưởng ban đầu được lấy cảm hứng từ dự án mã nguồn mở MaxMix, toàn bộ hệ thống (từ Firmware ESP32 cho tới phần mềm Desktop) đều đã được viết lại hoàn toàn từ đầu bằng Python để phù hợp và tối ưu hoá cho kiến trúc phần cứng mới. Mã nguồn phần mềm Desktop được lưu trong thư mục `desktop/`.
 
+**Điểm nhấn của App Desktop:**
+- **Thiết kế tối giản (Minimalist Design):** Lấy cảm hứng từ Microsoft PC Manager, giao diện cài đặt (Settings) được thiết kế dạng Popup nhỏ gọn, không có viền cửa sổ (frameless) và được bo tròn ở mức hệ điều hành (Native Windows Rounded Corners).
+- **Single-Instance:** Giới hạn chỉ cho phép mở một cửa sổ cài đặt tại một thời điểm, giữ không gian màn hình gọn gàng.
+- **Draggable:** Hỗ trợ kéo thả để di chuyển cửa sổ linh hoạt.
+- **System Tray:** Hoạt động hoàn toàn ngầm với biểu tượng trên khay hệ thống, truy cập nhanh cài đặt với 1 cú click chuột.
+
+Bạn có thể chạy trực tiếp file thực thi hoặc chạy từ mã nguồn:
+
+**Cách 1: Chạy file thực thi (Khuyên dùng)**
+1. Mở thư mục `desktop/dist/VuNMix` (nếu có bản build sẵn).
+2. Chạy file `VuNMix.exe`.
+3. Ứng dụng sẽ chạy ngầm (biểu tượng nằm dưới khay hệ thống System Tray).
+
+**Cách 2: Chạy từ mã nguồn**
 1. Mở Terminal (hoặc Command Prompt) và trỏ vào thư mục `desktop/`.
 2. Cài đặt các thư viện Python cần thiết: `pip install -r requirements.txt`
 3. Chạy ứng dụng: `python vunmix.py`
-4. Thiết bị ESP32-S3 sẽ tự động được nhận dạng và thiết lập kết nối qua cổng COM ảo (Virtual USB-CDC). Màn hình Splash "VuNMix" trên thiết bị sẽ tự động biến mất và chuyển sang giao diện điều khiển.
+
+Khi ứng dụng đã chạy, thiết bị ESP32-S3 sẽ tự động được nhận dạng và thiết lập kết nối qua cổng COM ảo (Virtual USB-CDC). Màn hình Splash "VuNMix" trên thiết bị sẽ tự động biến mất và chuyển sang giao diện điều khiển.
 
 ---
 
 ## 📜 Giấy phép & Tác giả
 
-- **Thiết kế UI / Phần cứng / Firmware ESP32-S3:** Phát triển và tối ưu hoá giao thức bởi VuNL.
+- **Thiết kế UI / Phần cứng / Firmware ESP32-S3 / Desktop App:** Phát triển và tối ưu hoá giao thức bởi VuNL.
 - **Cảm hứng dự án:** Ý tưởng giao thức và dự án được lấy cảm hứng từ [MaxMix Project](https://maxmixproject.com) của tác giả [t3knomanzer](https://github.com/t3knomanzer).

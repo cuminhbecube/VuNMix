@@ -27,6 +27,7 @@ _DEFAULT_CONFIG = {
         "volume_max_color": [255, 0, 0],
         "mix_channel_a_color": [0, 0, 255],
         "mix_channel_b_color": [255, 0, 255],
+        "led_brightness": 96,
     }
 }
 
@@ -73,6 +74,7 @@ class AppConfig:
                 "volume_max_color": self.device_settings.volume_max_color.to_list(),
                 "mix_channel_a_color": self.device_settings.mix_channel_a_color.to_list(),
                 "mix_channel_b_color": self.device_settings.mix_channel_b_color.to_list(),
+                "led_brightness": self.device_settings.led_brightness,
             }
         }
         with open(path, 'w') as f:

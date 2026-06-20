@@ -48,12 +48,14 @@ class SerialService:
         if self.is_connected:
             return True
         try:
-            self._serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=0.05,       # 50ms read timeout
-                write_timeout=0.5,
-            )
+            self._serial = serial.Serial()
+            self._serial.port = self.port
+            self._serial.baudrate = self.baudrate
+            self._serial.timeout = 0.05
+            self._serial.write_timeout = 0.5
+            self._serial.dtr = False
+            self._serial.rts = False
+            self._serial.open()
             # Small delay for USB CDC to settle
             time.sleep(0.3)
             # Flush any stale data

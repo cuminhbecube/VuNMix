@@ -21,4 +21,8 @@ namespace Input {
     // We will simulate ButtonEvents library events: none, tap, doubleTap, hold
     enum ButtonEvent { none, tap, doubleTap, hold };
     extern volatile ButtonEvent g_ButtonEvent;
+
+    // Raw key states for splash screen test: 0=P, 1=M, 2=N, 3=-, 4=Space, 5=+
+    extern bool g_RawKeyStates[6];
+    extern bool g_KeyStatesChanged;
 }

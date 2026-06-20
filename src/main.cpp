@@ -6,17 +6,20 @@
 #include "Communications.h"
 #include "Input.h"
 #include <Adafruit_NeoPixel.h>
+#include <Preferences.h>
 
 //********************************************************
 // *** VARIABLES
 //*******************************************************
+Preferences preferences;
 // State
 DeviceSettings g_Settings;
 SessionInfo g_SessionInfo;
 SessionData g_Sessions[SessionIndex::INDEX_MAX];
 ModeStates g_ModeStates;
-uint8_t g_DisplayDirty;
+bool g_DisplayDirty;
 bool g_DisplayAsleep;
+bool g_PcAsleep = false;
 
 // Time & Sleep
 uint32_t g_Now;
@@ -68,11 +71,22 @@ void setup()
     Serial.println("ResetState()...");
     ResetState();
 
+    preferences.begin("vunmix", false);
+    if (preferences.getBytesLength("settings") == sizeof(DeviceSettings)) {
+        preferences.getBytes("settings", &g_Settings, sizeof(DeviceSettings));
+        Serial.println("Loaded settings from NVS.");
+    }
+
     Serial.println("Input::Initialize()...");
     Input::Initialize();
 
-    Serial.println("Playing Intro Video...");
-    VideoPlayer::Play("/intro.avi");
+    esp_reset_reason_t reason = esp_reset_reason();
+    if (reason == ESP_RST_POWERON) {
+        Serial.println("Playing Intro Video...");
+        VideoPlayer::Play("/intro.avi");
+    } else {
+        Serial.printf("Reset reason: %d. Skipping intro.\n", reason);
+    }
 
     Serial.println("Display::Initialize()...");
     Serial.flush();
@@ -84,7 +98,7 @@ void setup()
     Serial.println("Pixels Init (10 LEDs on GPIO 45)...");
     Serial.flush();
     g_Pixels.begin();
-    g_Pixels.setBrightness(PIXELS_BRIGHTNESS);
+    g_Pixels.setBrightness(g_Settings.ledBrightness);
     g_Pixels.clear();
     g_Pixels.show();
     delay(50); // Let NeoPixel latch
@@ -105,8 +119,35 @@ void loop()
 
     Input::Update();
 
+    if (Input::g_KeyStatesChanged) {
+        Input::g_KeyStatesChanged = false;
+        if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH) {
+            g_DisplayDirty = true;
+            g_LastActivity = g_Now;
+        }
+    }
+
     Command command = Communications::Read();
-    g_DisplayDirty = (command != Command::NONE && command != Command::ERROR);
+    g_DisplayDirty = g_DisplayDirty || (command != Command::NONE && command != Command::ERROR);
+
+    if (command != Command::NONE && command != Command::ERROR) {
+        if (command == Command::SETTINGS) {
+            preferences.putBytes("settings", &g_Settings, sizeof(DeviceSettings));
+            g_Pixels.setBrightness(g_Settings.ledBrightness);
+        }
+        else if (command == Command::SLEEP) {
+            g_PcAsleep = true;
+            g_DisplayAsleep = true;
+            Display::Sleep();
+            g_LastActivity = g_Now - (g_Settings.sleepAfterSeconds * 1000) - 1000;
+        } else {
+            if (g_PcAsleep) {
+                g_LastActivity = g_Now;
+            }
+            g_PcAsleep = false;
+        }
+    }
+
     if (command == Command::CURRENT_SESSION || command == Command::ALTERNATE_SESSION ||
         command == Command::VOLUME_CURR_CHANGE || command == Command::VOLUME_ALT_CHANGE)
     {
@@ -151,7 +192,7 @@ void loop()
     }
 
     // Reset / Disconnect if no serial activity.
-    if ((g_SessionInfo.mode != DisplayMode::MODE_SPLASH) && (g_Now - g_HeartbeatTimeout < 0x80000000U))
+    if (!g_PcAsleep && (g_SessionInfo.mode != DisplayMode::MODE_SPLASH) && (g_Now - g_HeartbeatTimeout < 0x80000000U))
         ResetState();
 }
 
@@ -393,12 +434,29 @@ void UpdateDisplay()
         return;
     }
 
+    static bool keyTestMode = false;
+    if (g_SessionInfo.mode != DisplayMode::MODE_SPLASH) {
+        keyTestMode = false;
+    }
+
     if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
     {
-        if (g_ModeStates.states[g_SessionInfo.mode] == STATE_LOGO)
+        if (!keyTestMode) {
+            for (int i = 0; i < 6; i++) {
+                if (Input::g_RawKeyStates[i]) {
+                    keyTestMode = true;
+                    break;
+                }
+            }
+        }
+
+        if (keyTestMode) {
+            Display::KeyTestScreen();
+        } else if (g_ModeStates.states[g_SessionInfo.mode] == STATE_LOGO) {
             Display::SplashScreen();
-        else
+        } else {
             Display::InfoScreen();
+        }
     }
     else if (g_SessionInfo.mode == DisplayMode::MODE_INPUT || g_SessionInfo.mode == DisplayMode::MODE_OUTPUT)
     {

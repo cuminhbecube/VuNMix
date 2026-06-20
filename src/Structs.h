@@ -58,12 +58,13 @@ struct __attribute__((__packed__)) DeviceSettings
     Color volumeMaxColor;               // 24 Bits
     Color mixChannelAColor;             // 24 Bits
     Color mixChannelBColor;             // 24 Bits
-    // 17 bytes
+    uint8_t ledBrightness;              // 8 Bits
+    // 18 bytes
 
     DeviceSettings() : sleepAfterSeconds(300), accelerationPercentage(60), continuousScroll(true), sleepEnabled(true), standbyLedMode(0),
-                 volumeMinColor(0, 0, 255), volumeMaxColor(255, 0, 0), mixChannelAColor(0, 0, 255), mixChannelBColor(255, 0, 255) {}
+                 volumeMinColor(0, 0, 255), volumeMaxColor(255, 0, 0), mixChannelAColor(0, 0, 255), mixChannelBColor(255, 0, 255), ledBrightness(96) {}
 };
-static_assert(sizeof(DeviceSettings) == 17, "Invalid Expected Message Size");
+static_assert(sizeof(DeviceSettings) == 18, "Invalid Expected Message Size");
 
 struct __attribute__((__packed__)) ModeStates
 {

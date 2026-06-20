@@ -22,6 +22,26 @@ from pycaw.pycaw import (
     ISimpleAudioVolume,
 )
 
+from ctypes import POINTER, HRESULT, c_wchar_p, c_uint32
+from comtypes import IUnknown, GUID, COMMETHOD, CoCreateInstance, CLSCTX_ALL
+
+class IPolicyConfig(IUnknown):
+    _iid_ = GUID('{F8679F50-850A-41CF-9C72-430F290290C8}')
+    _methods_ = [
+        COMMETHOD([], HRESULT, 'GetMixFormat'),
+        COMMETHOD([], HRESULT, 'GetDeviceFormat'),
+        COMMETHOD([], HRESULT, 'ResetDeviceFormat'),
+        COMMETHOD([], HRESULT, 'SetDeviceFormat'),
+        COMMETHOD([], HRESULT, 'GetProcessingPeriod'),
+        COMMETHOD([], HRESULT, 'SetProcessingPeriod'),
+        COMMETHOD([], HRESULT, 'GetShareMode'),
+        COMMETHOD([], HRESULT, 'SetShareMode'),
+        COMMETHOD([], HRESULT, 'GetPropertyValue'),
+        COMMETHOD([], HRESULT, 'SetPropertyValue'),
+        COMMETHOD([], HRESULT, 'SetDefaultEndpoint', (['in'], c_wchar_p, 'PCWSTR'), (['in'], c_uint32, 'role')),
+        COMMETHOD([], HRESULT, 'SetEndpointVisibility')
+    ]
+
 from protocol import SessionData, VolumeData, DisplayMode
 
 log = logging.getLogger(__name__)
@@ -39,6 +59,7 @@ class AudioItem:
     _endpoint_vol: Optional[object] = field(default=None, repr=False)
     _session_vol: Optional[object] = field(default=None, repr=False)
     _process_id: int = 0
+    _device_id: str = ""
 
     def to_session_data(self) -> SessionData:
         """Convert to firmware SessionData struct."""
@@ -74,6 +95,31 @@ class AudioService:
             self._refresh_app_sessions()
         finally:
             comtypes.CoUninitialize()
+
+    def check_system_changes(self) -> bool:
+        """Check if default devices have changed, requiring a full refresh."""
+        try:
+            from pycaw.pycaw import AudioUtilities
+            
+            # Check Output
+            default_out = AudioUtilities.GetSpeakers()
+            out_id = default_out.GetId() if default_out else None
+            with self._lock:
+                current_default_out = next((d._device_id for d in self._output_devices if d.is_default), None)
+            if out_id != current_default_out:
+                return True
+
+            # Check Input
+            default_in = AudioUtilities.GetMicrophone()
+            in_id = default_in.GetId() if default_in else None
+            with self._lock:
+                current_default_in = next((d._device_id for d in self._input_devices if d.is_default), None)
+            if in_id != current_default_in:
+                return True
+                
+            return False
+        except Exception:
+            return False
 
     def get_sessions_for_mode(self, mode: int) -> List[AudioItem]:
         """Get audio items for the given display mode."""
@@ -121,34 +167,66 @@ class AudioService:
             comtypes.CoUninitialize()
 
     def set_default_device(self, mode: int, index: int):
-        """Mark a device as default (output/input modes only)."""
+        """Mark a device as default and apply to Windows."""
         items = self.get_sessions_for_mode(mode)
         for i, item in enumerate(items):
             item.is_default = (i == index)
+            if i == index and item._device_id:
+                try:
+                    comtypes.CoInitialize()
+                    CLSID_PolicyConfigClient = GUID('{870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}')
+                    policyConfig = CoCreateInstance(CLSID_PolicyConfigClient, IPolicyConfig, CLSCTX_ALL)
+                    policyConfig.SetDefaultEndpoint(item._device_id, 0)
+                    policyConfig.SetDefaultEndpoint(item._device_id, 1)
+                    policyConfig.SetDefaultEndpoint(item._device_id, 2)
+                    log.info(f"Set Windows default audio device to {item.name}")
+                except Exception as e:
+                    log.error(f"Failed to set Windows default device: {e}")
+                finally:
+                    comtypes.CoUninitialize()
 
     def _refresh_output_devices(self):
         """Enumerate output audio devices."""
         with self._lock:
             self._output_devices.clear()
         try:
-            import comtypes
             from pycaw.pycaw import AudioUtilities
-            devices = AudioUtilities.GetSpeakers()
-            if devices:
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                endpoint_vol = cast(interface, POINTER(IAudioEndpointVolume))
-                vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
-                muted = bool(endpoint_vol.GetMute())
-                item = AudioItem(
-                    id=1,
-                    name="Speakers",
-                    volume=vol,
-                    is_muted=muted,
-                    is_default=True,
-                    _endpoint_vol=endpoint_vol,
-                )
-                with self._lock:
-                    self._output_devices.append(item)
+            
+            default_id = None
+            default_speaker = AudioUtilities.GetSpeakers()
+            if default_speaker:
+                default_id = default_speaker.GetId()
+
+            devices = AudioUtilities.GetAllDevices()
+            out_idx = 1
+            temp_devices = []
+            for d in devices:
+                if str(d.state) == 'AudioDeviceState.Active' and d.id.startswith('{0.0.0.'):
+                    endpoint_vol = d.EndpointVolume
+                    if not endpoint_vol:
+                        continue
+
+                    vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
+                    muted = bool(endpoint_vol.GetMute())
+                    is_default = (d.id == default_id)
+
+                    item = AudioItem(
+                        id=0,
+                        name=d.FriendlyName[:29],
+                        volume=vol,
+                        is_muted=muted,
+                        is_default=is_default,
+                        _endpoint_vol=endpoint_vol,
+                        _device_id=d.id,
+                    )
+                    temp_devices.append(item)
+                    
+            temp_devices.sort(key=lambda x: x.name.lower())
+            for i, item in enumerate(temp_devices):
+                item.id = i + 1
+            
+            with self._lock:
+                self._output_devices.extend(temp_devices)
         except Exception as e:
             log.error(f"Failed to enumerate output devices: {e}")
 
@@ -158,22 +236,42 @@ class AudioService:
             self._input_devices.clear()
         try:
             from pycaw.pycaw import AudioUtilities
-            mic = AudioUtilities.GetMicrophone()
-            if mic:
-                interface = mic.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                endpoint_vol = cast(interface, POINTER(IAudioEndpointVolume))
-                vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
-                muted = bool(endpoint_vol.GetMute())
-                item = AudioItem(
-                    id=2,
-                    name="Microphone",
-                    volume=vol,
-                    is_muted=muted,
-                    is_default=True,
-                    _endpoint_vol=endpoint_vol,
-                )
-                with self._lock:
-                    self._input_devices.append(item)
+            
+            default_id = None
+            default_mic = AudioUtilities.GetMicrophone()
+            if default_mic:
+                default_id = default_mic.GetId()
+
+            devices = AudioUtilities.GetAllDevices()
+            in_idx = 101 # Offset to avoid collision with output ids if needed
+            temp_devices = []
+            for d in devices:
+                if str(d.state) == 'AudioDeviceState.Active' and d.id.startswith('{0.0.1.'):
+                    endpoint_vol = d.EndpointVolume
+                    if not endpoint_vol:
+                        continue
+
+                    vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
+                    muted = bool(endpoint_vol.GetMute())
+                    is_default = (d.id == default_id)
+
+                    item = AudioItem(
+                        id=0,
+                        name=d.FriendlyName[:29],
+                        volume=vol,
+                        is_muted=muted,
+                        is_default=is_default,
+                        _endpoint_vol=endpoint_vol,
+                        _device_id=d.id,
+                    )
+                    temp_devices.append(item)
+                    
+            temp_devices.sort(key=lambda x: x.name.lower())
+            for i, item in enumerate(temp_devices):
+                item.id = in_idx + i
+            
+            with self._lock:
+                self._input_devices.extend(temp_devices)
         except Exception as e:
             log.error(f"Failed to enumerate input devices: {e}")
 
@@ -183,6 +281,7 @@ class AudioService:
             self._app_sessions.clear()
         try:
             sessions = AudioUtilities.GetAllSessions()
+            temp_sessions = []
             for session in sessions:
                 if session.Process is None:
                     continue
@@ -205,10 +304,13 @@ class AudioService:
                         _session_vol=vol_interface,
                         _process_id=pid,
                     )
-                    with self._lock:
-                        self._app_sessions.append(item)
+                    temp_sessions.append(item)
                 except Exception as e:
                     log.debug(f"Skipping session: {e}")
+                    
+            temp_sessions.sort(key=lambda x: x.name.lower())
+            with self._lock:
+                self._app_sessions.extend(temp_sessions)
         except Exception as e:
             log.error(f"Failed to enumerate app sessions: {e}")
 

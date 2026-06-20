@@ -14,6 +14,9 @@ import time
 from typing import Optional
 
 import comtypes
+import win32api
+import win32con
+import win32gui
 
 from protocol import (
     Command, DisplayMode, SessionIndex,
@@ -25,6 +28,50 @@ from serial_service import SerialService
 from audio_service import AudioService
 
 log = logging.getLogger(__name__)
+
+class PowerMonitor:
+    def __init__(self, on_sleep, on_resume):
+        self.on_sleep = on_sleep
+        self.on_resume = on_resume
+        self.hwnd = None
+        self._thread = threading.Thread(target=self._run_message_loop, daemon=True, name="PowerMonitor")
+        self._thread.start()
+
+    def _run_message_loop(self):
+        wc = win32gui.WNDCLASS()
+        wc.lpfnWndProc = self._wndproc
+        wc.lpszClassName = 'VuNMixPowerMonitor'
+        wc.hInstance = win32api.GetModuleHandle(None)
+        
+        try:
+            win32gui.RegisterClass(wc)
+        except win32gui.error:
+            pass
+            
+        self.hwnd = win32gui.CreateWindow(
+            'VuNMixPowerMonitor', 'VuNMix Power Monitor',
+            0, 0, 0, win32con.CW_USEDEFAULT, win32con.CW_USEDEFAULT,
+            0, 0, wc.hInstance, None
+        )
+        win32gui.PumpMessages()
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == win32con.WM_POWERBROADCAST:
+            if wparam == win32con.PBT_APMSUSPEND:
+                if self.on_sleep:
+                    self.on_sleep()
+            elif wparam == win32con.PBT_APMRESUMEAUTOMATIC:
+                if self.on_resume:
+                    self.on_resume()
+        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+    def stop(self):
+        if self.hwnd:
+            try:
+                win32gui.PostMessage(self.hwnd, win32con.WM_QUIT, 0, 0)
+            except Exception:
+                pass
+
 
 
 class AppController:
@@ -54,6 +101,9 @@ class AppController:
         # Public callbacks for GUI
         self.on_connection_changed: Optional[callable] = None
 
+        # Power monitor
+        self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
+
     def start(self):
         """Start serial reader and periodic sync."""
         log.info("AppController starting...")
@@ -66,6 +116,7 @@ class AppController:
     def stop(self):
         """Stop everything."""
         log.info("AppController stopping...")
+        self._power_monitor.stop()
         self._running = False
         self.serial.stop()
         if self._sync_thread:
@@ -75,6 +126,14 @@ class AppController:
     @property
     def is_connected(self) -> bool:
         return self._device_connected
+
+    def _on_pc_sleep(self):
+        log.info("PC entering sleep mode. Suspending VuNMix device.")
+        self.serial.send_command(Command.SLEEP)
+
+    def _on_pc_resume(self):
+        log.info("PC resuming from sleep. Waking VuNMix device.")
+        self.serial.send_command(Command.OK)
 
     # ─── Connection Events ─────────────────────────────────────────────
     def _on_device_connected(self):
@@ -175,6 +234,12 @@ class AppController:
         if 0 <= win_idx < len(items):
             self.audio.set_volume(mode, win_idx, vol.volume, vol.is_muted)
             log.info(f"Applied vol={vol.volume}% muted={vol.is_muted} to {items[win_idx].name}")
+            
+            # If hardware marked this as default and it isn't yet, apply to Windows
+            if vol.is_default and not items[win_idx].is_default:
+                self.audio.set_default_device(mode, win_idx)
+                # Re-push sessions so the UI/hardware updates with the new default flags
+                self._handle_session_info_from_hw(self._session_info)
 
     # ─── Push State to Hardware ────────────────────────────────────────
     def _push_full_state(self, mode: int):
@@ -201,6 +266,30 @@ class AppController:
 
         # Send sessions
         self._push_sessions_for_mode(mode, 0)
+
+    def _push_updated_state(self):
+        """Re-push state after a refresh, preserving current index if possible."""
+        mode = self._session_info.mode
+        items = self.audio.get_sessions_for_mode(mode)
+        
+        n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
+        n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
+        n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
+        
+        current_idx = self._session_info.current
+        if items and current_idx >= len(items):
+            current_idx = len(items) - 1
+        elif not items:
+            current_idx = 0
+            
+        self._session_info.sessions = [max(n_output, 1), max(n_input, 1), max(n_app, 1)]
+        self._session_info.current = current_idx
+        
+        self.serial.send_session_info(self._session_info)
+        time.sleep(0.05)
+        self.serial.send_mode_states(self._mode_states)
+        time.sleep(0.05)
+        self._push_sessions_for_mode(mode, current_idx)
 
     def _push_sessions_for_mode(self, mode: int, current_idx: int):
         """Send current/prev/next sessions for a mode."""
@@ -260,6 +349,12 @@ class AppController:
             # Read current volume from Windows and push if changed
             comtypes.CoInitialize()
             try:
+                if self.audio.check_system_changes():
+                    log.info("System audio changes detected. Refreshing...")
+                    self.audio.refresh()
+                    self._push_updated_state()
+                    continue
+
                 mode = self._session_info.mode
                 idx = self._session_info.current
                 vol = self.audio.read_current_volume(mode, idx)

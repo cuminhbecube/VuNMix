@@ -1,4 +1,5 @@
 #include "Display.h"
+#include "Input.h"
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 
@@ -109,7 +110,7 @@ namespace Display {
     // Screen Tracking
     // =========================================================
     enum class ScreenType {
-        NONE, SPLASH, INFO, DEVICE_SELECT, DEVICE_EDIT, GAME_SELECT, GAME_EDIT
+        NONE, SPLASH, KEY_TEST, INFO, DEVICE_SELECT, DEVICE_EDIT, GAME_SELECT, GAME_EDIT
     };
 
     static ScreenType s_currentScreen = ScreenType::NONE;
@@ -140,6 +141,10 @@ namespace Display {
     // Track which mode the shell was built for
     static DisplayMode s_shellMode = MODE_SPLASH;
     static bool s_shellBuilt = false;
+
+    // Splash Keypad Test
+    static lv_obj_t* s_keyGrid = nullptr;
+    static lv_obj_t* s_keyBoxes[6] = {nullptr};
 
     // =========================================================
     // Helpers
@@ -369,6 +374,8 @@ namespace Display {
         s_subLabel = nullptr;
         s_subLabelB = nullptr;
         s_splashDots = nullptr;
+        s_keyGrid = nullptr;
+        for (int i=0; i<6; i++) s_keyBoxes[i] = nullptr;
     }
 
     // =========================================================
@@ -436,6 +443,68 @@ namespace Display {
             lv_anim_set_time(&s_dotAnim, 2000);
             lv_anim_set_repeat_count(&s_dotAnim, LV_ANIM_REPEAT_INFINITE);
             lv_anim_start(&s_dotAnim);
+        }
+    }
+
+    void KeyTestScreen() {
+        if (s_currentScreen != ScreenType::KEY_TEST) {
+            FullReset();
+            s_currentScreen = ScreenType::KEY_TEST;
+            
+            // Build the keypad grid
+            s_keyGrid = lv_obj_create(lv_scr_act());
+            lv_obj_set_size(s_keyGrid, SW, SH);
+            lv_obj_set_pos(s_keyGrid, 0, 0);
+            lv_obj_set_style_bg_color(s_keyGrid, lv_color_hex(COL_BG), LV_PART_MAIN);
+            lv_obj_set_style_pad_all(s_keyGrid, 0, LV_PART_MAIN);
+            lv_obj_set_style_border_width(s_keyGrid, 0, LV_PART_MAIN);
+            lv_obj_clear_flag(s_keyGrid, LV_OBJ_FLAG_SCROLLABLE);
+            
+            int btnW = 80;
+            int btnH = 80;
+            int gapX = 15;
+            int gapY = 15;
+            int startX = (SW - (3*btnW + 2*gapX)) / 2;
+            int startY = (SH - (2*btnH + gapY)) / 2;
+
+            const char* keyNames[6] = {"P", "M", "N", "-", "SPC", "+"};
+            for (int i=0; i<6; i++) {
+                int row = i / 3;
+                int col = i % 3;
+                s_keyBoxes[i] = lv_obj_create(s_keyGrid);
+                lv_obj_set_size(s_keyBoxes[i], btnW, btnH);
+                lv_obj_set_pos(s_keyBoxes[i], startX + col * (btnW + gapX), startY + row * (btnH + gapY));
+                
+                lv_obj_set_style_bg_color(s_keyBoxes[i], lv_color_hex(0x2A2A2F), LV_PART_MAIN);
+                lv_obj_set_style_bg_opa(s_keyBoxes[i], LV_OPA_COVER, LV_PART_MAIN);
+                lv_obj_set_style_border_color(s_keyBoxes[i], lv_color_hex(0x404040), LV_PART_MAIN);
+                lv_obj_set_style_border_width(s_keyBoxes[i], 2, LV_PART_MAIN);
+                lv_obj_set_style_radius(s_keyBoxes[i], 16, LV_PART_MAIN);
+                lv_obj_clear_flag(s_keyBoxes[i], LV_OBJ_FLAG_SCROLLABLE);
+
+                lv_obj_t* lbl = lv_label_create(s_keyBoxes[i]);
+                lv_label_set_text(lbl, keyNames[i]);
+                lv_obj_set_style_text_color(lbl, lv_color_hex(0x8B949E), LV_PART_MAIN);
+                lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+                lv_obj_center(lbl);
+            }
+        }
+
+        // Update key colors based on state
+        for (int i=0; i<6; i++) {
+            if (s_keyBoxes[i]) {
+                if (Input::g_RawKeyStates[i]) {
+                    lv_obj_set_style_border_color(s_keyBoxes[i], lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+                    lv_obj_set_style_border_width(s_keyBoxes[i], 3, LV_PART_MAIN);
+                    lv_obj_t* lbl = lv_obj_get_child(s_keyBoxes[i], 0);
+                    if (lbl) lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+                } else {
+                    lv_obj_set_style_border_color(s_keyBoxes[i], lv_color_hex(0x404040), LV_PART_MAIN);
+                    lv_obj_set_style_border_width(s_keyBoxes[i], 2, LV_PART_MAIN);
+                    lv_obj_t* lbl = lv_obj_get_child(s_keyBoxes[i], 0);
+                    if (lbl) lv_obj_set_style_text_color(lbl, lv_color_hex(0x8B949E), LV_PART_MAIN);
+                }
+            }
         }
     }
 

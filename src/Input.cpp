@@ -11,6 +11,9 @@ namespace Input {
     volatile int8_t g_EncoderSteps = 0;
     volatile ButtonEvent g_ButtonEvent = none;
 
+    bool g_RawKeyStates[6] = {false, false, false, false, false, false};
+    bool g_KeyStatesChanged = false;
+
     const byte ROWS = 2; 
     const byte COLS = 3; 
     // Map keys to simple characters for Keypad library
@@ -32,7 +35,7 @@ namespace Input {
 //         USB.begin();
 // #endif
         keypad.setHoldTime(500);
-        keypad.setDebounceTime(60);
+        keypad.setDebounceTime(30);
     }
 
     void Update() {
@@ -41,6 +44,20 @@ namespace Input {
                 if (keypad.key[i].stateChanged) {
                     char k = keypad.key[i].kchar;
                     auto state = keypad.key[i].kstate;
+
+                    int keyIndex = -1;
+                    if (k == 'P') keyIndex = 0;
+                    else if (k == 'M') keyIndex = 1;
+                    else if (k == 'N') keyIndex = 2;
+                    else if (k == '-') keyIndex = 3;
+                    else if (k == ' ') keyIndex = 4;
+                    else if (k == '+') keyIndex = 5;
+
+                    if (keyIndex != -1) {
+                        if (state == PRESSED || state == HOLD) g_RawKeyStates[keyIndex] = true;
+                        else if (state == RELEASED || state == IDLE) g_RawKeyStates[keyIndex] = false;
+                        g_KeyStatesChanged = true;
+                    }
 
                     if (state == PRESSED) {
                         if (k == 'P') g_ButtonEvent = hold; // Fake hold for Prev mode? Actually let's just make Prev Tab = hold equivalent? No, Prev Tab should change mode or session. MaxMix: Hold = Mode change, CCW = Prev session.

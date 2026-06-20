@@ -67,36 +67,38 @@ def set_run_on_startup(enable: bool):
 
 def create_tray_icon(connected: bool) -> Image.Image:
     """Generate a 64x64 tray icon."""
+    target_color = (255, 60, 60) if connected else (150, 150, 150)
+    
     try:
         img = Image.open(resource_path(os.path.join("assets", "logo.png"))).convert("RGBA")
         img = img.resize((64, 64), Image.Resampling.LANCZOS)
+        
+        # Colorize logo: use target color for RGB, keep original Alpha
+        r, g, b, a = img.split()
+        solid_color = Image.new('RGB', img.size, target_color)
+        img = Image.merge('RGBA', (*solid_color.split(), a))
     except Exception as e:
         log.warning(f"Could not load logo: {e}")
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        bg_color = (20, 20, 30, 255)
+        bg_color = target_color + (255,)
         draw.ellipse([2, 2, 62, 62], fill=bg_color, outline=(60, 60, 80, 255), width=2)
         draw.text((22, 15), "V", fill=(255, 255, 255, 200))
 
-    draw = ImageDraw.Draw(img)
-    if connected:
-        dot_color = (0, 212, 255, 255)  # Cyan
-    else:
-        dot_color = (255, 60, 60, 255)  # Red
-
-    # Draw status dot at bottom right
-    draw.ellipse([46, 46, 60, 60], fill=dot_color, outline=(255, 255, 255, 255), width=2)
     return img
 
 
 class SettingsDialog:
     """Simple tkinter settings dialog."""
 
-    def __init__(self, config, controller, on_save):
+    def __init__(self, config, controller, on_save, on_close=None):
         self.config = config
         self.controller = controller
         self.on_save = on_save
+        self.on_close = on_close
         self._window: Optional[tk.Tk] = None
+        self._drag_x = 0
+        self._drag_y = 0
 
     def show(self):
         """Show settings dialog (runs in its own thread)."""
@@ -108,105 +110,157 @@ class SettingsDialog:
         ctk.set_default_color_theme("blue")
 
         self._window = ctk.CTk()
-        self._window.title("VuNMix Settings")
-        self._window.geometry("400x500")
-        self._window.resizable(False, False)
+        self._window.overrideredirect(True)
         
+        window_width = 320
+        window_height = 460
+        screen_width = self._window.winfo_screenwidth()
+        screen_height = self._window.winfo_screenheight()
+        x = screen_width - window_width - 15
+        y = screen_height - window_height - 50
+        self._window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self._window.attributes('-topmost', True)
+
+        # Use Win32 API to clip window to rounded rectangle (no dark corners)
+        self._window.update_idletasks()
         try:
-            self._window.iconbitmap(resource_path(os.path.join("assets", "icon.ico")))
-        except Exception as e:
-            log.warning(f"Could not set window icon: {e}")
+            import ctypes
+            from ctypes import wintypes
+            hwnd = ctypes.windll.user32.GetParent(self._window.winfo_id())
+            rect = wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            w = rect.right - rect.left
+            h = rect.bottom - rect.top
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, 24, 24)
+            ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
+        except Exception:
+            pass
 
-        # Title
-        title = ctk.CTkLabel(self._window, text="VuNMix Settings", font=ctk.CTkFont(size=20, weight="bold"))
-        title.pack(pady=(20, 15))
+        # Handle window close to notify TrayApp
+        self._window.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
-        # COM Port
-        frame = ctk.CTkFrame(self._window, fg_color="transparent")
-        frame.pack(fill='x', padx=30, pady=10)
-        ctk.CTkLabel(frame, text="COM Port:", font=ctk.CTkFont(size=13)).pack(side='left')
+        # Main container
+        main_frame = ctk.CTkFrame(self._window, corner_radius=12, border_width=1, border_color="#333333")
+        main_frame.pack(fill='both', expand=True)
+
+        # Header (draggable)
+        header = ctk.CTkFrame(main_frame, fg_color="transparent", height=36)
+        header.pack(fill='x', padx=12, pady=(10, 2))
+        header.pack_propagate(False)
+        title_lbl = ctk.CTkLabel(header, text="VuNMix", font=ctk.CTkFont(size=16, weight="bold"))
+        title_lbl.pack(side='left')
+        
+        close_btn = ctk.CTkButton(header, text="✕", width=28, height=28, fg_color="transparent", 
+                                  hover_color="#dc3545", font=ctk.CTkFont(size=14), command=self._on_window_close)
+        close_btn.pack(side='right')
+
+        # Bind drag events on header and title
+        for widget in (header, title_lbl):
+            widget.bind("<Button-1>", self._start_drag)
+            widget.bind("<B1-Motion>", self._do_drag)
+
+        # Connection row: COM Port + dropdown + Connect/Disconnect
+        conn_row = ctk.CTkFrame(main_frame, fg_color="transparent", height=30)
+        conn_row.pack(fill='x', padx=12, pady=(4, 2))
+        conn_row.pack_propagate(False)
+        ctk.CTkLabel(conn_row, text="COM Port", font=ctk.CTkFont(size=12)).pack(side='left')
         
         self._com_var = tk.StringVar(value=self.config.com_port)
         ports = [port.device for port in serial.tools.list_ports.comports()]
         if self.config.com_port not in ports and self.config.com_port:
             ports.append(self.config.com_port)
-            
-        com_entry = ctk.CTkOptionMenu(frame, variable=self._com_var, values=ports if ports else ["None"], width=100)
-        com_entry.pack(side='left', padx=(10, 10))
         
-        # Connect / Disconnect Buttons
-        btn_conn = ctk.CTkButton(frame, text="Conn", command=self._connect, width=55, 
-                                 fg_color="#28a745", hover_color="#218838", font=ctk.CTkFont(size=12, weight="bold"))
-        btn_conn.pack(side='left', padx=3)
-        btn_disconn = ctk.CTkButton(frame, text="Disc", command=self._disconnect, width=55, 
-                                    fg_color="#dc3545", hover_color="#c82333", font=ctk.CTkFont(size=12, weight="bold"))
-        btn_disconn.pack(side='left', padx=3)
+        self.btn_toggle_conn = ctk.CTkButton(conn_row, text="Connect", command=self._toggle_connect, width=75, height=24,
+                                             font=ctk.CTkFont(size=11, weight="bold"))
+        self.btn_toggle_conn.pack(side='right')
+        
+        ctk.CTkOptionMenu(conn_row, variable=self._com_var, values=ports if ports else ["None"], width=90, height=24).pack(side='right', padx=6)
 
-        # Update Interval
-        frame2 = ctk.CTkFrame(self._window, fg_color="transparent")
-        frame2.pack(fill='x', padx=30, pady=10)
-        ctk.CTkLabel(frame2, text="Sync Interval (ms):", font=ctk.CTkFont(size=13)).pack(side='left')
-        self._interval_var = tk.StringVar(value=str(self.config.update_interval_ms))
-        int_entry = ctk.CTkEntry(frame2, textvariable=self._interval_var, width=100)
-        int_entry.pack(side='right')
+        # Content rows
+        content = ctk.CTkFrame(main_frame, fg_color="transparent")
+        content.pack(fill='both', expand=True, padx=12)
 
-        # Sleep Timeout
-        frame3 = ctk.CTkFrame(self._window, fg_color="transparent")
-        frame3.pack(fill='x', padx=30, pady=10)
-        ctk.CTkLabel(frame3, text="Sleep Timeout (s):", font=ctk.CTkFont(size=13)).pack(side='left')
-        self._sleep_var = tk.StringVar(value=str(self.config.device_settings.sleep_after_seconds))
-        sleep_entry = ctk.CTkEntry(frame3, textvariable=self._sleep_var, width=100)
-        sleep_entry.pack(side='right')
+        def add_row(parent, label_text, widget_builder):
+            row = ctk.CTkFrame(parent, fg_color="transparent", height=30)
+            row.pack(fill='x', pady=3)
+            row.pack_propagate(False)
+            ctk.CTkLabel(row, text=label_text, font=ctk.CTkFont(size=12)).pack(side='left')
+            widget = widget_builder(row)
+            widget.pack(side='right')
+            return row
 
-        # Sleep Enabled
-        self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
-        sleep_en_cb = ctk.CTkSwitch(self._window, text="Sleep Enabled", variable=self._sleep_enabled_var, font=ctk.CTkFont(size=13))
-        sleep_en_cb.pack(pady=10)
-
-        # Standby LED Mode
+        # Standby LED
         from protocol import STANDBY_LED_NAMES
-        frame4 = ctk.CTkFrame(self._window, fg_color="transparent")
-        frame4.pack(fill='x', padx=30, pady=10)
-        ctk.CTkLabel(frame4, text="Standby LED:", font=ctk.CTkFont(size=13)).pack(side='left')
         current_led_name = STANDBY_LED_NAMES[self.config.device_settings.standby_led_mode] if self.config.device_settings.standby_led_mode < len(STANDBY_LED_NAMES) else STANDBY_LED_NAMES[0]
         self._led_mode_var = tk.StringVar(value=current_led_name)
-        led_menu = ctk.CTkOptionMenu(frame4, variable=self._led_mode_var, values=STANDBY_LED_NAMES, width=150)
-        led_menu.pack(side='right')
+        add_row(content, "Standby LED", lambda r: ctk.CTkOptionMenu(r, variable=self._led_mode_var, values=STANDBY_LED_NAMES, width=120, height=24))
+
+        # LED Brightness
+        self._brightness_var = tk.DoubleVar(value=self.config.device_settings.led_brightness)
+        add_row(content, "LED Brightness", lambda r: ctk.CTkSlider(r, from_=0, to=255, variable=self._brightness_var, width=120, height=14, command=self._on_brightness_change))
+
+        # Sync Interval
+        self._interval_var = tk.StringVar(value=str(self.config.update_interval_ms))
+        add_row(content, "Sync Interval (ms)", lambda r: ctk.CTkEntry(r, textvariable=self._interval_var, width=55, height=24))
+
+        # Sleep Timeout (default 60s)
+        self._sleep_var = tk.StringVar(value=str(self.config.device_settings.sleep_after_seconds))
+        add_row(content, "Sleep Timeout (s)", lambda r: ctk.CTkEntry(r, textvariable=self._sleep_var, width=55, height=24))
 
         # Continuous Scroll
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
-        scroll_cb = ctk.CTkSwitch(self._window, text="Continuous Scroll", variable=self._scroll_var, font=ctk.CTkFont(size=13))
-        scroll_cb.pack(pady=10)
+        add_row(content, "Continuous Scroll", lambda r: ctk.CTkSwitch(r, text="", variable=self._scroll_var, switch_width=36, switch_height=18))
 
-        # Run on Startup
+        # Run on Startup (default on)
         self._startup_var = tk.BooleanVar(value=self.config.run_on_startup)
-        startup_cb = ctk.CTkSwitch(self._window, text="Run on Windows Startup", variable=self._startup_var, font=ctk.CTkFont(size=13))
-        startup_cb.pack(pady=10)
+        add_row(content, "Run on Startup", lambda r: ctk.CTkSwitch(r, text="", variable=self._startup_var, switch_width=36, switch_height=18))
 
-        # Buttons
-        btn_frame = ctk.CTkFrame(self._window, fg_color="transparent")
-        btn_frame.pack(pady=20)
+        # Auto Sleep (default off)
+        self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
+        add_row(content, "Auto Sleep", lambda r: ctk.CTkSwitch(r, text="", variable=self._sleep_enabled_var, switch_width=36, switch_height=18))
 
-        save_btn = ctk.CTkButton(btn_frame, text="Save", command=self._save, width=100, font=ctk.CTkFont(size=13, weight="bold"))
-        save_btn.pack(side='left', padx=15)
+        # Save Button
+        save_btn = ctk.CTkButton(main_frame, text="Save Settings", command=self._save, height=32, font=ctk.CTkFont(size=12, weight="bold"))
+        save_btn.pack(fill='x', padx=12, pady=(6, 12))
 
-        cancel_btn = ctk.CTkButton(btn_frame, text="Cancel", command=self._window.destroy, width=100, 
-                                   fg_color="#3a3a4e", hover_color="#2b2b3a", font=ctk.CTkFont(size=13))
-        cancel_btn.pack(side='left', padx=15)
-
+        self._update_status_loop()
         self._window.mainloop()
 
-    def _connect(self):
-        port = self._com_var.get().strip()
-        if port:
-            self.config.com_port = port
-            self.config.save()
+    def _start_drag(self, event):
+        self._drag_x = event.x
+        self._drag_y = event.y
+
+    def _do_drag(self, event):
+        x = self._window.winfo_x() + event.x - self._drag_x
+        y = self._window.winfo_y() + event.y - self._drag_y
+        self._window.geometry(f"+{x}+{y}")
+
+    def _on_window_close(self):
+        if self._window:
+            self._window.destroy()
+        if self.on_close:
+            self.on_close()
+
+    def _update_status_loop(self):
+        if not self._window or not self._window.winfo_exists():
+            return
+        if self.controller._device_connected:
+            self.btn_toggle_conn.configure(text="Disconnect", fg_color="#dc3545", hover_color="#c82333")
+        else:
+            self.btn_toggle_conn.configure(text="Connect", fg_color="#28a745", hover_color="#218838")
+        self._window.after(500, self._update_status_loop)
+
+    def _toggle_connect(self):
+        if self.controller._device_connected:
             self.controller.stop()
-            self.controller.serial.port = port
-            self.controller.start()
-            
-    def _disconnect(self):
-        self.controller.stop()
+        else:
+            port = self._com_var.get().strip()
+            if port:
+                self.config.com_port = port
+                self.config.save()
+                self.controller.stop()
+                self.controller.serial.port = port
+                self.controller.start()
 
     def _save(self):
         try:
@@ -222,6 +276,7 @@ class SettingsDialog:
             led_name = self._led_mode_var.get()
             self.config.device_settings.standby_led_mode = STANDBY_LED_NAMES.index(led_name) if led_name in STANDBY_LED_NAMES else 0
             self.config.device_settings.continuous_scroll = self._scroll_var.get()
+            self.config.device_settings.led_brightness = int(self._brightness_var.get())
             self.config.save()
             
             set_run_on_startup(self.config.run_on_startup)
@@ -230,9 +285,17 @@ class SettingsDialog:
             if self.on_save:
                 self.on_save(port_changed)
                 
-            self._window.destroy()
+            self._on_window_close()
         except ValueError as e:
             messagebox.showerror("Error", f"Invalid value: {e}")
+
+    def _on_brightness_change(self, value):
+        from protocol import Command
+        if self.controller._device_connected:
+            import copy
+            preview_settings = copy.deepcopy(self.config.device_settings)
+            preview_settings.led_brightness = int(value)
+            self.controller.serial.send_command(Command.SETTINGS, preview_settings.pack())
 
 
 class TrayApp:
@@ -242,7 +305,7 @@ class TrayApp:
         self.config = config
         self.controller = controller
         self._icon = None
-        self._settings_dialog: Optional[SettingsDialog] = None
+        self._settings_open = False
 
     def run(self):
         """Start the tray application (blocking)."""
@@ -256,7 +319,7 @@ class TrayApp:
             Menu.SEPARATOR,
             MenuItem(lambda item: f"Status: {'Connected' if self.controller._device_connected else 'Disconnected'}", None, enabled=False),
             Menu.SEPARATOR,
-            MenuItem('Settings', self._on_settings),
+            MenuItem('Settings', self._on_settings, default=True),
             MenuItem('Reconnect', self._on_reconnect),
             Menu.SEPARATOR,
             MenuItem('Exit', self._on_exit),
@@ -278,8 +341,16 @@ class TrayApp:
             self._icon.update_menu()
 
     def _on_settings(self, icon, item):
-        dialog = SettingsDialog(self.config, self.controller, on_save=self._on_settings_saved)
+        if self._settings_open:
+            return
+        self._settings_open = True
+        dialog = SettingsDialog(self.config, self.controller,
+                                on_save=self._on_settings_saved,
+                                on_close=self._on_settings_closed)
         dialog.show()
+
+    def _on_settings_closed(self):
+        self._settings_open = False
 
     def _on_settings_saved(self, port_changed: bool):
         log.info("Settings saved. Port changed: %s", port_changed)
@@ -302,3 +373,4 @@ class TrayApp:
         log.info("Exit requested")
         self.controller.stop()
         self._icon.stop()
+

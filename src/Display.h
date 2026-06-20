@@ -6,6 +6,7 @@ namespace Display {
     void Initialize();
     void Update();
     void SplashScreen();
+    void KeyTestScreen();
     void InfoScreen();
     
     void DeviceSelectScreen(SessionData* session, bool canScrollLeft, bool canScrollRight, DisplayMode mode);
