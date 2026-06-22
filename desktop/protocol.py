@@ -6,9 +6,12 @@ Bitfield packing follows GCC __attribute__((__packed__)) behavior.
 """
 
 import struct
+import unicodedata
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
+
+
 
 
 # ─── Command Enum (mirrors firmware Enums.h) ───────────────────────────────
@@ -149,7 +152,7 @@ class SessionData:
     data: VolumeData = field(default_factory=VolumeData)
 
     def pack(self) -> bytes:
-        name_bytes = self.name.encode('ascii', errors='replace')[:29]
+        name_bytes = self.name.encode('utf-8', errors='replace')[:29]
         name_bytes = name_bytes.ljust(30, b'\x00')
         return name_bytes + self.data.pack()
 
@@ -159,9 +162,9 @@ class SessionData:
         # Find null terminator
         null_idx = name_raw.find(b'\x00')
         if null_idx >= 0:
-            name = name_raw[:null_idx].decode('ascii', errors='replace')
+            name = name_raw[:null_idx].decode('utf-8', errors='replace')
         else:
-            name = name_raw.decode('ascii', errors='replace')
+            name = name_raw.decode('utf-8', errors='replace')
         vol = VolumeData.unpack(raw[30:32])
         return cls(name=name, data=vol)
 

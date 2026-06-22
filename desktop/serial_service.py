@@ -58,7 +58,7 @@ class SerialService:
             self._serial.open()
             # Small delay for USB CDC to settle
             time.sleep(0.3)
-            # Flush any stale data
+            # Flush any stale dat
             self._serial.reset_input_buffer()
             self._serial.reset_output_buffer()
             log.info(f"Connected to {self.port}")

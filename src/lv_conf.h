@@ -31,6 +31,11 @@
    HAL SETTINGS
  *====================*/
 #define LV_TICK_CUSTOM 1
+#define LV_FONT_CUSTOM_DECLARE \
+    LV_FONT_DECLARE(lv_font_vn_10) \
+    LV_FONT_DECLARE(lv_font_vn_12) \
+    LV_FONT_DECLARE(lv_font_vn_14) \
+    LV_FONT_DECLARE(lv_font_vn_20)
 #define LV_TICK_CUSTOM_INCLUDE  <Arduino.h>
 #define LV_TICK_CUSTOM_SYS_TIME_EXPR (millis())
 

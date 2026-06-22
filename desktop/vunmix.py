@@ -38,7 +38,7 @@ def main():
 
     log = logging.getLogger('vunmix')
     log.info("╔══════════════════════════════════════╗")
-    log.info("║         VuNMix Desktop v1.0          ║")
+    log.info("║         VuNMix Desktop v0.1          ║")
     log.info("╚══════════════════════════════════════╝")
 
     # Load config

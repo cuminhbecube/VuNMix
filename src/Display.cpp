@@ -620,7 +620,7 @@ namespace Display {
 
             // Device name
             s_titleLabel = lv_label_create(card);
-            lv_obj_set_style_text_font(s_titleLabel, &lv_font_montserrat_12, LV_PART_MAIN);
+            lv_obj_set_style_text_font(s_titleLabel, &lv_font_vn_12, LV_PART_MAIN);
             lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
             lv_obj_set_width(s_titleLabel, SW - 120);
             lv_label_set_long_mode(s_titleLabel, LV_LABEL_LONG_DOT);
@@ -714,7 +714,7 @@ namespace Display {
 
             // Device name below arc
             s_titleLabel = lv_label_create(s_contentArea);
-            lv_obj_set_style_text_font(s_titleLabel, &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_set_style_text_font(s_titleLabel, &lv_font_vn_14, LV_PART_MAIN);
             lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(COL_ON_SURFACE), LV_PART_MAIN);
             lv_obj_set_width(s_titleLabel, SW - 40);
             lv_label_set_long_mode(s_titleLabel, LV_LABEL_LONG_DOT);
@@ -812,7 +812,7 @@ namespace Display {
 
             // Session name
             s_titleLabel = lv_label_create(panel);
-            lv_obj_set_style_text_font(s_titleLabel, &lv_font_montserrat_20, LV_PART_MAIN);
+            lv_obj_set_style_text_font(s_titleLabel, &lv_font_vn_20, LV_PART_MAIN);
             lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
             lv_obj_set_width(s_titleLabel, SW - 60);
             lv_label_set_long_mode(s_titleLabel, LV_LABEL_LONG_DOT);
@@ -954,14 +954,14 @@ namespace Display {
 
             // Name labels at bottom
             s_faderNameA = lv_label_create(s_contentArea);
-            lv_obj_set_style_text_font(s_faderNameA, &lv_font_montserrat_10, LV_PART_MAIN);
+            lv_obj_set_style_text_font(s_faderNameA, &lv_font_vn_10, LV_PART_MAIN);
             lv_obj_set_style_text_color(s_faderNameA, lv_color_hex(COL_ON_SURFACE_V), LV_PART_MAIN);
             lv_obj_align(s_faderNameA, LV_ALIGN_BOTTOM_LEFT, PAD + 10, -2);
             lv_obj_set_width(s_faderNameA, 110);
             lv_label_set_long_mode(s_faderNameA, LV_LABEL_LONG_DOT);
 
             s_faderNameB = lv_label_create(s_contentArea);
-            lv_obj_set_style_text_font(s_faderNameB, &lv_font_montserrat_10, LV_PART_MAIN);
+            lv_obj_set_style_text_font(s_faderNameB, &lv_font_vn_10, LV_PART_MAIN);
             lv_obj_set_style_text_color(s_faderNameB, lv_color_hex(COL_ON_SURFACE_V), LV_PART_MAIN);
             lv_obj_align(s_faderNameB, LV_ALIGN_BOTTOM_RIGHT, -PAD - 10, -2);
             lv_obj_set_width(s_faderNameB, 110);

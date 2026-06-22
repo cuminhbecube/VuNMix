@@ -87,6 +87,7 @@ class AppController:
         self._sessions = [SessionData() for _ in range(SessionIndex.INDEX_MAX)]
         self._mode_states = ModeStates()
         self._device_connected = False
+        self._is_sleeping = False
 
         # Sync thread
         self._sync_thread: Optional[threading.Thread] = None
@@ -129,11 +130,33 @@ class AppController:
 
     def _on_pc_sleep(self):
         log.info("PC entering sleep mode. Suspending VuNMix device.")
+        self._is_sleeping = True
         self.serial.send_command(Command.SLEEP)
 
     def _on_pc_resume(self):
         log.info("PC resuming from sleep. Waking VuNMix device.")
+        self._is_sleeping = False
         self.serial.send_command(Command.OK)
+        
+        def delayed_resume():
+            # Wait a bit for USB to settle and device to potentially boot
+            time.sleep(2.0)
+            if not self.is_connected:
+                return
+            log.info("Pushing full state to recover device after sleep...")
+            comtypes.CoInitialize()
+            try:
+                self.serial.send_settings(self.config.device_settings)
+                time.sleep(0.1)
+                self.audio.refresh()
+                mode = self._session_info.mode
+                if mode == DisplayMode.MODE_SPLASH:
+                    mode = DisplayMode.MODE_OUTPUT
+                self._push_full_state(mode)
+            finally:
+                comtypes.CoUninitialize()
+
+        threading.Thread(target=delayed_resume, daemon=True, name="ResumeSync").start()
 
     # ─── Connection Events ─────────────────────────────────────────────
     def _on_device_connected(self):
@@ -198,24 +221,13 @@ class AppController:
 
     def _handle_session_info_from_hw(self, info: SessionInfo):
         """Hardware changed mode or navigated — send appropriate sessions."""
-        old_mode = self._session_info.mode
         self._session_info = info
 
-        if info.mode != old_mode or info.mode == DisplayMode.MODE_SPLASH:
-            # Mode changed, refresh and push new state
-            comtypes.CoInitialize()
-            try:
-                self.audio.refresh()
-                self._push_sessions_for_mode(info.mode, info.current)
-            finally:
-                comtypes.CoUninitialize()
-        else:
-            # Navigation within same mode — send requested sessions
-            comtypes.CoInitialize()
-            try:
-                self._push_sessions_for_mode(info.mode, info.current)
-            finally:
-                comtypes.CoUninitialize()
+        comtypes.CoInitialize()
+        try:
+            self._push_sessions_for_mode(info.mode, info.current)
+        finally:
+            comtypes.CoUninitialize()
 
     def _apply_volume_to_windows(self, session_idx: int, vol: VolumeData):
         """Apply volume change from hardware knob to Windows."""
@@ -258,11 +270,9 @@ class AppController:
 
         # Send session info
         self.serial.send_session_info(self._session_info)
-        time.sleep(0.05)
 
         # Send mode states
         self.serial.send_mode_states(self._mode_states)
-        time.sleep(0.05)
 
         # Send sessions
         self._push_sessions_for_mode(mode, 0)
@@ -286,9 +296,7 @@ class AppController:
         self._session_info.current = current_idx
         
         self.serial.send_session_info(self._session_info)
-        time.sleep(0.05)
         self.serial.send_mode_states(self._mode_states)
-        time.sleep(0.05)
         self._push_sessions_for_mode(mode, current_idx)
 
     def _push_sessions_for_mode(self, mode: int, current_idx: int):
@@ -307,7 +315,6 @@ class AppController:
         cur = items[current_idx].to_session_data()
         self._sessions[SessionIndex.INDEX_CURRENT] = cur
         self.serial.send_session(Command.CURRENT_SESSION, cur)
-        time.sleep(0.02)
 
         # Previous
         if count > 1:
@@ -315,7 +322,6 @@ class AppController:
             prev = items[prev_idx].to_session_data()
             self._sessions[SessionIndex.INDEX_PREVIOUS] = prev
             self.serial.send_session(Command.PREVIOUS_SESSION, prev)
-            time.sleep(0.02)
 
         # Next
         if count > 1:
@@ -323,27 +329,50 @@ class AppController:
             nxt = items[next_idx].to_session_data()
             self._sessions[SessionIndex.INDEX_NEXT] = nxt
             self.serial.send_session(Command.NEXT_SESSION, nxt)
-            time.sleep(0.02)
 
     # ─── Periodic Sync ─────────────────────────────────────────────────
     def _sync_loop(self):
         """Periodically refresh audio sessions and sync volume to hardware."""
         interval = self.config.update_interval_ms / 1000.0
         last_heartbeat = time.monotonic()
+        last_full_refresh = time.monotonic()
 
         while self._running:
             time.sleep(interval)
 
-            if not self._device_connected:
+            if not self._device_connected or self._is_sleeping:
                 continue
 
-            # Send heartbeat every 2 seconds to prevent hardware timeout
             now = time.monotonic()
+            
+            # Send heartbeat every 2 seconds to prevent hardware timeout
             if now - last_heartbeat >= 2.0:
                 self.serial.send_command(Command.OK)
                 last_heartbeat = now
 
             if self._session_info.mode == DisplayMode.MODE_SPLASH:
+                continue
+
+            # Periodic full refresh to catch new apps (every 5s)
+            if now - last_full_refresh >= 5.0:
+                comtypes.CoInitialize()
+                try:
+                    def get_sig():
+                        sig = []
+                        for m in (DisplayMode.MODE_OUTPUT, DisplayMode.MODE_INPUT, DisplayMode.MODE_APPLICATION):
+                            sig.extend((x.id, x.name, x.is_default) for x in self.audio.get_sessions_for_mode(m))
+                        return sig
+
+                    old_sig = get_sig()
+                    self.audio.refresh()
+                    new_sig = get_sig()
+
+                    if old_sig != new_sig:
+                        log.info("Audio devices/apps changed in background. Pushing updated state.")
+                        self._push_updated_state()
+                finally:
+                    comtypes.CoUninitialize()
+                last_full_refresh = now
                 continue
 
             # Read current volume from Windows and push if changed
