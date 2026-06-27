@@ -11,6 +11,7 @@ Handles:
 import logging
 import threading
 import time
+from datetime import datetime
 from typing import Optional
 
 import comtypes
@@ -63,14 +64,23 @@ class PowerMonitor:
             elif wparam == win32con.PBT_APMRESUMEAUTOMATIC:
                 if self.on_resume:
                     self.on_resume()
+        elif msg == win32con.WM_CLOSE:
+            win32gui.DestroyWindow(hwnd)
+            return 0
+        elif msg == win32con.WM_DESTROY:
+            win32gui.PostQuitMessage(0)
+            return 0
         return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
     def stop(self):
         if self.hwnd:
             try:
-                win32gui.PostMessage(self.hwnd, win32con.WM_QUIT, 0, 0)
+                win32gui.PostMessage(self.hwnd, win32con.WM_CLOSE, 0, 0)
             except Exception:
                 pass
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        self.hwnd = None
 
 
 
@@ -103,11 +113,13 @@ class AppController:
         self.on_connection_changed: Optional[callable] = None
 
         # Power monitor
-        self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
+        self._power_monitor: Optional[PowerMonitor] = None
 
     def start(self):
         """Start serial reader and periodic sync."""
         log.info("AppController starting...")
+        if self._power_monitor is None:
+            self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
         self._running = True
         self.serial.start()
 
@@ -117,7 +129,9 @@ class AppController:
     def stop(self):
         """Stop everything."""
         log.info("AppController stopping...")
-        self._power_monitor.stop()
+        if self._power_monitor is not None:
+            self._power_monitor.stop()
+            self._power_monitor = None
         self._running = False
         self.serial.stop()
         if self._sync_thread:
@@ -174,6 +188,11 @@ class AppController:
         # Send settings
         self.serial.send_settings(self.config.device_settings)
         time.sleep(0.1)
+
+        # Send current time
+        now = datetime.now()
+        self.serial.send_time_sync(now.hour, now.minute, now.second)
+        time.sleep(0.05)
 
         # Refresh audio and push initial state
         comtypes.CoInitialize()
@@ -238,12 +257,13 @@ class AppController:
         if session_idx == SessionIndex.INDEX_CURRENT:
             win_idx = self._session_info.current
         elif session_idx == SessionIndex.INDEX_ALTERNATE:
-            # In GAME mode, alternate might differ
-            win_idx = self._session_info.current
+            if mode != DisplayMode.MODE_GAME:
+                return
+            win_idx = self._find_audio_item_index(items, self._sessions[SessionIndex.INDEX_ALTERNATE])
         else:
             return
 
-        if 0 <= win_idx < len(items):
+        if win_idx is not None and 0 <= win_idx < len(items):
             self.audio.set_volume(mode, win_idx, vol.volume, vol.is_muted)
             log.info(f"Applied vol={vol.volume}% muted={vol.is_muted} to {items[win_idx].name}")
             
@@ -252,6 +272,19 @@ class AppController:
                 self.audio.set_default_device(mode, win_idx)
                 # Re-push sessions so the UI/hardware updates with the new default flags
                 self._handle_session_info_from_hw(self._session_info)
+
+    def _find_audio_item_index(self, items, session: SessionData) -> Optional[int]:
+        """Find the Windows audio item represented by a firmware session snapshot."""
+        target_id = session.data.id
+        target_name = session.name
+        for i, item in enumerate(items):
+            item_session = item.to_session_data()
+            if item_session.data.id == target_id and item_session.name == target_name:
+                return i
+        for i, item in enumerate(items):
+            if item.to_session_data().data.id == target_id:
+                return i
+        return None
 
     # ─── Push State to Hardware ────────────────────────────────────────
     def _push_full_state(self, mode: int):
@@ -336,6 +369,7 @@ class AppController:
         interval = self.config.update_interval_ms / 1000.0
         last_heartbeat = time.monotonic()
         last_full_refresh = time.monotonic()
+        last_time_sync = time.monotonic()
 
         while self._running:
             time.sleep(interval)
@@ -349,6 +383,12 @@ class AppController:
             if now - last_heartbeat >= 2.0:
                 self.serial.send_command(Command.OK)
                 last_heartbeat = now
+
+            # Send time sync every 30 seconds
+            if now - last_time_sync >= 30.0:
+                dt = datetime.now()
+                self.serial.send_time_sync(dt.hour, dt.minute, dt.second)
+                last_time_sync = now
 
             if self._session_info.mode == DisplayMode.MODE_SPLASH:
                 continue

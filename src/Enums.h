@@ -18,7 +18,8 @@ enum class Command : int8_t
     VOLUME_NEXT_CHANGE,
     MODE_STATES,
     DEBUG,
-    SLEEP
+    SLEEP,
+    TIME_SYNC
 };
 
 enum SessionIndex : uint8_t

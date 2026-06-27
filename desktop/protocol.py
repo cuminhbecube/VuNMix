@@ -33,6 +33,7 @@ class Command(IntEnum):
     MODE_STATES        = 13
     DEBUG              = 14
     SLEEP              = 15
+    TIME_SYNC          = 16
 
 
 class SessionIndex(IntEnum):
@@ -222,6 +223,7 @@ class DeviceSettings:
     mix_channel_a_color: Color = field(default_factory=lambda: Color(0, 0, 255))
     mix_channel_b_color: Color = field(default_factory=lambda: Color(255, 0, 255))
     led_brightness: int = 96
+    clock_standby_minutes: int = 10  # 0=disabled
 
     def pack(self) -> bytes:
         byte2 = (self.acceleration_percentage & 0x7F) | (0x80 if self.continuous_scroll else 0)
@@ -232,7 +234,7 @@ class DeviceSettings:
                self.volume_max_color.pack() + \
                self.mix_channel_a_color.pack() + \
                self.mix_channel_b_color.pack() + \
-               struct.pack('<B', self.led_brightness)
+               struct.pack('<BB', self.led_brightness, self.clock_standby_minutes)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'DeviceSettings':
@@ -248,6 +250,7 @@ class DeviceSettings:
             mix_channel_a_color=Color.unpack(data[11:14]),
             mix_channel_b_color=Color.unpack(data[14:17]),
             led_brightness=struct.unpack('<B', data[17:18])[0] if len(data) >= 18 else 96,
+            clock_standby_minutes=struct.unpack('<B', data[18:19])[0] if len(data) >= 19 else 10,
         )
 
     @classmethod
@@ -263,6 +266,7 @@ class DeviceSettings:
             mix_channel_a_color=Color.from_list(cfg.get('mix_channel_a_color', [0, 0, 255])),
             mix_channel_b_color=Color.from_list(cfg.get('mix_channel_b_color', [255, 0, 255])),
             led_brightness=cfg.get('led_brightness', 96),
+            clock_standby_minutes=cfg.get('clock_standby_minutes', 10),
         )
 
 
@@ -288,7 +292,7 @@ class ModeStates:
 COMMAND_PAYLOAD_SIZE = {
     Command.TEST:               0,   # followed by version string + newline
     Command.OK:                 0,
-    Command.SETTINGS:           18,
+    Command.SETTINGS:           19,
     Command.SESSION_INFO:       5,
     Command.CURRENT_SESSION:    32,
     Command.ALTERNATE_SESSION:  32,
@@ -300,6 +304,7 @@ COMMAND_PAYLOAD_SIZE = {
     Command.VOLUME_NEXT_CHANGE: 2,
     Command.MODE_STATES:        5,
     Command.SLEEP:              0,
+    Command.TIME_SYNC:          3,
 }
 
 # Commands that represent session data (index = cmd - CURRENT_SESSION)

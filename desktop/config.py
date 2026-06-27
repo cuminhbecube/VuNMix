@@ -28,6 +28,7 @@ _DEFAULT_CONFIG = {
         "mix_channel_a_color": [0, 0, 255],
         "mix_channel_b_color": [255, 0, 255],
         "led_brightness": 96,
+        "clock_standby_minutes": 10,
     }
 }
 
@@ -47,8 +48,14 @@ class AppConfig:
             cfg.save(path)
             return cfg
 
-        with open(path, 'r') as f:
-            data = json.load(f)
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Warning: Configuration file {path} is empty or corrupted. Using defaults.")
+            cfg = cls()
+            cfg.save(path)
+            return cfg
 
         settings_dict = data.get('settings', _DEFAULT_CONFIG['settings'])
         return cls(
@@ -75,6 +82,7 @@ class AppConfig:
                 "mix_channel_a_color": self.device_settings.mix_channel_a_color.to_list(),
                 "mix_channel_b_color": self.device_settings.mix_channel_b_color.to_list(),
                 "led_brightness": self.device_settings.led_brightness,
+                "clock_standby_minutes": self.device_settings.clock_standby_minutes,
             }
         }
         with open(path, 'w') as f:

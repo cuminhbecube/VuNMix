@@ -3,6 +3,8 @@
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 
+LV_FONT_DECLARE(lv_font_dseg_90_bpp1);
+
 extern DeviceSettings g_Settings;
 
 namespace Display {
@@ -110,7 +112,7 @@ namespace Display {
     // Screen Tracking
     // =========================================================
     enum class ScreenType {
-        NONE, SPLASH, KEY_TEST, INFO, DEVICE_SELECT, DEVICE_EDIT, GAME_SELECT, GAME_EDIT
+        NONE, SPLASH, KEY_TEST, INFO, CLOCK, DEVICE_SELECT, DEVICE_EDIT, GAME_SELECT, GAME_EDIT
     };
 
     static ScreenType s_currentScreen = ScreenType::NONE;
@@ -145,6 +147,14 @@ namespace Display {
     // Splash Keypad Test
     static lv_obj_t* s_keyGrid = nullptr;
     static lv_obj_t* s_keyBoxes[6] = {nullptr};
+
+    // Clock Standby
+    static lv_obj_t* s_clockHM     = nullptr;
+    static lv_obj_t* s_clockColon  = nullptr;
+    static lv_obj_t* s_clockSec    = nullptr;
+    static lv_obj_t* s_clockBrand  = nullptr;
+    static lv_obj_t* s_clockPanel  = nullptr;
+    static uint8_t   s_lastClockSec = 255;
 
     // =========================================================
     // Helpers
@@ -376,6 +386,11 @@ namespace Display {
         s_splashDots = nullptr;
         s_keyGrid = nullptr;
         for (int i=0; i<6; i++) s_keyBoxes[i] = nullptr;
+        s_clockHM = nullptr;
+        s_clockColon = nullptr;
+        s_clockSec = nullptr;
+        s_clockBrand = nullptr;
+        s_clockPanel = nullptr;
     }
 
     // =========================================================
@@ -526,11 +541,81 @@ namespace Display {
     }
 
     // =========================================================
+    // CLOCK STANDBY SCREEN (Digital Clock)
+    // =========================================================
+
+    void ClockScreen(uint8_t hour, uint8_t minute, uint8_t second) {
+        if (s_currentScreen != ScreenType::CLOCK) {
+            FullReset();
+            s_currentScreen = ScreenType::CLOCK;
+            s_clockHM = nullptr;
+            s_clockColon = nullptr;
+            s_clockSec = nullptr;
+            s_clockBrand = nullptr;
+            s_clockPanel = nullptr;
+            s_lastClockSec = 255;
+        }
+
+        if (!s_clockHM) {
+            // --- Fullscreen dark background ---
+            lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x000000), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, LV_PART_MAIN);
+
+            // Container for absolute positioning
+            s_clockPanel = lv_obj_create(lv_scr_act());
+            lv_obj_set_size(s_clockPanel, 320, 100);
+            lv_obj_center(s_clockPanel);
+            lv_obj_set_style_bg_opa(s_clockPanel, LV_OPA_TRANSP, LV_PART_MAIN);
+            lv_obj_set_style_border_width(s_clockPanel, 0, LV_PART_MAIN);
+            lv_obj_set_style_pad_all(s_clockPanel, 0, LV_PART_MAIN);
+            lv_obj_clear_flag(s_clockPanel, LV_OBJ_FLAG_SCROLLABLE);
+
+            // --- Hours ---
+            s_clockHM = lv_label_create(s_clockPanel);
+            lv_obj_set_style_text_font(s_clockHM, &lv_font_dseg_90_bpp1, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_clockHM, lv_color_hex(COL_CYAN), LV_PART_MAIN);
+            lv_obj_align(s_clockHM, LV_ALIGN_CENTER, -85, 0);
+
+            // --- Colon ---
+            s_clockColon = lv_label_create(s_clockPanel);
+            lv_obj_set_style_text_font(s_clockColon, &lv_font_dseg_90_bpp1, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_clockColon, lv_color_hex(COL_CYAN), LV_PART_MAIN);
+            lv_label_set_text(s_clockColon, ":");
+            lv_obj_align(s_clockColon, LV_ALIGN_CENTER, 0, -5);
+
+            // --- Minutes ---
+            s_clockSec = lv_label_create(s_clockPanel);
+            lv_obj_set_style_text_font(s_clockSec, &lv_font_dseg_90_bpp1, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_clockSec, lv_color_hex(COL_CYAN), LV_PART_MAIN);
+            lv_obj_align(s_clockSec, LV_ALIGN_CENTER, 85, 0);
+        }
+
+        // --- Update time text ---
+        if (second != s_lastClockSec) {
+            s_lastClockSec = second;
+            
+            char bufH[4];
+            snprintf(bufH, sizeof(bufH), "%02d", hour);
+            lv_label_set_text(s_clockHM, bufH);
+            
+            char bufM[4];
+            snprintf(bufM, sizeof(bufM), "%02d", minute);
+            lv_label_set_text(s_clockSec, bufM);
+            
+            if (second % 2 == 0) {
+                lv_obj_clear_flag(s_clockColon, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(s_clockColon, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+
+    // =========================================================
     // DEVICE SELECT SCREEN (Output/Input Navigate)
     // =========================================================
     void DeviceSelectScreen(SessionData* session, bool canScrollLeft, bool canScrollRight, DisplayMode mode) {
         // Ensure shell is built
-        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO) {
+        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO || s_currentScreen == ScreenType::CLOCK) {
             FullReset();
             s_shellBuilt = false;
         }
@@ -665,7 +750,7 @@ namespace Display {
     // DEVICE EDIT SCREEN (Output/Input Edit)
     // =========================================================
     void DeviceEditScreen(SessionData* session, const char* typeLabel, DisplayMode mode) {
-        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO) {
+        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO || s_currentScreen == ScreenType::CLOCK) {
             FullReset();
             s_shellBuilt = false;
         }
@@ -776,7 +861,7 @@ namespace Display {
     // GAME SELECT SCREEN
     // =========================================================
     void GameSelectScreen(SessionData* session, char channel, bool canScrollLeft, bool canScrollRight, DisplayMode mode) {
-        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO) {
+        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO || s_currentScreen == ScreenType::CLOCK) {
             FullReset();
             s_shellBuilt = false;
         }
@@ -914,7 +999,7 @@ namespace Display {
     }
 
     void GameEditScreen(SessionData* altSession, SessionData* curSession, DisplayMode mode) {
-        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO) {
+        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH || s_currentScreen == ScreenType::INFO || s_currentScreen == ScreenType::CLOCK) {
             FullReset();
             s_shellBuilt = false;
         }

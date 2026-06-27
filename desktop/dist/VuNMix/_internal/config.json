@@ -5,7 +5,7 @@
     "settings": {
         "sleep_after_seconds": 5,
         "sleep_enabled": false,
-        "standby_led_mode": 0,
+        "standby_led_mode": 1,
         "acceleration_percentage": 60,
         "continuous_scroll": true,
         "volume_min_color": [
@@ -28,6 +28,7 @@
             0,
             255
         ],
-        "led_brightness": 96
+        "led_brightness": 96,
+        "clock_standby_minutes": 1
     }
 }

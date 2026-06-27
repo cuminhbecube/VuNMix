@@ -133,6 +133,11 @@ class SerialService:
     def send_mode_states(self, states: ModeStates) -> bool:
         return self.send_command(Command.MODE_STATES, states.pack())
 
+    def send_time_sync(self, hour: int, minute: int, second: int) -> bool:
+        """Send current time to hardware (3 bytes: hour, minute, second)."""
+        payload = struct.pack('<BBB', hour, minute, second)
+        return self.send_command(Command.TIME_SYNC, payload)
+
     def _read_loop(self):
         """Background thread: read commands from hardware."""
         reconnect_delay = 1.0

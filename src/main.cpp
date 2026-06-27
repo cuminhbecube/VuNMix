@@ -28,6 +28,13 @@ uint32_t g_LastActivity;
 uint32_t g_NextPixelUpdate;
 uint32_t g_LastSteps;
 
+// Clock Standby
+TimeData g_TimeData;
+uint32_t g_TimeSyncMillis = 0;
+bool g_TimeValid = false;
+bool g_ClockMode = false;
+uint32_t g_LastVolumeActivity = 0; // tracks last audio/volume change
+
 // Lighting
 Adafruit_NeoPixel g_Pixels(PIXELS_COUNT, PIN_PIXELS, NEO_GRB + NEO_KHZ800);
 
@@ -38,8 +45,10 @@ uint8_t GetIndexForMode(DisplayMode mode);
 bool ProcessEncoderRotation();
 bool ProcessEncoderButton();
 bool ProcessSleep();
+bool ProcessClockStandby();
 bool ProcessDisplayScroll();
 void UpdateDisplay();
+void GetCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s);
 void UpdateLighting();
 void LightingStandby();
 void LightingColorWave();
@@ -104,6 +113,7 @@ void setup()
     delay(50); // Let NeoPixel latch
 
     g_LastActivity = millis();
+    g_LastVolumeActivity = millis();
     g_Now = millis();
     
     Serial.println("--- SETUP COMPLETE ---");
@@ -152,6 +162,7 @@ void loop()
         command == Command::VOLUME_CURR_CHANGE || command == Command::VOLUME_ALT_CHANGE)
     {
         g_LastActivity = g_Now;
+        g_LastVolumeActivity = g_Now; // Track audio changes for clock standby
         g_DisplayDirty = true;
     }
 
@@ -161,16 +172,23 @@ void loop()
     if (ProcessEncoderRotation())
     {
         g_LastActivity = g_Now;
+        g_LastVolumeActivity = g_Now;
         g_DisplayDirty = true;
     }
 
     if (ProcessEncoderButton())
     {
         g_LastActivity = g_Now;
+        g_LastVolumeActivity = g_Now;
         g_DisplayDirty = true;
     }
 
     if (ProcessSleep())
+    {
+        g_DisplayDirty = true;
+    }
+
+    if (ProcessClockStandby())
     {
         g_DisplayDirty = true;
     }
@@ -214,7 +232,9 @@ void ResetState()
     g_Now = millis();
     g_HeartbeatTimeout = 0;
     g_LastActivity = g_Now;
+    g_LastVolumeActivity = g_Now;
     g_NextPixelUpdate = 0;
+    g_ClockMode = false;
     g_LastSteps = 0;
 }
 
@@ -421,6 +441,77 @@ bool ProcessSleep()
     return lastState != g_DisplayAsleep;
 }
 
+bool ProcessClockStandby()
+{
+    // Clock standby disabled if clockStandbyMinutes == 0 or no time synced
+    if (g_Settings.clockStandbyMinutes == 0 || !g_TimeValid)
+    {
+        if (g_ClockMode) {
+            g_ClockMode = false;
+            return true;
+        }
+        return false;
+    }
+
+    // Don't show clock in splash mode
+    if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
+    {
+        if (g_ClockMode) {
+            g_ClockMode = false;
+            return true;
+        }
+        return false;
+    }
+
+    bool lastState = g_ClockMode;
+    uint32_t volumeTimeDelta = g_Now - g_LastVolumeActivity;
+    uint32_t clockTimeoutMs = (uint32_t)g_Settings.clockStandbyMinutes * 60UL * 1000UL;
+
+    if (volumeTimeDelta > clockTimeoutMs)
+        g_ClockMode = true;
+    else
+        g_ClockMode = false;
+
+    bool stateChanged = (lastState != g_ClockMode);
+
+    if (g_ClockMode) {
+        static uint8_t lastSec = 255;
+        uint8_t h, m, s;
+        GetCurrentTime(h, m, s);
+        if (s != lastSec) {
+            lastSec = s;
+            return true; // Force UI update every second for the clock
+        }
+    }
+
+    return stateChanged;
+}
+
+void GetCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s)
+{
+    if (!g_TimeValid) {
+        h = 0; m = 0; s = 0;
+        return;
+    }
+
+    // Calculate elapsed seconds since last sync
+    uint32_t elapsedMs = g_Now - g_TimeSyncMillis;
+    uint32_t elapsedSec = elapsedMs / 1000;
+
+    // Build total seconds from sync time + elapsed
+    uint32_t totalSec = (uint32_t)g_TimeData.hour * 3600UL
+                      + (uint32_t)g_TimeData.minute * 60UL
+                      + (uint32_t)g_TimeData.second
+                      + elapsedSec;
+
+    // Wrap at 24 hours
+    totalSec %= 86400UL;
+
+    h = totalSec / 3600;
+    m = (totalSec % 3600) / 60;
+    s = totalSec % 60;
+}
+
 bool ProcessDisplayScroll()
 {
     return false; // Scrolling disabled for simple TFT UI
@@ -428,6 +519,15 @@ bool ProcessDisplayScroll()
 
 void UpdateDisplay()
 {
+    // Clock standby mode — show fullscreen digital clock
+    if (g_ClockMode && g_TimeValid)
+    {
+        uint8_t h, m, s;
+        GetCurrentTime(h, m, s);
+        Display::ClockScreen(h, m, s);
+        return;
+    }
+
     if (g_DisplayAsleep)
     {
         Display::Sleep();

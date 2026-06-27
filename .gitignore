@@ -7,3 +7,8 @@
 .vscode/ipch
 compile_commands.json
 maxmix-software/
+desktop/build/
+desktop/dist/
+desktop/dist_v*/
+desktop/__pycache__/
+desktop/*.pyc

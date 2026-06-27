@@ -47,24 +47,36 @@ struct __attribute__((__packed__)) Color
 }; // 24 bits - 3 bytes
 static_assert(sizeof(Color) == 3, "Invalid Expected Message Size");
 
+struct __attribute__((__packed__)) TimeData
+{
+    uint8_t hour;    // 0-23
+    uint8_t minute;  // 0-59
+    uint8_t second;  // 0-59
+
+    TimeData() : hour(0), minute(0), second(0) {}
+};
+static_assert(sizeof(TimeData) == 3, "Invalid Expected Message Size");
+
 struct __attribute__((__packed__)) DeviceSettings
 {
     uint16_t sleepAfterSeconds;         // 16 Bits
     uint8_t accelerationPercentage : 7; // 7 Bits
     bool continuousScroll : 1;          // 1 Bit
     bool sleepEnabled;                  // 8 Bits (bool)
-    uint8_t standbyLedMode;             // 8 Bits (0=ColorWave,1=Rainbow,2=Meteor,3=Twinkle,4=Breathe,5=Confetti,6=Off)
+    uint8_t standbyLedMode;             // 8 Bits (0=ColorWave,1=Rainbow,...,15=Off)
     Color volumeMinColor;               // 24 Bits
     Color volumeMaxColor;               // 24 Bits
     Color mixChannelAColor;             // 24 Bits
     Color mixChannelBColor;             // 24 Bits
     uint8_t ledBrightness;              // 8 Bits
-    // 18 bytes
+    uint8_t clockStandbyMinutes;        // 8 Bits (0=disabled, default=10)
+    // 19 bytes
 
     DeviceSettings() : sleepAfterSeconds(300), accelerationPercentage(60), continuousScroll(true), sleepEnabled(true), standbyLedMode(0),
-                 volumeMinColor(0, 0, 255), volumeMaxColor(255, 0, 0), mixChannelAColor(0, 0, 255), mixChannelBColor(255, 0, 255), ledBrightness(96) {}
+                 volumeMinColor(0, 0, 255), volumeMaxColor(255, 0, 0), mixChannelAColor(0, 0, 255), mixChannelBColor(255, 0, 255),
+                 ledBrightness(96), clockStandbyMinutes(10) {}
 };
-static_assert(sizeof(DeviceSettings) == 18, "Invalid Expected Message Size");
+static_assert(sizeof(DeviceSettings) == 19, "Invalid Expected Message Size");
 
 struct __attribute__((__packed__)) ModeStates
 {

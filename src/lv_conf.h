@@ -21,7 +21,7 @@
    MEMORY SETTINGS
  *====================*/
 #define LV_MEM_CUSTOM 0
-#define LV_MEM_SIZE   (24U * 1024U)   /* 24 KB internal heap */
+#define LV_MEM_SIZE   (64U * 1024U)   /* 64 KB internal heap */
 #define LV_MEM_ADR    0
 #define LV_MEM_POOL_INCLUDE <stdlib.h>
 #define LV_MEM_POOL_ALLOC   malloc

@@ -8,6 +8,7 @@ namespace Display {
     void SplashScreen();
     void KeyTestScreen();
     void InfoScreen();
+    void ClockScreen(uint8_t hour, uint8_t minute, uint8_t second);
     
     void DeviceSelectScreen(SessionData* session, bool canScrollLeft, bool canScrollRight, DisplayMode mode);
     void DeviceEditScreen(SessionData* session, const char* label, DisplayMode mode);

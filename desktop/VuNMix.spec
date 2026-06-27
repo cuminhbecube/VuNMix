@@ -5,7 +5,7 @@ a = Analysis(
     ['vunmix.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
+    datas=[('assets', 'assets'), ('config.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

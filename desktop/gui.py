@@ -113,7 +113,7 @@ class SettingsDialog:
         self._window.overrideredirect(True)
         
         window_width = 320
-        window_height = 425
+        window_height = 461
         screen_width = self._window.winfo_screenwidth()
         screen_height = self._window.winfo_screenheight()
         x = screen_width - window_width - 15
@@ -205,6 +205,10 @@ class SettingsDialog:
         self._sleep_var = tk.StringVar(value=str(self.config.device_settings.sleep_after_seconds))
         add_row(content, "Sleep Timeout (s)", lambda r: ctk.CTkEntry(r, textvariable=self._sleep_var, width=55, height=24))
 
+        # Clock Standby Timeout (minutes, 0=disabled, default=10)
+        self._clock_standby_var = tk.StringVar(value=str(self.config.device_settings.clock_standby_minutes))
+        add_row(content, "Clock Standby (min)", lambda r: ctk.CTkEntry(r, textvariable=self._clock_standby_var, width=55, height=24))
+
         # Continuous Scroll
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
         add_row(content, "Continuous Scroll", lambda r: ctk.CTkSwitch(r, text="", variable=self._scroll_var, switch_width=36, switch_height=18))
@@ -270,6 +274,7 @@ class SettingsDialog:
             self.config.run_on_startup = self._startup_var.get()
             self.config.device_settings.sleep_after_seconds = int(self._sleep_var.get())
             self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
+            self.config.device_settings.clock_standby_minutes = max(0, min(255, int(self._clock_standby_var.get())))
             from protocol import STANDBY_LED_NAMES
             led_name = self._led_mode_var.get()
             self.config.device_settings.standby_led_mode = STANDBY_LED_NAMES.index(led_name) if led_name in STANDBY_LED_NAMES else 0

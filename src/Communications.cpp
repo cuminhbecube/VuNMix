@@ -8,6 +8,9 @@ extern ModeStates g_ModeStates;
 extern uint32_t g_HeartbeatTimeout;
 extern uint32_t g_Now;
 extern uint32_t g_LastSteps;
+extern TimeData g_TimeData;
+extern uint32_t g_TimeSyncMillis;
+extern bool g_TimeValid;
 
 //#define TEST_HARNESS
 
@@ -37,6 +40,10 @@ namespace Communications
         return cmd;
     }
 
+    static bool ReadPayload(void *dest, size_t len) {
+        return Serial.readBytes(reinterpret_cast<char *>(dest), len) == len;
+    }
+
     void Initialize(void)
     {
         // Serial.begin() is already called in setup() for USB CDC.
@@ -57,25 +64,62 @@ namespace Communications
             if (command == Command::TEST)
                 WriteImmediate(command);
             else if (command == Command::SETTINGS)
-                Serial.readBytes((char *)&g_Settings, sizeof(DeviceSettings));
+            {
+                DeviceSettings temp;
+                if (ReadPayload(&temp, sizeof(DeviceSettings)))
+                    g_Settings = temp;
+                else
+                    command = Command::ERROR;
+            }
             else if (command == Command::SESSION_INFO)
-                Serial.readBytes((char *)&g_SessionInfo, sizeof(SessionInfo));
+            {
+                SessionInfo temp;
+                if (ReadPayload(&temp, sizeof(SessionInfo)))
+                    g_SessionInfo = temp;
+                else
+                    command = Command::ERROR;
+            }
             else if (command >= Command::CURRENT_SESSION && command <= Command::NEXT_SESSION)
-                Serial.readBytes((char *)&g_Sessions[(int8_t)command - (int8_t)Command::CURRENT_SESSION], sizeof(SessionData));
+            {
+                SessionData temp;
+                if (ReadPayload(&temp, sizeof(SessionData)))
+                    g_Sessions[(int8_t)command - (int8_t)Command::CURRENT_SESSION] = temp;
+                else
+                    command = Command::ERROR;
+            }
             else if (command >= Command::VOLUME_CURR_CHANGE && command <= Command::VOLUME_NEXT_CHANGE)
             {
                 VolumeData temp;
-                Serial.readBytes((char *)&temp, sizeof(VolumeData));
-                
-                // Anti-echo debounce: if the user turned the knob locally within the last 500ms,
-                // ignore volume updates from the PC to prevent the volume from bouncing back and forth.
-                // This prevents the PC's audio event loop from overwriting our local changes with stale values.
-                if (g_Now - g_LastSteps > 500) {
-                    g_Sessions[(int8_t)command - (int8_t)Command::VOLUME_CURR_CHANGE].data = temp;
+                if (ReadPayload(&temp, sizeof(VolumeData))) {
+                    // Anti-echo debounce: if the user turned the knob locally within the last 500ms,
+                    // ignore volume updates from the PC to prevent the volume from bouncing back and forth.
+                    // This prevents the PC's audio event loop from overwriting our local changes with stale values.
+                    if (g_Now - g_LastSteps > 500) {
+                        g_Sessions[(int8_t)command - (int8_t)Command::VOLUME_CURR_CHANGE].data = temp;
+                    }
+                } else {
+                    command = Command::ERROR;
                 }
             }
             else if (command == Command::MODE_STATES)
-                Serial.readBytes((char *)&g_ModeStates, sizeof(ModeStates));
+            {
+                ModeStates temp;
+                if (ReadPayload(&temp, sizeof(ModeStates)))
+                    g_ModeStates = temp;
+                else
+                    command = Command::ERROR;
+            }
+            else if (command == Command::TIME_SYNC)
+            {
+                TimeData temp;
+                if (ReadPayload(&temp, sizeof(TimeData))) {
+                    g_TimeData = temp;
+                    g_TimeSyncMillis = g_Now;
+                    g_TimeValid = true;
+                } else {
+                    command = Command::ERROR;
+                }
+            }
 #ifdef TEST_HARNESS
             else if (command == Command::DEBUG)
             {
@@ -91,8 +135,9 @@ namespace Communications
                 WriteImmediate(Command::VOLUME_NEXT_CHANGE);
             }
 #endif
-            // Always reply OK so the desktop app knows we're ready
-            WriteImmediate(Command::OK);
+            // Reply OK only after a complete command payload was consumed.
+            if (command != Command::ERROR)
+                WriteImmediate(Command::OK);
         }
         return command;
     }
