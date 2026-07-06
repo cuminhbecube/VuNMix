@@ -6,10 +6,9 @@ Bitfield packing follows GCC __attribute__((__packed__)) behavior.
 """
 
 import struct
-import unicodedata
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional
+from typing import List, Tuple
 
 
 
@@ -34,6 +33,7 @@ class Command(IntEnum):
     DEBUG              = 14
     SLEEP              = 15
     TIME_SYNC          = 16
+    METER_LEVEL        = 17
 
 
 class SessionIndex(IntEnum):
@@ -90,6 +90,81 @@ STANDBY_LED_NAMES = [
     "Off",
 ]
 
+# Binary frame:
+#   magic[2] | command[1] | payload_length[1] | payload | crc16[2]
+# CRC-16/CCITT-FALSE covers command, payload_length and payload.
+FRAME_MAGIC = b'\xA5\x5A'
+MAX_FRAME_PAYLOAD = 64
+
+
+def crc16_ccitt(data: bytes, initial: int = 0xFFFF) -> int:
+    crc = initial
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def encode_frame(cmd: Command, payload: bytes = b'') -> bytes:
+    if len(payload) > MAX_FRAME_PAYLOAD:
+        raise ValueError(f"Payload too large: {len(payload)} > {MAX_FRAME_PAYLOAD}")
+    body = bytes([int(cmd) & 0xFF, len(payload)]) + payload
+    return FRAME_MAGIC + body + struct.pack('<H', crc16_ccitt(body))
+
+
+class FrameParser:
+    """Incremental parser that discards noise and resumes at the next valid frame."""
+
+    def __init__(self):
+        self._buffer = bytearray()
+
+    def reset(self):
+        self._buffer.clear()
+
+    def feed(self, data: bytes) -> List[Tuple[Command, bytes]]:
+        if data:
+            self._buffer.extend(data)
+        frames: List[Tuple[Command, bytes]] = []
+
+        while True:
+            magic_at = self._buffer.find(FRAME_MAGIC)
+            if magic_at < 0:
+                # Retain a possible first magic byte split across reads.
+                self._buffer[:] = self._buffer[-1:] if self._buffer.endswith(FRAME_MAGIC[:1]) else b''
+                break
+            if magic_at:
+                del self._buffer[:magic_at]
+            if len(self._buffer) < 6:
+                break
+
+            payload_len = self._buffer[3]
+            if payload_len > MAX_FRAME_PAYLOAD:
+                del self._buffer[0]
+                continue
+
+            frame_len = 2 + 2 + payload_len + 2
+            if len(self._buffer) < frame_len:
+                break
+
+            body = bytes(self._buffer[2:4 + payload_len])
+            expected_crc = struct.unpack('<H', self._buffer[4 + payload_len:frame_len])[0]
+            if crc16_ccitt(body) != expected_crc:
+                del self._buffer[0]
+                continue
+
+            raw_cmd = body[0]
+            try:
+                cmd = Command(raw_cmd if raw_cmd < 128 else raw_cmd - 256)
+            except ValueError:
+                del self._buffer[:frame_len]
+                continue
+
+            frames.append((cmd, body[2:]))
+            del self._buffer[:frame_len]
+
+        return frames
+
 # ─── Data Structures ───────────────────────────────────────────────────────
 @dataclass
 class Color:
@@ -99,7 +174,9 @@ class Color:
     b: int = 0
 
     def pack(self) -> bytes:
-        return struct.pack('<BBB', self.r, self.g, self.b)
+        return struct.pack('<BBB', _clamp_int(self.r, 0, 255),
+                           _clamp_int(self.g, 0, 255),
+                           _clamp_int(self.b, 0, 255))
 
     @classmethod
     def unpack(cls, data: bytes) -> 'Color':
@@ -111,7 +188,11 @@ class Color:
 
     @classmethod
     def from_list(cls, lst: list) -> 'Color':
-        return cls(r=lst[0], g=lst[1], b=lst[2])
+        if not isinstance(lst, (list, tuple)) or len(lst) < 3:
+            raise ValueError("Color must contain three RGB values")
+        return cls(r=_clamp_int(lst[0], 0, 255),
+                   g=_clamp_int(lst[1], 0, 255),
+                   b=_clamp_int(lst[2], 0, 255))
 
 
 @dataclass
@@ -127,8 +208,8 @@ class VolumeData:
     is_muted: bool = False
 
     def pack(self) -> bytes:
-        byte0 = (self.id & 0x7F) | (0x80 if self.is_default else 0)
-        byte1 = (self.volume & 0x7F) | (0x80 if self.is_muted else 0)
+        byte0 = (_clamp_int(self.id, 0, 127) & 0x7F) | (0x80 if self.is_default else 0)
+        byte1 = (_clamp_int(self.volume, 0, 100) & 0x7F) | (0x80 if self.is_muted else 0)
         return bytes([byte0, byte1])
 
     @classmethod
@@ -143,6 +224,26 @@ class VolumeData:
 
 
 @dataclass
+class MeterData:
+    """Live peak levels for the current and alternate mixer channels."""
+    current: int = 0
+    alternate: int = 0
+
+    def pack(self) -> bytes:
+        return bytes([
+            _clamp_int(self.current, 0, 100),
+            _clamp_int(self.alternate, 0, 100),
+        ])
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'MeterData':
+        return cls(
+            current=min(data[0], 100),
+            alternate=min(data[1], 100),
+        )
+
+
+@dataclass
 class SessionData:
     """
     32 bytes total:
@@ -153,7 +254,7 @@ class SessionData:
     data: VolumeData = field(default_factory=VolumeData)
 
     def pack(self) -> bytes:
-        name_bytes = self.name.encode('utf-8', errors='replace')[:29]
+        name_bytes = _truncate_utf8(str(self.name), 29)
         name_bytes = name_bytes.ljust(30, b'\x00')
         return name_bytes + self.data.pack()
 
@@ -183,12 +284,14 @@ class SessionInfo:
     sessions: list = field(default_factory=lambda: [0, 0, 0])
 
     def pack(self) -> bytes:
+        sessions = list(self.sessions[:3])
+        sessions.extend([0] * (3 - len(sessions)))
         return bytes([
-            self.mode,
-            self.current,
-            self.sessions[0],
-            self.sessions[1],
-            self.sessions[2],
+            _clamp_int(self.mode, 0, int(DisplayMode.MODE_MAX) - 1),
+            _clamp_int(self.current, 0, 255),
+            _clamp_int(sessions[0], 0, 255),
+            _clamp_int(sessions[1], 0, 255),
+            _clamp_int(sessions[2], 0, 255),
         ])
 
     @classmethod
@@ -202,7 +305,7 @@ class SessionInfo:
 @dataclass
 class DeviceSettings:
     """
-    18 bytes:
+    19 bytes:
       sleepAfterSeconds:      uint16
       accelerationPercentage: 7 bits | continuousScroll: 1 bit (MSB)
       sleepEnabled:           uint8 (bool)
@@ -226,15 +329,18 @@ class DeviceSettings:
     clock_standby_minutes: int = 10  # 0=disabled
 
     def pack(self) -> bytes:
-        byte2 = (self.acceleration_percentage & 0x7F) | (0x80 if self.continuous_scroll else 0)
+        sleep_seconds = _clamp_int(self.sleep_after_seconds, 0, 65535)
+        acceleration = _clamp_int(self.acceleration_percentage, 0, 100)
+        byte2 = (acceleration & 0x7F) | (0x80 if self.continuous_scroll else 0)
         byte3 = 1 if self.sleep_enabled else 0
-        byte4 = self.standby_led_mode & 0xFF
-        return struct.pack('<HBBB', self.sleep_after_seconds, byte2, byte3, byte4) + \
+        byte4 = _clamp_int(self.standby_led_mode, 0, len(STANDBY_LED_NAMES) - 1)
+        return struct.pack('<HBBB', sleep_seconds, byte2, byte3, byte4) + \
                self.volume_min_color.pack() + \
                self.volume_max_color.pack() + \
                self.mix_channel_a_color.pack() + \
                self.mix_channel_b_color.pack() + \
-               struct.pack('<BB', self.led_brightness, self.clock_standby_minutes)
+               struct.pack('<BB', _clamp_int(self.led_brightness, 0, 255),
+                           _clamp_int(self.clock_standby_minutes, 0, 255))
 
     @classmethod
     def unpack(cls, data: bytes) -> 'DeviceSettings':
@@ -256,17 +362,17 @@ class DeviceSettings:
     @classmethod
     def from_config(cls, cfg: dict) -> 'DeviceSettings':
         return cls(
-            sleep_after_seconds=cfg.get('sleep_after_seconds', 300),
-            acceleration_percentage=cfg.get('acceleration_percentage', 60),
+            sleep_after_seconds=_clamp_int(cfg.get('sleep_after_seconds', 300), 0, 65535),
+            acceleration_percentage=_clamp_int(cfg.get('acceleration_percentage', 60), 0, 100),
             continuous_scroll=cfg.get('continuous_scroll', True),
             sleep_enabled=cfg.get('sleep_enabled', True),
-            standby_led_mode=cfg.get('standby_led_mode', 0),
+            standby_led_mode=_clamp_int(cfg.get('standby_led_mode', 0), 0, len(STANDBY_LED_NAMES) - 1),
             volume_min_color=Color.from_list(cfg.get('volume_min_color', [0, 0, 255])),
             volume_max_color=Color.from_list(cfg.get('volume_max_color', [255, 0, 0])),
             mix_channel_a_color=Color.from_list(cfg.get('mix_channel_a_color', [0, 0, 255])),
             mix_channel_b_color=Color.from_list(cfg.get('mix_channel_b_color', [255, 0, 255])),
-            led_brightness=cfg.get('led_brightness', 96),
-            clock_standby_minutes=cfg.get('clock_standby_minutes', 10),
+            led_brightness=_clamp_int(cfg.get('led_brightness', 96), 0, 255),
+            clock_standby_minutes=_clamp_int(cfg.get('clock_standby_minutes', 10), 0, 255),
         )
 
 
@@ -279,7 +385,7 @@ class ModeStates:
     states: list = field(default_factory=lambda: [0, 1, 1, 0, 0])
 
     def pack(self) -> bytes:
-        return bytes(self.states[:5]).ljust(5, b'\x00')
+        return bytes(_clamp_int(x, 0, 255) for x in self.states[:5]).ljust(5, b'\x00')
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ModeStates':
@@ -305,6 +411,7 @@ COMMAND_PAYLOAD_SIZE = {
     Command.MODE_STATES:        5,
     Command.SLEEP:              0,
     Command.TIME_SYNC:          3,
+    Command.METER_LEVEL:        2,
 }
 
 # Commands that represent session data (index = cmd - CURRENT_SESSION)
@@ -321,3 +428,25 @@ VOLUME_COMMANDS = [
     Command.VOLUME_PREV_CHANGE,
     Command.VOLUME_NEXT_CHANGE,
 ]
+
+
+def _clamp_int(value, minimum: int, maximum: int) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Expected integer, got {value!r}") from exc
+    return max(minimum, min(maximum, value))
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> bytes:
+    encoded = value.encode('utf-8', errors='replace')
+    if len(encoded) <= max_bytes:
+        return encoded
+    encoded = encoded[:max_bytes]
+    while encoded:
+        try:
+            encoded.decode('utf-8')
+            return encoded
+        except UnicodeDecodeError:
+            encoded = encoded[:-1]
+    return b''

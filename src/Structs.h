@@ -25,6 +25,15 @@ struct __attribute__((__packed__)) VolumeData
 };
 static_assert(sizeof(VolumeData) == 2, "Invalid Expected Message Size");
 
+struct __attribute__((__packed__)) MeterData
+{
+    uint8_t current;
+    uint8_t alternate;
+
+    MeterData() : current(0), alternate(0) {}
+};
+static_assert(sizeof(MeterData) == 2, "Invalid Expected Message Size");
+
 struct __attribute__((__packed__)) SessionData
 {
     char name[30]; // 240 bits

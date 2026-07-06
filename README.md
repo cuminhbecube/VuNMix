@@ -27,9 +27,9 @@ The UI was completely rebuilt following the **Cyber-Tactile** design philosophy:
 
 ### 2. Communication Protocol (Firmware) Upgrades
 The USB-CDC connection protocol between the ESP32-S3 and the Python PC software has been re-architected for maximum speed and stability:
-- **USB Packet Framing:** Command Bytes and Data Payloads are now combined into a single buffer before transmission over USB-CDC. This completely fixes the "Split Packet Timeout" bug that previously caused the PC to randomly ignore messages.
-- **Rate-Limited TX:** A compression algorithm and transmission rate limiter ensure the device only reports its status to the PC at an ultra-fast 33Hz (1 command per 30ms). This prevents data bottlenecks and ensures the PC responds smoothly even during rapid volume adjustments.
-- **Anti-Echo Debounce:** Eradicates the "Race Condition" bug that caused volume levels to ping-pong (e.g., jumping from 26 down to 25 and back to 26). When the user interacts with the hardware, the ESP32 temporarily ignores incoming Windows Audio Events for 500ms. This makes VuNMix the "Absolute Truth" controller and eliminates all echo/bounce effects.
+- **CRC-protected USB framing:** Every message uses a `0xA5 0x5A` marker, command, payload length and CRC-16. Both endpoints reject damaged frames and resynchronize after boot noise, partial transfers or unexpected bytes.
+- **Rate-Limited TX:** Device-initiated updates are limited to one command every 30ms (about 33Hz), preventing USB buffer congestion during rapid volume adjustments.
+- **Anti-Echo Debounce:** After a local volume change, the ESP32 ignores stale Windows volume feedback for 500ms to prevent visible ping-pong.
 
 ---
 
@@ -40,7 +40,7 @@ VuNMix features 4 primary audio management modes. You can easily identify the ac
 ### 1. 🎧 Output Mode (Cyan)
 Manage audio output devices (Speakers, Headphones).
 - **Navigate:** Scroll through available output devices.
-- **Edit:** Adjust volume, mute, or set the selected device as the Windows Default.
+- **Edit:** Adjust volume or mute the selected device.
 
 ### 2. 🎙️ Input Mode (Purple)
 Manage audio input devices (Microphones).
@@ -67,14 +67,36 @@ The device utilizes a Matrix Keypad combined with software simulation instead of
 ### Key Matrix (2x3)
 | Key Name | Mapped Char | Detailed Function |
 | :--- | :--- | :--- |
-| **Prev Tab** | `P` | Double Tap to Mute/Unmute the application or device. |
-| **Mute/Set Def**| `M` | Tap to toggle between selecting apps (Navigate) and adjusting volume (Edit). |
-| **Next Tab** | `N` | Hold to cycle through modes (Output -> Input -> App -> Game). |
+| **Mute** | `P` | Press once to mute/unmute the current application or device. |
+| **Navigate/Edit**| `M` | Press once to toggle between selecting items and adjusting volume. |
+| **Next Mode** | `N` | Press once to cycle through Output -> Input -> App -> Game. |
 | **Vol -** | `-` | Edit mode: Decrease volume. Navigate mode: Scroll left. Hold for continuous adjustment. |
 | **Vol +** | `+` | Edit mode: Increase volume. Navigate mode: Scroll right. Hold for continuous adjustment. |
 | **Play/Pause** | ` ` | (Future) Pause/Resume Windows Media playback. |
 
-*(Note: The hardware integrates a CST816S capacitive touch IC. Swipe and touch gestures will be supported in future firmware updates.)*
+### CST816S Touch Gestures
+
+| Gesture | Action |
+| :--- | :--- |
+| **Swipe left / right** | Select the previous / next output, input device, or application. |
+| **Swipe up / down** | Increase / decrease the current volume by 5%. |
+| **Single tap** | Toggle between Navigate and Edit. |
+| **Double tap** | Mute / unmute the current channel. |
+| **Long press (1 second)** | Cycle Output -> Input -> App -> Game. |
+| **Any gesture while asleep** | Wake the display without applying the gesture action. |
+
+The driver uses the CST816S interrupt pin and performs I2C reads only in the
+main loop. The keypad remains available as a parallel control method.
+
+### Live VU Meter
+
+VuNMix reads the active Windows audio peak level at 15Hz and displays it in
+the top header. Input mode opens a lightweight capture stream for the selected
+microphone so its real PCM peak is available even when no other recording app
+is running. Output, Input and App modes show one meter. Game Mixer shows
+two independent meters for channels A and B. Peak values use a readable
+`-60dB..0dB` scale with fast attack and smooth decay; they do not modify the
+configured volume.
 
 ### NeoPixel LED & Sleep Mode
 - **RGB Backlight (NeoPixel):** Acts as a dynamic audio level meter colored according to the active app/mode during normal operation. On startup, it shows a color wave splash screen.
@@ -160,7 +182,7 @@ While the project's concept was originally inspired by the open-source MaxMix pr
 You can either run the pre-built executable or run the app from source:
 
 **Option A: Pre-built Executable (Recommended)**
-1. Navigate to the `desktop/dist/VuNMix` folder (if available).
+1. Navigate to the `desktop/dist_release/VuNMix` folder (if available).
 2. Run `VuNMix.exe`.
 3. The app will run in the background (check the system tray icon).
 
@@ -169,7 +191,21 @@ You can either run the pre-built executable or run the app from source:
 2. Install the required Python dependencies: `pip install -r requirements.txt`
 3. Run the application: `python vunmix.py`
 
+Runtime settings and logs are stored in `%LOCALAPPDATA%\VuNMix`, so the installed application does not need write permission in `Program Files`.
+
 Once running, the ESP32-S3 device will automatically be recognized and establish a connection via a Virtual COM port (USB-CDC). The splash screen on the device will disappear, transitioning to the control interface.
+
+### Firmware Update from the Desktop App
+
+1. Open **Settings** and keep VuNMix connected.
+2. Select **Update .bin** under **Device Firmware**.
+3. Choose PlatformIO's `.pio/build/esp32-s3-devkitc1-n16r8/firmware.bin`.
+4. Confirm and wait for all blocks to finish. The app reconnects automatically.
+
+The updater validates that the file is an ESP32-S3 application image and only
+writes the application partition at `0x10000`; bootloader, partition table,
+NVS settings and the second OTA slot are preserved. Do not unplug the device
+while an update is running.
 
 ---
 
@@ -206,9 +242,9 @@ Giao diện được đập đi xây lại theo triết lý thiết kế **Cyber
 
 ### 2. Nâng cấp Giao thức Giao tiếp (Firmware)
 Dự án VuNMix đã tái thiết kế giao thức kết nối USB-CDC giữa ESP32-S3 và phần mềm Python PC để đạt tốc độ và sự ổn định cao nhất:
-- **USB Packet Framing:** Toàn bộ Command Byte và Data Payload được gộp chung thành một bộ đệm (buffer) duy nhất trước khi gửi qua USB-CDC. Điều này khắc phục triệt để lỗi "Split Packet Timeout" khiến phần mềm PC thỉnh thoảng bỏ qua tin nhắn.
-- **Băng thông mượt mà (Rate-Limited TX):** Thuật toán nén tín hiệu và giới hạn tốc độ gửi (Rate limit) đảm bảo thiết bị chỉ báo cáo trạng thái cho PC với tần số cực nhanh 33Hz (1 lệnh mỗi 30ms). PC sẽ luôn phản hồi mượt mà kể cả khi bạn tăng/giảm âm lượng với tốc độ chóng mặt, loại bỏ hoàn toàn hiện tượng giật lag (Bottleneck) khi truyền dữ liệu.
-- **Chống Dội Âm thanh (Anti-Echo Debounce):** Giải quyết triệt để lỗi "Race Condition" khiến mức âm lượng nhảy giật lùi (Ví dụ: vặn lên 26 nhưng nhảy về 25 rồi mới lên 26). Khi người dùng thao tác phần cứng, ESP32 sẽ tạm thời "khóa" không nhận phản hồi ngược từ Windows Audio Event trong vòng 500ms, biến VuNMix thành thiết bị ưu tiên tuyệt đối (Absolute Truth) và loại bỏ hoàn toàn hiện tượng dội lệnh (Ping-Pong Effect).
+- **Khung USB có CRC:** Mỗi bản tin gồm marker `0xA5 0x5A`, command, độ dài payload và CRC-16. Hai phía loại frame lỗi và tự đồng bộ lại sau byte rác, log khởi động hoặc truyền thiếu.
+- **Giới hạn tốc độ TX:** Bản tin do thiết bị chủ động gửi được giới hạn một lệnh mỗi 30ms (khoảng 33Hz), tránh nghẽn bộ đệm USB khi thao tác nhanh.
+- **Chống dội âm thanh:** Sau thao tác volume tại thiết bị, ESP32 bỏ qua phản hồi Windows cũ trong 500ms để tránh giá trị nhảy lùi.
 
 ---
 
@@ -219,7 +255,7 @@ VuNMix được chia thành 4 chế độ quản lý âm thanh chính. Bạn có
 ### 1. 🎧 Output Mode (Cyan / Xanh lơ)
 Quản lý các thiết bị đầu ra (Loa, Tai nghe). 
 - **Navigate:** Cuộn qua danh sách các thiết bị đầu ra khả dụng trên PC.
-- **Edit:** Tăng/giảm âm lượng, tắt tiếng (Mute) hoặc đặt thiết bị đang chọn làm thiết bị mặc định của Windows (Set Default).
+- **Edit:** Tăng/giảm âm lượng hoặc tắt tiếng (Mute) thiết bị đang chọn.
 
 ### 2. 🎙️ Input Mode (Purple / Tím)
 Quản lý các thiết bị đầu vào (Microphone). 
@@ -246,14 +282,35 @@ Thiết bị loại bỏ núm vặn truyền thống và sử dụng Bàn phím 
 ### Bàn phím ma trận (Key Matrix 2x3)
 | Tên Phím | Kí tự Map | Chức năng chi tiết |
 | :--- | :--- | :--- |
-| **Prev Tab** | `P` | Chạm đúp (Double Tap) để Mute/Unmute ứng dụng. |
-| **Mute/Set Def** | `M` | Nhấn (Tap) để chuyển đổi giữa việc chọn ứng dụng (Navigate) và chỉnh volume (Edit). |
-| **Next Tab** | `N` | Nhấn giữ (Hold) để chuyển vòng quanh các chế độ (Output -> Input -> App -> Game). |
+| **Mute** | `P` | Nhấn một lần để Mute/Unmute ứng dụng hoặc thiết bị hiện tại. |
+| **Navigate/Edit** | `M` | Nhấn một lần để chuyển giữa chọn mục và chỉnh volume. |
+| **Next Mode** | `N` | Nhấn một lần để chuyển vòng Output -> Input -> App -> Game. |
 | **Vol -** | `-` | Ở chế độ Edit: Giảm âm lượng. Ở chế độ Navigate: Cuộn sang trái. Nhấn giữ để cuộn/chỉnh liên tục. |
 | **Vol +** | `+` | Ở chế độ Edit: Tăng âm lượng. Ở chế độ Navigate: Cuộn sang phải. Nhấn giữ để cuộn/chỉnh liên tục. |
 | **Play/Pause** | ` ` | (Tương lai) Tạm dừng / Tiếp tục Media của Windows. |
 
-*(Ghi chú: Thiết bị phần cứng đã tích hợp sẵn IC cảm ứng điện dung CST816S trên màn hình. Tính năng vuốt chạm sẽ được hỗ trợ trong các bản firmware tương lai.)*
+### Thao tác cảm ứng CST816S
+
+| Thao tác | Chức năng |
+| :--- | :--- |
+| **Vuốt trái / phải** | Chọn thiết bị đầu vào, đầu ra hoặc ứng dụng trước / tiếp theo. |
+| **Vuốt lên / xuống** | Tăng / giảm 5% âm lượng hiện tại. |
+| **Chạm một lần** | Chuyển đổi giữa Navigate và Edit. |
+| **Chạm hai lần** | Tắt / bật tiếng kênh hiện tại. |
+| **Nhấn giữ 1 giây** | Chuyển vòng Output -> Input -> App -> Game. |
+| **Thao tác khi màn hình ngủ** | Chỉ đánh thức màn hình, không thực hiện lệnh ngoài ý muốn. |
+
+Driver sử dụng chân ngắt của CST816S và chỉ đọc I2C trong vòng lặp chính.
+Bàn phím ma trận vẫn hoạt động song song như trước.
+
+### VU Meter thời gian thực
+
+VuNMix đọc mức peak âm thanh Windows với tần số 15Hz và hiển thị trên thanh
+ở phần header. Chế độ Input mở một luồng thu nhẹ cho microphone đang chọn để
+lấy peak PCM thực ngay cả khi chưa có ứng dụng ghi âm nào chạy. Output, Input
+và App có một thanh; Game Mixer có hai thanh độc
+lập cho kênh A/B. Giá trị được đổi sang thang `-60dB..0dB`, lên nhanh và giảm
+mượt, hoàn toàn không thay đổi mức volume đã đặt.
 
 ### LED NeoPixel & Chế độ Chờ (Sleep Mode)
 - **Đèn nền RGB (NeoPixel):** Hoạt động như thanh Audio Level tương ứng với màu sắc của từng ứng dụng/chế độ trong quá trình sử dụng. Khi khởi động, hiển thị hiệu ứng sóng màu (Color wave).
@@ -339,7 +396,7 @@ Mặc dù ý tưởng ban đầu được lấy cảm hứng từ dự án mã n
 Bạn có thể chạy trực tiếp file thực thi hoặc chạy từ mã nguồn:
 
 **Cách 1: Chạy file thực thi (Khuyên dùng)**
-1. Mở thư mục `desktop/dist/VuNMix` (nếu có bản build sẵn).
+1. Mở thư mục `desktop/dist_release/VuNMix` (nếu có bản build sẵn).
 2. Chạy file `VuNMix.exe`.
 3. Ứng dụng sẽ chạy ngầm (biểu tượng nằm dưới khay hệ thống System Tray).
 
@@ -348,7 +405,20 @@ Bạn có thể chạy trực tiếp file thực thi hoặc chạy từ mã ngu�
 2. Cài đặt các thư viện Python cần thiết: `pip install -r requirements.txt`
 3. Chạy ứng dụng: `python vunmix.py`
 
+Cấu hình và log runtime được lưu tại `%LOCALAPPDATA%\VuNMix`, vì vậy bản cài trong `Program Files` không cần quyền ghi vào thư mục ứng dụng.
+
 Khi ứng dụng đã chạy, thiết bị ESP32-S3 sẽ tự động được nhận dạng và thiết lập kết nối qua cổng COM ảo (Virtual USB-CDC). Màn hình Splash "VuNMix" trên thiết bị sẽ tự động biến mất và chuyển sang giao diện điều khiển.
+
+### Cập nhật firmware từ ứng dụng Desktop
+
+1. Mở **Settings** khi VuNMix đang kết nối.
+2. Chọn **Update .bin** trong mục **Device Firmware**.
+3. Chọn file `.pio/build/esp32-s3-devkitc1-n16r8/firmware.bin`.
+4. Xác nhận và chờ ghi đủ các block; app sẽ tự kết nối lại.
+
+Updater kiểm tra đúng firmware ESP32-S3 và chỉ ghi phân vùng ứng dụng tại
+`0x10000`; bootloader, partition table, cấu hình NVS và OTA slot thứ hai được
+giữ nguyên. Không rút cáp trong lúc cập nhật.
 
 ---
 

@@ -5,8 +5,11 @@ a = Analysis(
     ['vunmix.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('config.json', '.')],
-    hiddenimports=[],
+    datas=[('assets', 'assets')],
+    hiddenimports=[
+        'win32api', 'win32con', 'win32gui',
+        'esptool', 'esptool.targets.esp32s3',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

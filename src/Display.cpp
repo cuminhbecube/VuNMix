@@ -66,29 +66,17 @@ namespace Display {
     // Init
     // =========================================================
     void Initialize() {
-        Serial.println("  -> Backlight ON (GPIO 8)...");
-        Serial.flush();
         pinMode(PIN_TFT_BL, OUTPUT);
         digitalWrite(PIN_TFT_BL, HIGH);
         delay(100);
 
-        Serial.println("  -> tft.init()...");
-        Serial.flush();
         tft.init();
-        Serial.println("  -> tft.init() DONE.");
-        Serial.flush();
         delay(100);
 
-        Serial.println("  -> tft.setRotation(1)...");
-        Serial.flush();
         tft.setRotation(1);
 
-        Serial.println("  -> tft.fillScreen(BLACK)...");
-        Serial.flush();
         tft.fillScreen(TFT_BLACK);
 
-        Serial.println("  -> lv_init()...");
-        Serial.flush();
         lv_init();
 
         lv_disp_draw_buf_init(&s_dispBuf, s_buf1, s_buf2, (uint32_t)SW * BUF_LINES);
@@ -100,8 +88,6 @@ namespace Display {
         s_dispDrv.draw_buf = &s_dispBuf;
         lv_disp_drv_register(&s_dispDrv);
 
-        Serial.println("  -> Display Init COMPLETE.");
-        Serial.flush();
     }
 
     void Update() {
@@ -125,6 +111,10 @@ namespace Display {
     static lv_obj_t* s_navBtns[4] = {nullptr};
     static lv_obj_t* s_glowStrip  = nullptr;
     static lv_obj_t* s_contentArea= nullptr;
+    static lv_obj_t* s_meterCurrent = nullptr;
+    static lv_obj_t* s_meterAlternate = nullptr;
+    static uint8_t s_meterCurrentValue = 0;
+    static uint8_t s_meterAlternateValue = 0;
 
     // --- Content widgets (reused per screen) ---
     static lv_obj_t* s_titleLabel  = nullptr;
@@ -134,6 +124,13 @@ namespace Display {
     static lv_obj_t* s_volLabelB   = nullptr;
     static lv_obj_t* s_subLabel    = nullptr;
     static lv_obj_t* s_subLabelB   = nullptr;
+
+    // Game mixer widgets. These objects are children of s_contentArea and
+    // therefore become invalid whenever ClearContent/FullReset cleans LVGL.
+    static lv_obj_t* s_faderA      = nullptr;
+    static lv_obj_t* s_faderB      = nullptr;
+    static lv_obj_t* s_faderNameA  = nullptr;
+    static lv_obj_t* s_faderNameB  = nullptr;
 
     // Splash specific
     static lv_obj_t* s_splashDots  = nullptr;
@@ -260,6 +257,26 @@ namespace Display {
             lv_label_set_text(battIcon, LV_SYMBOL_CHARGE);
             lv_obj_align(battIcon, LV_ALIGN_RIGHT_MID, 0, 0);
 
+            // Live peak meters. Game mode uses two rows; other modes use the
+            // current-channel row centered in the header.
+            s_meterAlternate = lv_bar_create(s_header);
+            lv_obj_set_size(s_meterAlternate, 76, 3);
+            lv_bar_set_range(s_meterAlternate, 0, 100);
+            lv_obj_set_style_bg_color(s_meterAlternate, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(s_meterAlternate, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_radius(s_meterAlternate, 2, LV_PART_MAIN);
+            lv_obj_set_style_radius(s_meterAlternate, 2, LV_PART_INDICATOR);
+            lv_obj_align(s_meterAlternate, LV_ALIGN_RIGHT_MID, -24, -4);
+
+            s_meterCurrent = lv_bar_create(s_header);
+            lv_obj_set_size(s_meterCurrent, 76, 4);
+            lv_bar_set_range(s_meterCurrent, 0, 100);
+            lv_obj_set_style_bg_color(s_meterCurrent, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(s_meterCurrent, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_radius(s_meterCurrent, 2, LV_PART_MAIN);
+            lv_obj_set_style_radius(s_meterCurrent, 2, LV_PART_INDICATOR);
+            lv_obj_align(s_meterCurrent, LV_ALIGN_RIGHT_MID, -24, 0);
+
             // === CONTENT AREA (container for mode-specific content) ===
             s_contentArea = lv_obj_create(lv_scr_act());
             lv_obj_set_size(s_contentArea, SW, CONTENT_H);
@@ -314,6 +331,24 @@ namespace Display {
         lv_obj_set_style_text_color(s_headerTitle, accent, LV_PART_MAIN);
         lv_label_set_text(s_headerTitle, GetModeString(mode));
 
+        if (mode == MODE_GAME) {
+            lv_obj_clear_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_size(s_meterCurrent, 76, 3);
+            lv_obj_align(s_meterAlternate, LV_ALIGN_RIGHT_MID, -24, -4);
+            lv_obj_align(s_meterCurrent, LV_ALIGN_RIGHT_MID, -24, 4);
+            lv_obj_set_style_bg_color(s_meterAlternate, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(s_meterCurrent, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(s_meterAlternate, lv_color_hex(COL_ORANGE), LV_PART_INDICATOR);
+            lv_obj_set_style_bg_color(s_meterCurrent, lv_color_hex(COL_PRIMARY), LV_PART_INDICATOR);
+        } else {
+            lv_obj_add_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_size(s_meterCurrent, 76, 4);
+            lv_obj_align(s_meterCurrent, LV_ALIGN_RIGHT_MID, -24, 0);
+            lv_obj_set_style_bg_color(s_meterCurrent, accent, LV_PART_INDICATOR);
+        }
+        lv_bar_set_value(s_meterCurrent, s_meterCurrentValue, LV_ANIM_OFF);
+        lv_bar_set_value(s_meterAlternate, s_meterAlternateValue, LV_ANIM_OFF);
+
         // Glow strip
         lv_obj_set_style_bg_color(s_glowStrip, accent, LV_PART_MAIN);
         lv_obj_set_style_bg_opa(s_glowStrip, LV_OPA_COVER, LV_PART_MAIN);
@@ -359,6 +394,10 @@ namespace Display {
             s_subLabel = nullptr;
             s_subLabelB = nullptr;
             s_splashDots = nullptr;
+            s_faderA = nullptr;
+            s_faderB = nullptr;
+            s_faderNameA = nullptr;
+            s_faderNameB = nullptr;
         }
     }
 
@@ -372,6 +411,8 @@ namespace Display {
         s_header = nullptr;
         s_headerIcon = nullptr;
         s_headerTitle = nullptr;
+        s_meterCurrent = nullptr;
+        s_meterAlternate = nullptr;
         s_navbar = nullptr;
         for (int i = 0; i < 4; i++) s_navBtns[i] = nullptr;
         s_glowStrip = nullptr;
@@ -391,6 +432,19 @@ namespace Display {
         s_clockSec = nullptr;
         s_clockBrand = nullptr;
         s_clockPanel = nullptr;
+        s_faderA = nullptr;
+        s_faderB = nullptr;
+        s_faderNameA = nullptr;
+        s_faderNameB = nullptr;
+    }
+
+    void SetMeterLevels(uint8_t current, uint8_t alternate) {
+        s_meterCurrentValue = min((uint8_t)100, current);
+        s_meterAlternateValue = min((uint8_t)100, alternate);
+        if (s_meterCurrent)
+            lv_bar_set_value(s_meterCurrent, s_meterCurrentValue, LV_ANIM_OFF);
+        if (s_meterAlternate)
+            lv_bar_set_value(s_meterAlternate, s_meterAlternateValue, LV_ANIM_OFF);
     }
 
     // =========================================================
@@ -526,7 +580,7 @@ namespace Display {
     // =========================================================
     // INFO SCREEN (Version)
     // =========================================================
-    void InfoScreen() {
+    void InfoScreen(bool touchAvailable) {
         if (s_currentScreen != ScreenType::INFO) {
             FullReset();
             s_currentScreen = ScreenType::INFO;
@@ -536,8 +590,22 @@ namespace Display {
             lv_obj_set_style_text_font(s_titleLabel, &lv_font_montserrat_36, LV_PART_MAIN);
             lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(COL_CYAN), LV_PART_MAIN);
             lv_label_set_text(s_titleLabel, VERSION);
-            lv_obj_center(s_titleLabel);
+            lv_obj_align(s_titleLabel, LV_ALIGN_CENTER, 0, -16);
+
+            s_subLabel = lv_label_create(lv_scr_act());
+            lv_obj_set_style_text_font(s_subLabel, &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_align(s_subLabel, LV_ALIGN_CENTER, 0, 22);
         }
+
+        lv_obj_set_style_text_color(
+            s_subLabel,
+            touchAvailable ? lv_color_hex(COL_GREEN) : lv_color_hex(0xFF3333),
+            LV_PART_MAIN
+        );
+        lv_label_set_text(
+            s_subLabel,
+            touchAvailable ? "TOUCH READY" : "TOUCH NOT FOUND"
+        );
     }
 
     // =========================================================
@@ -803,6 +871,7 @@ namespace Display {
             lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(COL_ON_SURFACE), LV_PART_MAIN);
             lv_obj_set_width(s_titleLabel, SW - 40);
             lv_label_set_long_mode(s_titleLabel, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_anim_speed(s_titleLabel, 28, LV_PART_MAIN);
             lv_obj_set_style_text_align(s_titleLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
             lv_obj_align(s_titleLabel, LV_ALIGN_BOTTOM_MID, 0, -20);
 
@@ -833,9 +902,24 @@ namespace Display {
 
         // Name
         String name = String(session->name);
-        if (name.length() > 26) name = name.substring(0, 24) + "..";
         if (name.length() == 0) name = "---";
-        lv_label_set_text(s_titleLabel, name.c_str());
+
+        // Only the selected default Input/Output device gets a marquee. Keep
+        // navigation and application screens static so moving between items
+        // remains visually stable.
+        bool scrollDefaultDevice =
+            (mode == MODE_INPUT || mode == MODE_OUTPUT) &&
+            session->data.isDefault;
+        lv_label_long_mode_t longMode = scrollDefaultDevice
+            ? LV_LABEL_LONG_SCROLL_CIRCULAR
+            : LV_LABEL_LONG_DOT;
+
+        // METER_LEVEL refreshes this screen at 15 Hz. Avoid resetting the
+        // label/animation when neither the mode nor text has changed.
+        if (lv_label_get_long_mode(s_titleLabel) != longMode)
+            lv_label_set_long_mode(s_titleLabel, longMode);
+        if (strcmp(lv_label_get_text(s_titleLabel), name.c_str()) != 0)
+            lv_label_set_text(s_titleLabel, name.c_str());
 
         // Default badge
         if (session->data.isDefault) {
@@ -928,13 +1012,6 @@ namespace Display {
     // =========================================================
     // GAME EDIT SCREEN (Dual Fader Mixer)
     // =========================================================
-    static lv_obj_t* s_faderA     = nullptr;
-    static lv_obj_t* s_faderB     = nullptr;
-    static lv_obj_t* s_faderLblA  = nullptr;
-    static lv_obj_t* s_faderLblB  = nullptr;
-    static lv_obj_t* s_faderNameA = nullptr;
-    static lv_obj_t* s_faderNameB = nullptr;
-
     static lv_obj_t* BuildFaderChannel(lv_obj_t* parent, int16_t x, const char* icon,
                                         const char* label, lv_color_t color, bool active) {
         // Channel container

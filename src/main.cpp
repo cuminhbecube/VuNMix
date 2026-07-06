@@ -14,9 +14,13 @@
 Preferences preferences;
 // State
 DeviceSettings g_Settings;
+DeviceSettings g_PersistedSettings;
+bool g_SettingsSavePending = false;
+uint32_t g_SettingsChangedAt = 0;
 SessionInfo g_SessionInfo;
 SessionData g_Sessions[SessionIndex::INDEX_MAX];
 ModeStates g_ModeStates;
+MeterData g_MeterData;
 bool g_DisplayDirty;
 bool g_DisplayAsleep;
 bool g_PcAsleep = false;
@@ -44,6 +48,7 @@ bool CanScrollRight();
 uint8_t GetIndexForMode(DisplayMode mode);
 bool ProcessEncoderRotation();
 bool ProcessEncoderButton();
+bool ProcessTouch();
 bool ProcessSleep();
 bool ProcessClockStandby();
 bool ProcessDisplayScroll();
@@ -74,38 +79,26 @@ void setup()
 {
     Serial.begin(115200);
     delay(2000); // Give USB CDC time to enumerate
-    Serial.println("\n\n--- MAXMIX BOOT START ---");
-    Serial.flush();
 
-    Serial.println("ResetState()...");
     ResetState();
 
     preferences.begin("vunmix", false);
     if (preferences.getBytesLength("settings") == sizeof(DeviceSettings)) {
         preferences.getBytes("settings", &g_Settings, sizeof(DeviceSettings));
-        Serial.println("Loaded settings from NVS.");
     }
+    g_PersistedSettings = g_Settings;
 
-    Serial.println("Input::Initialize()...");
     Input::Initialize();
 
     esp_reset_reason_t reason = esp_reset_reason();
     if (reason == ESP_RST_POWERON) {
-        Serial.println("Playing Intro Video...");
         VideoPlayer::Play("/intro.avi");
-    } else {
-        Serial.printf("Reset reason: %d. Skipping intro.\n", reason);
     }
 
-    Serial.println("Display::Initialize()...");
-    Serial.flush();
     Display::Initialize();
 
-    Serial.println("Communications::Initialize()...");
     Communications::Initialize();
 
-    Serial.println("Pixels Init (10 LEDs on GPIO 45)...");
-    Serial.flush();
     g_Pixels.begin();
     g_Pixels.setBrightness(g_Settings.ledBrightness);
     g_Pixels.clear();
@@ -116,8 +109,6 @@ void setup()
     g_LastVolumeActivity = millis();
     g_Now = millis();
     
-    Serial.println("--- SETUP COMPLETE ---");
-    Serial.flush();
     Display::SplashScreen();
 }
 
@@ -142,8 +133,9 @@ void loop()
 
     if (command != Command::NONE && command != Command::ERROR) {
         if (command == Command::SETTINGS) {
-            preferences.putBytes("settings", &g_Settings, sizeof(DeviceSettings));
             g_Pixels.setBrightness(g_Settings.ledBrightness);
+            g_SettingsSavePending = true;
+            g_SettingsChangedAt = g_Now;
         }
         else if (command == Command::SLEEP) {
             g_PcAsleep = true;
@@ -169,7 +161,25 @@ void loop()
     // Drain any device-initiated messages (queued by Write()) AFTER Read()'s OK response
     Communications::SendPending();
 
+    // Coalesce settings previews/reconnect handshakes into one NVS write.
+    if (g_SettingsSavePending && (uint32_t)(g_Now - g_SettingsChangedAt) >= 2000U)
+    {
+        if (memcmp(&g_Settings, &g_PersistedSettings, sizeof(DeviceSettings)) != 0)
+        {
+            preferences.putBytes("settings", &g_Settings, sizeof(DeviceSettings));
+            g_PersistedSettings = g_Settings;
+        }
+        g_SettingsSavePending = false;
+    }
+
     if (ProcessEncoderRotation())
+    {
+        g_LastActivity = g_Now;
+        g_LastVolumeActivity = g_Now;
+        g_DisplayDirty = true;
+    }
+
+    if (ProcessTouch())
     {
         g_LastActivity = g_Now;
         g_LastVolumeActivity = g_Now;
@@ -218,13 +228,13 @@ void loop()
 void ResetState()
 {
     // State
-    g_Settings = DeviceSettings();
     g_SessionInfo = SessionInfo();
     g_Sessions[SessionIndex::INDEX_PREVIOUS] = SessionData();
     g_Sessions[SessionIndex::INDEX_CURRENT] = SessionData();
     g_Sessions[SessionIndex::INDEX_ALTERNATE] = SessionData();
     g_Sessions[SessionIndex::INDEX_NEXT] = SessionData();
     g_ModeStates = ModeStates();
+    g_MeterData = MeterData();
     g_DisplayDirty = true;
     g_DisplayAsleep = false;
 
@@ -243,11 +253,21 @@ int8_t g_PreviousSteps = 0;
 int8_t ComputeAcceleratedVolume(int8_t encoderDelta, uint32_t deltaTime, int16_t volume)
 {
     if (encoderDelta == 0) return volume;
-    // Removed FixedPoints logic, just simple multiplication
-    int16_t step = abs(encoderDelta);
-    if (step < 1) step = 1;
-    if (encoderDelta > 0) volume += step;
-    else volume -= step;
+
+    int16_t baseSteps = abs((int)encoderDelta);
+    uint8_t speedFactor = 0;
+    if (deltaTime < 70U) speedFactor = 3;
+    else if (deltaTime < 140U) speedFactor = 2;
+    else if (deltaTime < 280U) speedFactor = 1;
+
+    int16_t accelerated = baseSteps;
+    if (speedFactor > 0 && g_Settings.accelerationPercentage > 0)
+    {
+        accelerated += (baseSteps * g_Settings.accelerationPercentage * speedFactor + 99) / 100;
+    }
+
+    if (encoderDelta > 0) volume += accelerated;
+    else volume -= accelerated;
     
     return constrain(volume, 0, 100);
 }
@@ -357,13 +377,19 @@ bool ProcessEncoderButton()
         g_ModeStates.states[g_SessionInfo.mode] = (g_ModeStates.states[g_SessionInfo.mode] + 1) % (g_SessionInfo.mode != DisplayMode::MODE_GAME ? STATE_MAX : STATE_GAME_MAX);
         Communications::Write(Command::MODE_STATES);
 
-        if (g_SessionInfo.mode == DisplayMode::MODE_INPUT || g_SessionInfo.mode == DisplayMode::MODE_OUTPUT)
+        // Pressing a browsed Input/Output device selects it as the Windows
+        // default, then enters the edit screen. Previously tap only changed
+        // screens, so the desktop never received the isDefault request.
+        if ((g_SessionInfo.mode == DisplayMode::MODE_OUTPUT ||
+             g_SessionInfo.mode == DisplayMode::MODE_INPUT) &&
+            g_ModeStates.states[g_SessionInfo.mode] == STATE_EDIT &&
+            !g_Sessions[SessionIndex::INDEX_CURRENT].data.isDefault)
         {
-            for (uint8_t i = 0; i < SessionIndex::INDEX_MAX; i++) g_Sessions[i].data.isDefault = false;
             g_Sessions[SessionIndex::INDEX_CURRENT].data.isDefault = true;
             Communications::Write(Command::VOLUME_CURR_CHANGE);
         }
-        else if (g_SessionInfo.mode == DisplayMode::MODE_GAME && g_ModeStates.states[g_SessionInfo.mode] == STATE_SELECT_B)
+
+        if (g_SessionInfo.mode == DisplayMode::MODE_GAME && g_ModeStates.states[g_SessionInfo.mode] == STATE_SELECT_B)
         {
             g_Sessions[SessionIndex::INDEX_ALTERNATE] = g_Sessions[SessionIndex::INDEX_CURRENT];
             Communications::Write(Command::ALTERNATE_SESSION);
@@ -385,6 +411,7 @@ bool ProcessEncoderButton()
             g_Sessions[SessionIndex::INDEX_CURRENT].data.volume = 50;
             g_Sessions[SessionIndex::INDEX_ALTERNATE].data.volume = 50;
             Communications::Write(Command::VOLUME_CURR_CHANGE);
+            Communications::Write(Command::VOLUME_ALT_CHANGE);
         }
         return true;
     }
@@ -404,12 +431,91 @@ bool ProcessEncoderButton()
             Communications::Write(Command::MODE_STATES);
         }
         g_SessionInfo.current = 0;
-        memset(g_Sessions[SessionIndex::INDEX_CURRENT].name, 0, sizeof(g_Sessions[SessionIndex::INDEX_CURRENT].name));
+        // Keep the last valid label/volume visible while the desktop resolves
+        // and sends the preferred session for the new mode. Clearing here
+        // caused a persistent "---" whenever that response was delayed.
         Communications::Write(Command::SESSION_INFO);
         Display::ResetTimers();
         return true;
     }
     return false;
+}
+
+bool ProcessTouch()
+{
+    Input::TouchEvent event = Input::ConsumeTouchEvent();
+    if (event == Input::TouchEvent::None)
+        return false;
+
+    // The first gesture wakes a sleeping display without changing anything.
+    if (g_DisplayAsleep)
+    {
+        g_DisplayAsleep = false;
+        g_ClockMode = false;
+        return true;
+    }
+
+    if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
+        return true;
+
+    if (event == Input::TouchEvent::Tap)
+    {
+        Input::g_ButtonEvent = Input::tap;
+        return true;
+    }
+    if (event == Input::TouchEvent::DoubleTap)
+    {
+        Input::g_ButtonEvent = Input::doubleTap;
+        return true;
+    }
+    if (event == Input::TouchEvent::LongPress)
+    {
+        Input::g_ButtonEvent = Input::hold;
+        return true;
+    }
+
+    if (event == Input::TouchEvent::SwipeLeft)
+    {
+        PreviousSession();
+        Display::ResetTimers();
+        return true;
+    }
+    if (event == Input::TouchEvent::SwipeRight)
+    {
+        NextSession();
+        Display::ResetTimers();
+        return true;
+    }
+
+    int8_t delta = event == Input::TouchEvent::SwipeUp
+        ? TOUCH_VOLUME_STEP
+        : -TOUCH_VOLUME_STEP;
+    int8_t index = (g_SessionInfo.mode == DisplayMode::MODE_GAME &&
+                    g_ModeStates.states[g_SessionInfo.mode] == STATE_GAME_EDIT)
+        ? SessionIndex::INDEX_ALTERNATE
+        : SessionIndex::INDEX_CURRENT;
+
+    uint8_t previous = g_Sessions[index].data.volume;
+    g_Sessions[index].data.volume = constrain(
+        (int16_t)previous + delta,
+        0,
+        100
+    );
+    g_LastSteps = g_Now;
+
+    if (previous != g_Sessions[index].data.volume)
+        Communications::Write((Command)((int8_t)Command::VOLUME_CURR_CHANGE + index));
+
+    if (index == SessionIndex::INDEX_ALTERNATE &&
+        g_Sessions[SessionIndex::INDEX_ALTERNATE].data.id !=
+            g_Sessions[SessionIndex::INDEX_CURRENT].data.id)
+    {
+        g_Sessions[SessionIndex::INDEX_CURRENT].data.volume =
+            100 - g_Sessions[SessionIndex::INDEX_ALTERNATE].data.volume;
+        Communications::Write(Command::VOLUME_CURR_CHANGE);
+    }
+
+    return true;
 }
 
 bool ProcessSleep()
@@ -519,6 +625,8 @@ bool ProcessDisplayScroll()
 
 void UpdateDisplay()
 {
+    Display::SetMeterLevels(g_MeterData.current, g_MeterData.alternate);
+
     // Clock standby mode — show fullscreen digital clock
     if (g_ClockMode && g_TimeValid)
     {
@@ -555,7 +663,7 @@ void UpdateDisplay()
         } else if (g_ModeStates.states[g_SessionInfo.mode] == STATE_LOGO) {
             Display::SplashScreen();
         } else {
-            Display::InfoScreen();
+            Display::InfoScreen(Input::TouchAvailable());
         }
     }
     else if (g_SessionInfo.mode == DisplayMode::MODE_INPUT || g_SessionInfo.mode == DisplayMode::MODE_OUTPUT)
@@ -978,9 +1086,10 @@ void LightingVolume(SessionData *item, Color *c1, Color *c2)
     }
     else
     {
-        int32_t t = millis();
-        int32_t period = 500;
-        uint8_t amp = (period - abs(t % (2 * period) - period)) * 255 / period;
+        const uint32_t period = 500;
+        uint32_t phase = millis() % (2U * period);
+        uint32_t triangle = phase <= period ? phase : (2U * period - phase);
+        uint8_t amp = (uint8_t)(triangle * 255U / period);
         Color c = LerpColor(c1, c2, amp);
         uint32_t color32 = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
         g_Pixels.fill(color32);

@@ -19,7 +19,8 @@ enum class Command : int8_t
     MODE_STATES,
     DEBUG,
     SLEEP,
-    TIME_SYNC
+    TIME_SYNC,
+    METER_LEVEL
 };
 
 enum SessionIndex : uint8_t

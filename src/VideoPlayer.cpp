@@ -22,28 +22,21 @@ namespace VideoPlayer {
     }
 
     void Play(const char* filepath) {
-        Serial.println("VideoPlayer: Waiting 2s for system to stabilize...");
+        (void)filepath; // Video is embedded via board_build.embed_files.
         delay(2000);
 
         const uint8_t* data = intro_avi_start;
         const size_t dataLen = (size_t)(intro_avi_end - intro_avi_start);
 
-        Serial.print("VideoPlayer: Embedded data size: ");
-        Serial.println(dataLen);
-
         if (dataLen < 12) {
-            Serial.println("VideoPlayer: Embedded data too small!");
             return;
         }
 
         // Quick RIFF check
         uint32_t magic = readU32(data);
         if (magic != 0x46464952) { // "RIFF"
-            Serial.print("VideoPlayer: Not a valid RIFF/AVI. Magic: 0x");
-            Serial.println(magic, HEX);
             return;
         }
-        Serial.println("VideoPlayer: RIFF verified OK. Initializing display...");
 
         // Initialize TFT exclusively for video playback
         pinMode(PIN_TFT_BL, OUTPUT);
@@ -58,17 +51,20 @@ namespace VideoPlayer {
         TJpgDec.setCallback(tft_output);
 
         const uint32_t frameMs = 66; // ~15 FPS to match source video
-        uint32_t framesPlayed = 0;
         size_t pos = 0;
 
         while (pos + 8 <= dataLen) {
             uint32_t chunkId   = readU32(data + pos); pos += 4;
             uint32_t chunkSize = readU32(data + pos); pos += 4;
             uint32_t paddedSize = (chunkSize + 1) & ~1;
+            if (paddedSize < chunkSize || paddedSize > dataLen - pos)
+                break;
 
             if (chunkId == 0x46464952) { // "RIFF"
+                if (chunkSize < 4) break;
                 pos += 4; // skip "AVI " type
             } else if (chunkId == 0x5453494C) { // "LIST"
+                if (chunkSize < 4) break;
                 uint32_t type = readU32(data + pos);
                 pos += 4;
                 if (type != 0x69766f6d) { // not "movi"
@@ -79,7 +75,6 @@ namespace VideoPlayer {
                     uint32_t frameStart = millis();
 
                     TJpgDec.drawJpg(0, 0, data + pos, chunkSize);
-                    framesPlayed++;
 
                     uint32_t dt = millis() - frameStart;
                     if (dt < frameMs) delay(frameMs - dt);
@@ -89,10 +84,6 @@ namespace VideoPlayer {
                 pos += paddedSize; // skip unknown chunks
             }
         }
-
-        Serial.print("VideoPlayer: Finished playing ");
-        Serial.print(framesPlayed);
-        Serial.println(" frames.");
 
         // Clear screen before handing back to LVGL
         s_tft.fillScreen(TFT_BLACK);

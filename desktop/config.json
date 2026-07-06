@@ -1,8 +1,8 @@
 {
-    "com_port": "COM14",
-    "update_interval_ms": 500,
+    "com_port": "COM3",
+    "update_interval_ms": 200,
     "settings": {
-        "sleep_after_seconds": 5,
+        "sleep_after_seconds": 30,
         "acceleration_percentage": 60,
         "continuous_scroll": true,
         "volume_min_color": [0, 0, 255],

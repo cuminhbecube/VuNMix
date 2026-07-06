@@ -42,11 +42,11 @@ Dự án VuNMix sử dụng vi điều khiển ESP32-S3 kết hợp với màn h
 | **Col 2 (Cột 2)** | GPIO 39 | Kích hoạt cột |
 
 **Sơ đồ chức năng các nút:**
-- `Row 0, Col 0`: Trở về Tab trước
-- `Row 0, Col 1`: Bật/Tắt Mute hoặc Đặt thiết bị làm mặc định (tuỳ Tab)
-- `Row 0, Col 2`: Sang Tab tiếp theo
+- `Row 0, Col 0`: Mute/Unmute ứng dụng hoặc thiết bị hiện tại
+- `Row 0, Col 1`: Chuyển giữa Navigate và Edit
+- `Row 0, Col 2`: Chuyển sang chế độ Output/Input/App/Game tiếp theo
 - `Row 1, Col 0`: Giảm âm lượng (Volume Down)
-- `Row 1, Col 1`: Phát / Tạm dừng (Play / Pause Media)
+- `Row 1, Col 1`: Dự phòng cho Play/Pause Media (chưa kích hoạt)
 - `Row 1, Col 2`: Tăng âm lượng (Volume Up)
 
 ### 4. Các kết nối khác

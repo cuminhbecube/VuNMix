@@ -11,16 +11,12 @@
 // *** DEFINES
 //********************************************************
 #ifndef VERSION
-    #define VERSION "v0.1-ESP32"
+    #define VERSION "v0.4-VU"
 #endif
 
 //********************************************************
 // *** CONSTS
 //********************************************************
-
-// --- Serial Comms
-static const uint32_t BAUD_RATE = 76800; // Unused for USB CDC, but kept for compatibility
-static const uint64_t SERIAL_TIMEOUT = 10;
 
 // --- Pins for ESP32-S3
 static const uint8_t  PIN_PIXELS = 45;   // NeoPixel data (per hardware.md)
@@ -33,11 +29,15 @@ static const uint8_t  PIN_KEY_C0 = 42;
 static const uint8_t  PIN_KEY_C1 = 40;
 static const uint8_t  PIN_KEY_C2 = 39;
 
-// Touch (I2C) - for future use
+// Touch (CST816S over I2C)
 static const uint8_t  PIN_TOUCH_SDA = 5;
 static const uint8_t  PIN_TOUCH_SCL = 4;
 static const uint8_t  PIN_TOUCH_INT = 3;
 static const uint8_t  PIN_TOUCH_RST = 2;
+// The touch sensor is portrait while TFT rotation 1 is landscape.
+// Change to 0 if a panel variant already reports landscape gestures.
+static const uint8_t  TOUCH_ROTATION = 1;
+static const int8_t   TOUCH_VOLUME_STEP = 5;
 
 // --- States
 static const uint8_t STATE_NAVIGATE = 0;

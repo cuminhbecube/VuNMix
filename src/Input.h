@@ -16,6 +16,20 @@ namespace Input {
     void Initialize();
     void Update();
 
+    enum class TouchEvent : uint8_t {
+        None,
+        Tap,
+        DoubleTap,
+        LongPress,
+        SwipeLeft,
+        SwipeRight,
+        SwipeUp,
+        SwipeDown
+    };
+
+    bool TouchAvailable();
+    TouchEvent ConsumeTouchEvent();
+
     // These variables act as the interface to the main loop, simulating the rotary encoder
     extern volatile int8_t g_EncoderSteps;
     // We will simulate ButtonEvents library events: none, tap, doubleTap, hold

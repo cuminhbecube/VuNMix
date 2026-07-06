@@ -9,9 +9,14 @@ from typing import Optional
 
 from protocol import DeviceSettings, Color
 
-# Config file lives next to the script
-_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
-_CONFIG_FILE = os.path.join(_CONFIG_DIR, 'config.json')
+# Runtime files must be user-writable even when VuNMix is installed in
+# C:\Program Files. Keep the old adjacent config as a one-time migration source.
+_LEGACY_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+CONFIG_DIR = os.path.join(
+    os.environ.get('LOCALAPPDATA', os.path.join(os.path.expanduser('~'), 'AppData', 'Local')),
+    'VuNMix',
+)
+_CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 _DEFAULT_CONFIG = {
     "com_port": "COM14",
@@ -43,30 +48,51 @@ class AppConfig:
     @classmethod
     def load(cls, path: Optional[str] = None) -> 'AppConfig':
         path = path or _CONFIG_FILE
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         if not os.path.exists(path):
+            if path == _CONFIG_FILE and os.path.exists(_LEGACY_CONFIG_FILE):
+                try:
+                    with open(_LEGACY_CONFIG_FILE, 'r', encoding='utf-8') as source:
+                        legacy_data = json.load(source)
+                    cfg = cls._from_dict(legacy_data)
+                    cfg.save(path)
+                    return cfg
+                except (OSError, ValueError, TypeError, IndexError):
+                    pass
             cfg = cls()
             cfg.save(path)
             return cfg
 
         try:
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-        except json.JSONDecodeError:
-            print(f"Warning: Configuration file {path} is empty or corrupted. Using defaults.")
+            return cls._from_dict(data)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError, IndexError) as exc:
+            print(f"Warning: Invalid configuration {path}: {exc}. Using defaults.")
             cfg = cls()
-            cfg.save(path)
+            try:
+                cfg.save(path)
+            except OSError:
+                pass
             return cfg
 
+    @classmethod
+    def _from_dict(cls, data: dict) -> 'AppConfig':
+        if not isinstance(data, dict):
+            raise ValueError("Configuration root must be an object")
         settings_dict = data.get('settings', _DEFAULT_CONFIG['settings'])
+        if not isinstance(settings_dict, dict):
+            raise ValueError("'settings' must be an object")
         return cls(
-            com_port=data.get('com_port', 'COM14'),
-            update_interval_ms=data.get('update_interval_ms', 500),
-            run_on_startup=data.get('run_on_startup', False),
+            com_port=str(data.get('com_port', 'COM14')).strip() or 'COM14',
+            update_interval_ms=max(50, min(10000, int(data.get('update_interval_ms', 500)))),
+            run_on_startup=bool(data.get('run_on_startup', False)),
             device_settings=DeviceSettings.from_config(settings_dict),
         )
 
     def save(self, path: Optional[str] = None):
         path = path or _CONFIG_FILE
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         data = {
             "com_port": self.com_port,
             "update_interval_ms": self.update_interval_ms,
@@ -85,5 +111,9 @@ class AppConfig:
                 "clock_standby_minutes": self.device_settings.clock_standby_minutes,
             }
         }
-        with open(path, 'w') as f:
-            json.dump(data, f, indent=4)
+        temp_path = f"{path}.tmp"
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)

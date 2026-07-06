@@ -17,7 +17,7 @@ import os
 # Add the desktop directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import AppConfig
+from config import AppConfig, CONFIG_DIR
 from app_controller import AppController
 from gui import TrayApp
 
@@ -25,7 +25,19 @@ from gui import TrayApp
 def setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
     fmt = '%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-    logging.basicConfig(level=level, format=fmt, datefmt='%H:%M:%S')
+
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    log_file = os.path.join(CONFIG_DIR, 'vunmix.log')
+
+    logging.basicConfig(
+        level=level,
+        format=fmt,
+        datefmt='%H:%M:%S',
+        handlers=[
+            logging.FileHandler(log_file, mode='w', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout) if sys.stdout is not None else logging.NullHandler()
+        ]
+    )
 
     # Quiet noisy libraries
     logging.getLogger('comtypes').setLevel(logging.WARNING)
@@ -38,7 +50,7 @@ def main():
 
     log = logging.getLogger('vunmix')
     log.info("╔══════════════════════════════════════╗")
-    log.info("║         VuNMix Desktop v0.1          ║")
+    log.info("║         VuNMix Desktop v0.3          ║")
     log.info("╚══════════════════════════════════════╝")
 
     # Load config

@@ -1,37 +1,46 @@
-import serial
+"""Small framed-protocol diagnostic for a connected VuNMix device."""
+
+import argparse
+import pathlib
+import sys
 import time
-import struct
 
-# Open COM14 at 115200 baud
-try:
-    ser = serial.Serial('COM14', 115200, timeout=1)
-    print("Opened COM14")
-except Exception as e:
-    print(f"Failed to open COM14: {e}")
-    exit(1)
+import serial
 
-# Send TEST command
-print("Sending TEST command (1)...")
-ser.write(bytes([1]))
-ser.flush()
 
-time.sleep(0.1)
-response = ser.read(ser.in_waiting)
-print(f"Response: {response}")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "desktop"))
+from protocol import Command, FrameParser, encode_frame
 
-# Send OK command
-print("Sending OK command (2)...")
-ser.write(bytes([2]))
-ser.flush()
 
-# Listen for incoming data
-print("Listening for incoming data... (Turn the knob or press buttons)")
-try:
-    while True:
-        if ser.in_waiting > 0:
-            data = ser.read(ser.in_waiting)
-            print(f"Received: {[hex(x) for x in data]}")
-        time.sleep(0.01)
-except KeyboardInterrupt:
-    print("Closing...")
-    ser.close()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("port", nargs="?", default="COM14", help="USB CDC port, e.g. COM3")
+    args = parser.parse_args()
+
+    try:
+        connection = serial.Serial(args.port, 115200, timeout=0.1)
+    except (serial.SerialException, OSError) as exc:
+        raise SystemExit(f"Failed to open {args.port}: {exc}")
+
+    frame_parser = FrameParser()
+    print(f"Opened {args.port}; requesting firmware version")
+    connection.write(encode_frame(Command.TEST))
+    connection.flush()
+
+    try:
+        while True:
+            data = connection.read(max(1, min(connection.in_waiting, 256)))
+            for command, payload in frame_parser.feed(data):
+                if command == Command.TEST:
+                    print("Firmware:", payload.decode("ascii", errors="replace"))
+                else:
+                    print(f"{command.name}: {payload.hex(' ')}")
+            time.sleep(0.01)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        connection.close()
+
+
+if __name__ == "__main__":
+    main()

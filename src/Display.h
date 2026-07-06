@@ -7,7 +7,7 @@ namespace Display {
     void Update();
     void SplashScreen();
     void KeyTestScreen();
-    void InfoScreen();
+    void InfoScreen(bool touchAvailable);
     void ClockScreen(uint8_t hour, uint8_t minute, uint8_t second);
     
     void DeviceSelectScreen(SessionData* session, bool canScrollLeft, bool canScrollRight, DisplayMode mode);
@@ -18,6 +18,7 @@ namespace Display {
     
     void GameSelectScreen(SessionData* session, char channel, bool canScrollLeft, bool canScrollRight, DisplayMode mode);
     void GameEditScreen(SessionData* altSession, SessionData* curSession, DisplayMode mode);
+    void SetMeterLevels(uint8_t current, uint8_t alternate);
     
     void UpdateTimers(uint32_t deltaTime);
     void ResetTimers();

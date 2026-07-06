@@ -1,7 +1,9 @@
-pyserial>=3.5
-pycaw>=20230407
-pystray>=0.19
-Pillow>=10.0
-comtypes>=1.4
-customtkinter>=5.2.0
-pywin32>=306
+pyserial~=3.5
+pycaw>=20230407,<20270000
+pystray~=0.19
+Pillow>=10.0,<13
+comtypes>=1.4,<2
+customtkinter~=5.2
+pywin32>=306,<400
+esptool>=4.8,<5
+sounddevice>=0.5,<1

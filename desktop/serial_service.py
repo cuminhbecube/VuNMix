@@ -6,7 +6,6 @@ Runs a background read thread to receive commands from the hardware.
 """
 
 import logging
-import struct
 import threading
 import time
 from typing import Callable, Optional
@@ -15,8 +14,9 @@ import serial
 
 from protocol import (
     Command, COMMAND_PAYLOAD_SIZE,
-    SessionInfo, SessionData, VolumeData, DeviceSettings, ModeStates,
+    SessionInfo, SessionData, VolumeData, MeterData, DeviceSettings, ModeStates,
     SESSION_COMMANDS, VOLUME_COMMANDS,
+    FrameParser, encode_frame,
 )
 
 log = logging.getLogger(__name__)
@@ -31,7 +31,9 @@ class SerialService:
         self._serial: Optional[serial.Serial] = None
         self._read_thread: Optional[threading.Thread] = None
         self._running = False
-        self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._connect_lock = threading.Lock()
+        self._parser = FrameParser()
 
         # Callbacks
         self.on_connected: Optional[Callable] = None
@@ -45,45 +47,61 @@ class SerialService:
 
     def connect(self) -> bool:
         """Connect to the fixed COM port. Returns True on success."""
-        if self.is_connected:
-            return True
-        try:
-            self._serial = serial.Serial()
-            self._serial.port = self.port
-            self._serial.baudrate = self.baudrate
-            self._serial.timeout = 0.05
-            self._serial.write_timeout = 0.5
-            self._serial.dtr = False
-            self._serial.rts = False
-            self._serial.open()
-            # Small delay for USB CDC to settle
-            time.sleep(0.3)
-            # Flush any stale dat
-            self._serial.reset_input_buffer()
-            self._serial.reset_output_buffer()
-            log.info(f"Connected to {self.port}")
-            if self.on_connected:
-                self.on_connected()
-            return True
-        except (serial.SerialException, OSError) as e:
-            log.warning(f"Failed to connect to {self.port}: {e}")
-            self._serial = None
-            return False
+        with self._connect_lock:
+            if self.is_connected:
+                return True
+            try:
+                connection = serial.Serial()
+                connection.port = self.port
+                connection.baudrate = self.baudrate
+                connection.timeout = 0.05
+                connection.write_timeout = 0.5
+                connection.dtr = False
+                connection.rts = False
+                connection.open()
+                time.sleep(0.3)
+                connection.reset_input_buffer()
+                connection.reset_output_buffer()
+                self._parser.reset()
+                self._serial = connection
+                log.info("Connected to %s", self.port)
+            except (serial.SerialException, OSError) as e:
+                log.warning("Failed to connect to %s: %s", self.port, e)
+                self._serial = None
+                return False
+
+        # Handshake/audio enumeration must not block the serial reader.
+        if self.on_connected:
+            def notify_connected():
+                if self._serial is connection and connection.is_open:
+                    self.on_connected()
+
+            threading.Thread(
+                target=notify_connected,
+                daemon=True,
+                name="DeviceConnected",
+            ).start()
+        return True
 
     def disconnect(self):
         """Close serial port."""
-        if self._serial:
-            try:
-                self._serial.close()
-            except Exception:
-                pass
+        with self._connect_lock:
+            connection = self._serial
             self._serial = None
-            log.info(f"Disconnected from {self.port}")
+        if connection:
+            try:
+                connection.close()
+            except (serial.SerialException, OSError) as exc:
+                log.debug("Error while closing serial port: %s", exc)
+            self._parser.reset()
+            log.info("Disconnected from %s", self.port)
             if self.on_disconnected:
                 self.on_disconnected()
 
     def start(self):
         """Start background read thread."""
+        if self._read_thread and self._read_thread.is_alive():
+            return
         self._running = True
         self._read_thread = threading.Thread(target=self._read_loop, daemon=True, name="SerialRead")
         self._read_thread.start()
@@ -100,14 +118,15 @@ class SerialService:
         """Send a command byte + optional payload to hardware."""
         if not self.is_connected:
             return False
-        with self._lock:
+        with self._write_lock:
             try:
-                # Command is sent as a signed int8
-                cmd_byte = struct.pack('b', int(cmd))
-                self._serial.write(cmd_byte + payload)
-                self._serial.flush()
+                connection = self._serial
+                if connection is None or not connection.is_open:
+                    return False
+                connection.write(encode_frame(cmd, payload))
+                connection.flush()
                 return True
-            except (serial.SerialException, OSError) as e:
+            except (serial.SerialException, OSError, ValueError) as e:
                 log.error(f"Write error: {e}")
                 self.disconnect()
                 return False
@@ -135,11 +154,14 @@ class SerialService:
 
     def send_time_sync(self, hour: int, minute: int, second: int) -> bool:
         """Send current time to hardware (3 bytes: hour, minute, second)."""
-        payload = struct.pack('<BBB', hour, minute, second)
+        payload = bytes((hour, minute, second))
         return self.send_command(Command.TIME_SYNC, payload)
 
+    def send_meter(self, meter: MeterData) -> bool:
+        return self.send_command(Command.METER_LEVEL, meter.pack())
+
     def _read_loop(self):
-        """Background thread: read commands from hardware."""
+        """Background thread: parse framed messages from hardware."""
         reconnect_delay = 1.0
 
         while self._running:
@@ -153,57 +175,39 @@ class SerialService:
                     continue
 
             try:
-                # Read one command byte
-                raw = self._serial.read(1)
+                connection = self._serial
+                if connection is None:
+                    continue
+                waiting = connection.in_waiting
+                raw = connection.read(max(1, min(waiting, 256)))
                 if not raw:
-                    continue  # timeout, no data
-
-                cmd_val = struct.unpack('b', raw)[0]
-                try:
-                    cmd = Command(cmd_val)
-                except ValueError:
-                    log.debug(f"Unknown command byte: {cmd_val}")
                     continue
 
-                # Handle TEST response: command + version string line
-                if cmd == Command.TEST:
-                    version = self._serial.readline().decode('ascii', errors='replace').strip()
-                    log.info(f"Device version: {version}")
-                    if self.on_version:
-                        self.on_version(version)
-                    continue
-
-                # Handle OK: no payload
-                if cmd == Command.OK:
-                    continue
-
-                # Read payload based on command
-                payload_size = COMMAND_PAYLOAD_SIZE.get(cmd, 0)
-                if payload_size > 0:
-                    payload = self._read_exact(payload_size)
-                    if payload is None:
-                        log.warning(f"Incomplete payload for {cmd.name}")
+                for cmd, payload in self._parser.feed(raw):
+                    if cmd == Command.TEST:
+                        version = payload.decode('ascii', errors='replace').strip()
+                        log.info("Device version: %s", version)
+                        if self.on_version:
+                            self.on_version(version)
                         continue
-                else:
-                    payload = b''
 
-                # Dispatch to callback
-                if self.on_message:
-                    self.on_message(cmd, payload)
+                    if cmd == Command.OK:
+                        continue
 
-            except Exception as e:
+                    expected_size = COMMAND_PAYLOAD_SIZE.get(cmd)
+                    if expected_size is None or len(payload) != expected_size:
+                        log.warning(
+                            "Invalid payload size for %s: got %d, expected %s",
+                            cmd.name, len(payload), expected_size,
+                        )
+                        continue
+
+                    if self.on_message:
+                        self.on_message(cmd, payload)
+
+            except (serial.SerialException, OSError) as e:
                 log.error(f"Serial read error: {e}", exc_info=True)
                 self.disconnect()
                 time.sleep(0.5)
-
-    def _read_exact(self, count: int) -> Optional[bytes]:
-        """Read exactly `count` bytes with timeout."""
-        data = b''
-        remaining = count
-        deadline = time.monotonic() + 1.0  # 1s max wait
-        while remaining > 0 and time.monotonic() < deadline:
-            chunk = self._serial.read(remaining)
-            if chunk:
-                data += chunk
-                remaining -= len(chunk)
-        return data if len(data) == count else None
+            except Exception as e:
+                log.exception("Unexpected serial parser/callback error: %s", e)

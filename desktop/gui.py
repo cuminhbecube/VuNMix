@@ -12,7 +12,7 @@ import os
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 from typing import Optional
 import serial.tools.list_ports
@@ -113,7 +113,7 @@ class SettingsDialog:
         self._window.overrideredirect(True)
         
         window_width = 320
-        window_height = 461
+        window_height = 545
         screen_width = self._window.winfo_screenwidth()
         screen_height = self._window.winfo_screenheight()
         x = screen_width - window_width - 15
@@ -221,6 +221,40 @@ class SettingsDialog:
         self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
         add_row(content, "Auto Sleep", lambda r: ctk.CTkSwitch(r, text="", variable=self._sleep_enabled_var, switch_width=36, switch_height=18))
 
+        # Firmware update
+        firmware_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
+        firmware_frame.pack(fill='x', padx=12, pady=(5, 2))
+        firmware_top = ctk.CTkFrame(firmware_frame, fg_color="transparent")
+        firmware_top.pack(fill='x', padx=8, pady=(6, 2))
+        ctk.CTkLabel(
+            firmware_top,
+            text="Device Firmware",
+            font=ctk.CTkFont(size=12),
+        ).pack(side='left')
+        self.btn_firmware = ctk.CTkButton(
+            firmware_top,
+            text="Update .bin",
+            width=92,
+            height=24,
+            command=self._select_firmware,
+        )
+        self.btn_firmware.pack(side='right')
+
+        self._firmware_progress = ctk.CTkProgressBar(
+            firmware_frame,
+            height=6,
+            progress_color="#00bcd4",
+        )
+        self._firmware_progress.pack(fill='x', padx=8, pady=(2, 2))
+        self._firmware_progress.set(0)
+        self._firmware_status_var = tk.StringVar(value="Ready")
+        ctk.CTkLabel(
+            firmware_frame,
+            textvariable=self._firmware_status_var,
+            font=ctk.CTkFont(size=10),
+            text_color="#a0a0a0",
+        ).pack(anchor='w', padx=8, pady=(0, 5))
+
         # Save Button
         save_btn = ctk.CTkButton(main_frame, text="Save Settings", command=self._save, height=32, font=ctk.CTkFont(size=12, weight="bold"))
         save_btn.pack(fill='x', padx=12, pady=(6, 12))
@@ -250,9 +284,91 @@ class SettingsDialog:
             self.btn_toggle_conn.configure(text="Disconnect", fg_color="#dc3545", hover_color="#c82333")
         else:
             self.btn_toggle_conn.configure(text="Connect", fg_color="#28a745", hover_color="#218838")
+        self.btn_toggle_conn.configure(
+            state="disabled" if self.controller.firmware_updating else "normal"
+        )
+        if hasattr(self, "btn_firmware"):
+            firmware_ready = (
+                self.controller._device_connected and
+                not self.controller.firmware_updating
+            )
+            self.btn_firmware.configure(
+                state="normal" if firmware_ready else "disabled"
+            )
         self._window.after(500, self._update_status_loop)
 
+    def _ui_call(self, callback):
+        window = self._window
+        if window and window.winfo_exists():
+            window.after(0, callback)
+
+    def _select_firmware(self):
+        if not self.controller.is_connected:
+            messagebox.showwarning("Firmware Update", "Connect VuNMix first.")
+            return
+
+        path = filedialog.askopenfilename(
+            parent=self._window,
+            title="Select VuNMix firmware.bin",
+            filetypes=[("ESP32 firmware", "*.bin")],
+        )
+        if not path:
+            return
+
+        try:
+            from firmware_updater import validate_firmware
+            firmware = validate_firmware(path)
+        except Exception as exc:
+            messagebox.showerror("Invalid Firmware", str(exc))
+            return
+
+        confirmed = messagebox.askyesno(
+            "Update Firmware",
+            "The device will disconnect for about one minute.\n\n"
+            f"Flash {firmware.name} now?",
+            parent=self._window,
+        )
+        if not confirmed:
+            return
+
+        self.btn_firmware.configure(state="disabled")
+        self._firmware_progress.set(0)
+        self._firmware_status_var.set("Preparing device...")
+
+        def on_progress(value, text):
+            self._ui_call(
+                lambda: self._set_firmware_progress(value, text)
+            )
+
+        def on_complete(success, message):
+            self._ui_call(
+                lambda: self._firmware_complete(success, message)
+            )
+
+        if not self.controller.start_firmware_update(
+            str(firmware),
+            on_progress=on_progress,
+            on_complete=on_complete,
+        ):
+            self._firmware_status_var.set("Another update is already running.")
+
+    def _set_firmware_progress(self, value, text):
+        self._firmware_progress.set(max(0.0, min(1.0, float(value))))
+        self._firmware_status_var.set(text)
+
+    def _firmware_complete(self, success, message):
+        self._firmware_progress.set(1.0 if success else 0.0)
+        self._firmware_status_var.set(
+            "Update complete" if success else "Update failed"
+        )
+        if success:
+            messagebox.showinfo("Firmware Update", message, parent=self._window)
+        else:
+            messagebox.showerror("Firmware Update", message, parent=self._window)
+
     def _toggle_connect(self):
+        if self.controller.firmware_updating:
+            return
         if self.controller._device_connected:
             self.controller.stop()
         else:
@@ -272,7 +388,9 @@ class SettingsDialog:
             self.config.com_port = new_port
 
             self.config.run_on_startup = self._startup_var.get()
-            self.config.device_settings.sleep_after_seconds = int(self._sleep_var.get())
+            self.config.device_settings.sleep_after_seconds = max(
+                0, min(65535, int(self._sleep_var.get()))
+            )
             self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
             self.config.device_settings.clock_standby_minutes = max(0, min(255, int(self._clock_standby_var.get())))
             from protocol import STANDBY_LED_NAMES
@@ -376,4 +494,3 @@ class TrayApp:
         log.info("Exit requested")
         self.controller.stop()
         self._icon.stop()
-

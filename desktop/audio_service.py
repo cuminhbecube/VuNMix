@@ -9,6 +9,7 @@ Listens for Windows volume changes and notifies the controller.
 import logging
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -19,6 +20,7 @@ from ctypes import cast, POINTER
 from pycaw.pycaw import (
     AudioUtilities,
     IAudioEndpointVolume,
+    IAudioMeterInformation,
     ISimpleAudioVolume,
 )
 
@@ -43,6 +45,7 @@ class IPolicyConfig(IUnknown):
     ]
 
 from protocol import SessionData, VolumeData, DisplayMode
+from audio_capture import InputPeakMeter, find_input_capture_device
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +63,7 @@ class AudioItem:
     _session_vol: Optional[object] = field(default=None, repr=False)
     _process_id: int = 0
     _device_id: str = ""
+    _session_identifier: str = ""
 
     def to_session_data(self) -> SessionData:
         """Convert to firmware SessionData struct."""
@@ -147,20 +151,36 @@ class AudioService:
             item = items[index]
             vol_float = max(0.0, min(1.0, volume / 100.0))
 
-            if item._endpoint_vol is not None:
+            from pycaw.pycaw import AudioUtilities
+            if item._device_id:
                 try:
-                    item._endpoint_vol.SetMasterVolumeLevelScalar(vol_float, None)
-                    item._endpoint_vol.SetMute(is_muted, None)
-                    item.volume = volume
-                    item.is_muted = is_muted
+                    devices = AudioUtilities.GetAllDevices()
+                    for d in devices:
+                        if d.id == item._device_id:
+                            endpoint_vol = d.EndpointVolume
+                            if endpoint_vol:
+                                endpoint_vol.SetMasterVolumeLevelScalar(vol_float, None)
+                                endpoint_vol.SetMute(is_muted, None)
+                                item.volume = volume
+                                item.is_muted = is_muted
+                            break
                 except Exception as e:
                     log.error(f"Failed to set endpoint volume: {e}")
-            elif item._session_vol is not None:
+            elif item._process_id:
                 try:
-                    item._session_vol.SetMasterVolume(vol_float, None)
-                    item._session_vol.SetMute(is_muted, None)
-                    item.volume = volume
-                    item.is_muted = is_muted
+                    sessions = AudioUtilities.GetAllSessions()
+                    for session in sessions:
+                        try:
+                            if self._session_matches(session, item):
+                                vol_interface = session.SimpleAudioVolume
+                                if vol_interface:
+                                    vol_interface.SetMasterVolume(vol_float, None)
+                                    vol_interface.SetMute(is_muted, None)
+                                    item.volume = volume
+                                    item.is_muted = is_muted
+                                break
+                        except Exception:
+                            pass
                 except Exception as e:
                     log.error(f"Failed to set session volume: {e}")
         finally:
@@ -169,21 +189,30 @@ class AudioService:
     def set_default_device(self, mode: int, index: int):
         """Mark a device as default and apply to Windows."""
         items = self.get_sessions_for_mode(mode)
-        for i, item in enumerate(items):
-            item.is_default = (i == index)
-            if i == index and item._device_id:
-                try:
-                    comtypes.CoInitialize()
-                    CLSID_PolicyConfigClient = GUID('{870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}')
-                    policyConfig = CoCreateInstance(CLSID_PolicyConfigClient, IPolicyConfig, CLSCTX_ALL)
-                    policyConfig.SetDefaultEndpoint(item._device_id, 0)
-                    policyConfig.SetDefaultEndpoint(item._device_id, 1)
-                    policyConfig.SetDefaultEndpoint(item._device_id, 2)
-                    log.info(f"Set Windows default audio device to {item.name}")
-                except Exception as e:
-                    log.error(f"Failed to set Windows default device: {e}")
-                finally:
-                    comtypes.CoUninitialize()
+        if index < 0 or index >= len(items) or not items[index]._device_id:
+            return
+
+        selected = items[index]
+        succeeded = False
+        try:
+            comtypes.CoInitialize()
+            CLSID_PolicyConfigClient = GUID('{870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}')
+            policyConfig = CoCreateInstance(CLSID_PolicyConfigClient, IPolicyConfig, CLSCTX_ALL)
+            policyConfig.SetDefaultEndpoint(selected._device_id, 0)
+            policyConfig.SetDefaultEndpoint(selected._device_id, 1)
+            policyConfig.SetDefaultEndpoint(selected._device_id, 2)
+            succeeded = True
+            log.info("Set Windows default audio device to %s", selected.name)
+        except Exception as e:
+            log.error("Failed to set Windows default device: %s", e)
+        finally:
+            comtypes.CoUninitialize()
+
+        if succeeded:
+            with self._lock:
+                target = self._output_devices if mode == DisplayMode.MODE_OUTPUT else self._input_devices
+                for item in target:
+                    item.is_default = item._device_id == selected._device_id
 
     def _refresh_output_devices(self):
         """Enumerate output audio devices."""
@@ -195,35 +224,36 @@ class AudioService:
             default_id = None
             default_speaker = AudioUtilities.GetSpeakers()
             if default_speaker:
-                default_id = default_speaker.GetId()
+                default_id = default_speaker.id
 
             devices = AudioUtilities.GetAllDevices()
-            out_idx = 1
             temp_devices = []
             for d in devices:
                 if str(d.state) == 'AudioDeviceState.Active' and d.id.startswith('{0.0.0.'):
-                    endpoint_vol = d.EndpointVolume
-                    if not endpoint_vol:
-                        continue
+                    try:
+                        endpoint_vol = d.EndpointVolume
+                        if not endpoint_vol:
+                            continue
 
-                    vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
-                    muted = bool(endpoint_vol.GetMute())
-                    is_default = (d.id == default_id)
+                        vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
+                        muted = bool(endpoint_vol.GetMute())
+                        is_default = (d.id == default_id)
 
-                    item = AudioItem(
-                        id=0,
-                        name=d.FriendlyName[:29],
-                        volume=vol,
-                        is_muted=muted,
-                        is_default=is_default,
-                        _endpoint_vol=endpoint_vol,
-                        _device_id=d.id,
-                    )
-                    temp_devices.append(item)
-                    
+                        item = AudioItem(
+                            id=0,
+                            name=d.FriendlyName[:29],
+                            volume=vol,
+                            is_muted=muted,
+                            is_default=is_default,
+                            _endpoint_vol=endpoint_vol,
+                            _device_id=d.id,
+                        )
+                        temp_devices.append(item)
+                    except Exception as e:
+                        log.debug(f"Skipping output device {d.FriendlyName}: {e}")
+
             temp_devices.sort(key=lambda x: x.name.lower())
-            for i, item in enumerate(temp_devices):
-                item.id = i + 1
+            self._assign_protocol_ids(temp_devices, lambda item: item._device_id)
             
             with self._lock:
                 self._output_devices.extend(temp_devices)
@@ -243,32 +273,33 @@ class AudioService:
                 default_id = default_mic.GetId()
 
             devices = AudioUtilities.GetAllDevices()
-            in_idx = 101 # Offset to avoid collision with output ids if needed
             temp_devices = []
             for d in devices:
                 if str(d.state) == 'AudioDeviceState.Active' and d.id.startswith('{0.0.1.'):
-                    endpoint_vol = d.EndpointVolume
-                    if not endpoint_vol:
-                        continue
+                    try:
+                        endpoint_vol = d.EndpointVolume
+                        if not endpoint_vol:
+                            continue
 
-                    vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
-                    muted = bool(endpoint_vol.GetMute())
-                    is_default = (d.id == default_id)
+                        vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
+                        muted = bool(endpoint_vol.GetMute())
+                        is_default = (d.id == default_id)
 
-                    item = AudioItem(
-                        id=0,
-                        name=d.FriendlyName[:29],
-                        volume=vol,
-                        is_muted=muted,
-                        is_default=is_default,
-                        _endpoint_vol=endpoint_vol,
-                        _device_id=d.id,
-                    )
-                    temp_devices.append(item)
-                    
+                        item = AudioItem(
+                            id=0,
+                            name=d.FriendlyName[:29],
+                            volume=vol,
+                            is_muted=muted,
+                            is_default=is_default,
+                            _endpoint_vol=endpoint_vol,
+                            _device_id=d.id,
+                        )
+                        temp_devices.append(item)
+                    except Exception as e:
+                        log.debug(f"Skipping input device {d.FriendlyName}: {e}")
+
             temp_devices.sort(key=lambda x: x.name.lower())
-            for i, item in enumerate(temp_devices):
-                item.id = in_idx + i
+            self._assign_protocol_ids(temp_devices, lambda item: item._device_id)
             
             with self._lock:
                 self._input_devices.extend(temp_devices)
@@ -282,33 +313,45 @@ class AudioService:
         try:
             sessions = AudioUtilities.GetAllSessions()
             temp_sessions = []
+            fallback_occurrences: Dict[tuple, int] = {}
             for session in sessions:
-                if session.Process is None:
-                    continue
                 try:
+                    pid = session.ProcessId
+                    if pid == 0 or pid is None:
+                        continue
+                    proc = session.Process
+                    if proc is None:
+                        continue
+                    name = proc.name()
+                    if name.lower().endswith('.exe'):
+                        name = name[:-4]
+                    name = name[:29]
+                    identifier = self._get_session_identifier(session)
+                    if not identifier:
+                        fallback_key = (pid, name)
+                        occurrence = fallback_occurrences.get(fallback_key, 0)
+                        fallback_occurrences[fallback_key] = occurrence + 1
+                        identifier = f"fallback:{pid}:{name}:{occurrence}"
+
                     vol_interface = session.SimpleAudioVolume
                     vol = int(vol_interface.GetMasterVolume() * 100)
                     muted = bool(vol_interface.GetMute())
-                    pid = session.Process.pid
-                    name = session.Process.name()
-                    # Remove .exe extension for cleaner display
-                    if name.lower().endswith('.exe'):
-                        name = name[:-4]
-                    # Truncate to 29 chars (firmware limit)
-                    name = name[:29]
+
                     item = AudioItem(
-                        id=pid & 0x7F,
+                        id=0,
                         name=name,
                         volume=vol,
                         is_muted=muted,
                         _session_vol=vol_interface,
                         _process_id=pid,
+                        _session_identifier=identifier,
                     )
                     temp_sessions.append(item)
                 except Exception as e:
                     log.debug(f"Skipping session: {e}")
                     
             temp_sessions.sort(key=lambda x: x.name.lower())
+            self._assign_protocol_ids(temp_sessions, lambda item: item._session_identifier)
             with self._lock:
                 self._app_sessions.extend(temp_sessions)
         except Exception as e:
@@ -323,23 +366,119 @@ class AudioService:
                 return None
             item = items[index]
 
-            if item._endpoint_vol is not None:
+            from pycaw.pycaw import AudioUtilities
+            if item._device_id:
                 try:
-                    vol = int(item._endpoint_vol.GetMasterVolumeLevelScalar() * 100)
-                    muted = bool(item._endpoint_vol.GetMute())
-                    item.volume = vol
-                    item.is_muted = muted
+                    devices = AudioUtilities.GetAllDevices()
+                    for d in devices:
+                        if d.id == item._device_id:
+                            endpoint_vol = d.EndpointVolume
+                            if endpoint_vol:
+                                vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
+                                muted = bool(endpoint_vol.GetMute())
+                                item.volume = vol
+                                item.is_muted = muted
+                            break
                 except Exception:
                     pass
-            elif item._session_vol is not None:
+            elif item._process_id:
                 try:
-                    vol = int(item._session_vol.GetMasterVolume() * 100)
-                    muted = bool(item._session_vol.GetMute())
-                    item.volume = vol
-                    item.is_muted = muted
+                    sessions = AudioUtilities.GetAllSessions()
+                    for session in sessions:
+                        try:
+                            if self._session_matches(session, item):
+                                vol_interface = session.SimpleAudioVolume
+                                if vol_interface:
+                                    vol = int(vol_interface.GetMasterVolume() * 100)
+                                    muted = bool(vol_interface.GetMute())
+                                    item.volume = vol
+                                    item.is_muted = muted
+                                break
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
             return item.to_session_data().data
         finally:
             comtypes.CoUninitialize()
+
+    def create_peak_meter(self, mode: int, index: int):
+        """Create an IAudioMeterInformation interface in the calling thread."""
+        items = self.get_sessions_for_mode(mode)
+        if index < 0 or index >= len(items):
+            return None
+        item = items[index]
+
+        if item._device_id:
+            if mode == DisplayMode.MODE_INPUT:
+                device = find_input_capture_device(item.name)
+                if device is not None:
+                    device_index, channels, sample_rate = device
+                    return InputPeakMeter(device_index, channels, sample_rate)
+
+            for device in AudioUtilities.GetAllDevices():
+                if device.id == item._device_id:
+                    interface = device._dev.Activate(
+                        IAudioMeterInformation._iid_,
+                        CLSCTX_ALL,
+                        None,
+                    )
+                    return cast(interface, POINTER(IAudioMeterInformation))
+            return None
+
+        for session in AudioUtilities.GetAllSessions():
+            if self._session_matches(session, item):
+                return session._ctl.QueryInterface(IAudioMeterInformation)
+        return None
+
+    @staticmethod
+    def read_peak_meter(meter) -> float:
+        if meter is None:
+            return 0.0
+        return max(0.0, min(1.0, float(meter.GetPeakValue())))
+
+    @staticmethod
+    def close_peak_meter(meter):
+        close = getattr(meter, "close", None)
+        if close is not None:
+            close()
+
+    @staticmethod
+    def _get_session_identifier(session) -> str:
+        for attribute in ("InstanceIdentifier", "Identifier"):
+            try:
+                value = getattr(session, attribute, "")
+                if value:
+                    return str(value)
+            except Exception:
+                continue
+        return ""
+
+    @classmethod
+    def _session_matches(cls, session, item: AudioItem) -> bool:
+        identifier = cls._get_session_identifier(session)
+        if item._session_identifier and not item._session_identifier.startswith("fallback:") and identifier:
+            return identifier == item._session_identifier
+        if session.ProcessId != item._process_id:
+            return False
+        try:
+            process = session.Process
+            name = process.name() if process else ""
+            if name.lower().endswith(".exe"):
+                name = name[:-4]
+            return name[:29] == item.name
+        except Exception:
+            return False
+
+    @staticmethod
+    def _assign_protocol_ids(items: List[AudioItem], key_getter):
+        """Map stable Windows identifiers into unique non-zero 7-bit IDs."""
+        used = set()
+        for item in items:
+            key = str(key_getter(item) or item.name)
+            candidate = (zlib.crc32(key.encode("utf-8", errors="replace")) % 127) + 1
+            while candidate in used:
+                candidate = 1 if candidate == 127 else candidate + 1
+            item.id = candidate
+            used.add(candidate)

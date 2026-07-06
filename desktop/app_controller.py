@@ -9,6 +9,7 @@ Handles:
 """
 
 import logging
+import math
 import threading
 import time
 from datetime import datetime
@@ -21,7 +22,7 @@ import win32gui
 
 from protocol import (
     Command, DisplayMode, SessionIndex,
-    SessionInfo, SessionData, VolumeData, DeviceSettings, ModeStates,
+    SessionInfo, SessionData, VolumeData, MeterData, DeviceSettings, ModeStates,
     SESSION_COMMANDS, VOLUME_COMMANDS,
 )
 from config import AppConfig
@@ -96,11 +97,16 @@ class AppController:
         self._session_info = SessionInfo()
         self._sessions = [SessionData() for _ in range(SessionIndex.INDEX_MAX)]
         self._mode_states = ModeStates()
+        self._meter_data = MeterData()
         self._device_connected = False
         self._is_sleeping = False
+        self._handshake_token = 0
 
         # Sync thread
         self._sync_thread: Optional[threading.Thread] = None
+        self._meter_thread: Optional[threading.Thread] = None
+        self._firmware_update_lock = threading.Lock()
+        self._firmware_updating = False
         self._running = False
 
         # Wire serial callbacks
@@ -125,6 +131,8 @@ class AppController:
 
         self._sync_thread = threading.Thread(target=self._sync_loop, daemon=True, name="AudioSync")
         self._sync_thread.start()
+        self._meter_thread = threading.Thread(target=self._meter_loop, daemon=True, name="AudioMeter")
+        self._meter_thread.start()
 
     def stop(self):
         """Stop everything."""
@@ -137,10 +145,55 @@ class AppController:
         if self._sync_thread:
             self._sync_thread.join(timeout=3.0)
             self._sync_thread = None
+        if self._meter_thread:
+            self._meter_thread.join(timeout=3.0)
+            self._meter_thread = None
 
     @property
     def is_connected(self) -> bool:
         return self._device_connected
+
+    @property
+    def firmware_updating(self) -> bool:
+        return self._firmware_updating
+
+    def start_firmware_update(self, path, on_progress=None, on_complete=None) -> bool:
+        """Stop protocol traffic, flash firmware in a worker, then reconnect."""
+        if not self._firmware_update_lock.acquire(blocking=False):
+            return False
+        self._firmware_updating = True
+
+        def worker():
+            success = False
+            message = ""
+            try:
+                from firmware_updater import flash_firmware
+                self.serial.stop()
+                time.sleep(0.5)
+                flash_firmware(
+                    self.config.com_port,
+                    path,
+                    progress=on_progress,
+                )
+                success = True
+                message = "Firmware update completed successfully."
+            except Exception as exc:
+                log.exception("Firmware update failed")
+                message = str(exc)
+            finally:
+                self._firmware_updating = False
+                self._firmware_update_lock.release()
+                if self._running:
+                    self.serial.start()
+                if on_complete:
+                    on_complete(success, message)
+
+        threading.Thread(
+            target=worker,
+            daemon=False,
+            name="FirmwareUpdate",
+        ).start()
+        return True
 
     def _on_pc_sleep(self):
         log.info("PC entering sleep mode. Suspending VuNMix device.")
@@ -174,37 +227,59 @@ class AppController:
 
     # ─── Connection Events ─────────────────────────────────────────────
     def _on_device_connected(self):
-        """Called when serial port opens successfully."""
-        log.info("Device connected, sending handshake...")
-        self._device_connected = True
-        if self.on_connection_changed:
-            self.on_connection_changed(True)
-
-        # Handshake sequence
+        """Called when the COM port opens; protocol identity is not verified yet."""
+        log.info("Serial port opened, verifying VuNMix firmware...")
+        self._device_connected = False
+        self._handshake_token += 1
+        token = self._handshake_token
         time.sleep(0.2)
         self.serial.send_test()
-        time.sleep(0.3)
 
-        # Send settings
-        self.serial.send_settings(self.config.device_settings)
-        time.sleep(0.1)
+        def handshake_watchdog():
+            time.sleep(10.0)
+            if token == self._handshake_token and not self._device_connected:
+                log.warning("VuNMix handshake timed out; reconnecting")
+                self.serial.disconnect()
 
-        # Send current time
-        now = datetime.now()
-        self.serial.send_time_sync(now.hour, now.minute, now.second)
-        time.sleep(0.05)
+        threading.Thread(
+            target=handshake_watchdog,
+            daemon=True,
+            name="HandshakeWatchdog",
+        ).start()
 
-        # Refresh audio and push initial state
-        comtypes.CoInitialize()
+    def _complete_handshake(self, token: int):
+        if token != self._handshake_token or not self.serial.is_connected:
+            return
+
         try:
-            self.audio.refresh()
-            self._push_full_state(DisplayMode.MODE_OUTPUT)
-        finally:
-            comtypes.CoUninitialize()
+            self.serial.send_settings(self.config.device_settings)
+            time.sleep(0.1)
+
+            now = datetime.now()
+            self.serial.send_time_sync(now.hour, now.minute, now.second)
+            time.sleep(0.05)
+
+            comtypes.CoInitialize()
+            try:
+                self.audio.refresh()
+                self._push_full_state(DisplayMode.MODE_OUTPUT)
+                log.info(
+                    "Initial state sent: output=%d input=%d apps=%d",
+                    self.audio.get_session_count(DisplayMode.MODE_OUTPUT),
+                    self.audio.get_session_count(DisplayMode.MODE_INPUT),
+                    self.audio.get_session_count(DisplayMode.MODE_APPLICATION),
+                )
+            finally:
+                comtypes.CoUninitialize()
+        except Exception:
+            log.exception("Failed to initialize device after handshake")
+            if token == self._handshake_token:
+                self.serial.disconnect()
 
     def _on_device_disconnected(self):
         """Called when serial port closes."""
         log.info("Device disconnected")
+        self._handshake_token += 1
         self._device_connected = False
         self._session_info = SessionInfo()
         if self.on_connection_changed:
@@ -212,6 +287,18 @@ class AppController:
 
     def _on_version(self, version: str):
         log.info(f"Firmware version: {version}")
+        if self._device_connected:
+            return
+        self._device_connected = True
+        token = self._handshake_token
+        if self.on_connection_changed:
+            self.on_connection_changed(True)
+        threading.Thread(
+            target=self._complete_handshake,
+            args=(token,),
+            daemon=True,
+            name="DeviceHandshake",
+        ).start()
 
     # ─── Hardware Message Handling ─────────────────────────────────────
     def _on_hw_message(self, cmd: Command, payload: bytes):
@@ -237,16 +324,24 @@ class AppController:
         elif cmd == Command.MODE_STATES:
             self._mode_states = ModeStates.unpack(payload)
             log.debug(f"HW→PC MODE_STATES: {self._mode_states.states}")
+        elif cmd == Command.METER_LEVEL:
+            self._meter_data = MeterData.unpack(payload)
 
     def _handle_session_info_from_hw(self, info: SessionInfo):
         """Hardware changed mode or navigated — send appropriate sessions."""
-        self._session_info = info
+        mode_changed = info.mode != self._session_info.mode
+        if mode_changed:
+            # Use the cache immediately. A full Windows audio enumeration can
+            # take around one second and made every mode change feel blocked.
+            # The sync loop refreshes the selected volume in the background.
+            items = self.audio.get_sessions_for_mode(info.mode)
+            info.current = self._preferred_index(info.mode, items, info.current)
+            # Keep the firmware's index aligned with the item selected here.
+            # PC -> firmware SESSION_INFO does not echo back.
+            self.serial.send_session_info(info)
 
-        comtypes.CoInitialize()
-        try:
-            self._push_sessions_for_mode(info.mode, info.current)
-        finally:
-            comtypes.CoUninitialize()
+        self._session_info = info
+        self._push_sessions_for_mode(info.mode, info.current)
 
     def _apply_volume_to_windows(self, session_idx: int, vol: VolumeData):
         """Apply volume change from hardware knob to Windows."""
@@ -287,16 +382,33 @@ class AppController:
         return None
 
     # ─── Push State to Hardware ────────────────────────────────────────
+    @staticmethod
+    def _preferred_index(mode: int, items, fallback: int = 0) -> int:
+        """Choose the Windows default endpoint, or a safe existing index."""
+        if not items:
+            return 0
+
+        if mode in (DisplayMode.MODE_OUTPUT, DisplayMode.MODE_INPUT):
+            default_idx = next(
+                (idx for idx, item in enumerate(items) if item.is_default),
+                None,
+            )
+            if default_idx is not None:
+                return default_idx
+
+        return max(0, min(int(fallback), len(items) - 1))
+
     def _push_full_state(self, mode: int):
         """Send complete state for a display mode to hardware."""
         items = self.audio.get_sessions_for_mode(mode)
         n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
         n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
         n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
+        current_idx = self._preferred_index(mode, items)
 
         self._session_info = SessionInfo(
             mode=mode,
-            current=0,
+            current=current_idx,
             sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
         )
         self._mode_states = ModeStates(states=[0, 1, 1, 0, 0])
@@ -308,7 +420,7 @@ class AppController:
         self.serial.send_mode_states(self._mode_states)
 
         # Send sessions
-        self._push_sessions_for_mode(mode, 0)
+        self._push_sessions_for_mode(mode, current_idx)
 
     def _push_updated_state(self):
         """Re-push state after a refresh, preserving current index if possible."""
@@ -320,7 +432,11 @@ class AppController:
         n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
         
         current_idx = self._session_info.current
-        if items and current_idx >= len(items):
+        selected_snapshot = self._sessions[SessionIndex.INDEX_CURRENT]
+        matched_idx = self._find_audio_item_index(items, selected_snapshot) if selected_snapshot.name else None
+        if matched_idx is not None:
+            current_idx = matched_idx
+        elif items and current_idx >= len(items):
             current_idx = len(items) - 1
         elif not items:
             current_idx = 0
@@ -436,3 +552,101 @@ class AppController:
                 log.debug(f"Sync error: {e}")
             finally:
                 comtypes.CoUninitialize()
+
+    @staticmethod
+    def _peak_to_level(peak: float) -> int:
+        """Map WASAPI's linear peak to a readable -60 dB..0 dB meter."""
+        if peak <= 0.001:
+            return 0
+        db = 20.0 * math.log10(min(1.0, peak))
+        return max(0, min(100, round((db + 60.0) * (100.0 / 60.0))))
+
+    def _meter_loop(self):
+        """Send smoothed live peak levels without blocking volume sync."""
+        current_meter = None
+        alternate_meter = None
+        selection_key = None
+        shown_current = 0
+        shown_alternate = 0
+        last_sent = (-1, -1)
+        next_retry = 0.0
+
+        comtypes.CoInitialize()
+        try:
+            while self._running:
+                time.sleep(1.0 / 15.0)
+
+                if (not self._device_connected or self._is_sleeping or
+                        self._session_info.mode == DisplayMode.MODE_SPLASH):
+                    self.audio.close_peak_meter(current_meter)
+                    self.audio.close_peak_meter(alternate_meter)
+                    current_meter = None
+                    alternate_meter = None
+                    if last_sent != (0, 0) and self.serial.is_connected:
+                        self.serial.send_meter(MeterData())
+                    last_sent = (0, 0)
+                    shown_current = 0
+                    shown_alternate = 0
+                    selection_key = None
+                    continue
+
+                mode = self._session_info.mode
+                current_idx = self._session_info.current
+                items = self.audio.get_sessions_for_mode(mode)
+                alternate_idx = None
+                if mode == DisplayMode.MODE_GAME:
+                    alternate_idx = self._find_audio_item_index(
+                        items,
+                        self._sessions[SessionIndex.INDEX_ALTERNATE],
+                    )
+
+                key = (mode, current_idx, alternate_idx)
+                now = time.monotonic()
+                if key != selection_key or (
+                    current_meter is None and now >= next_retry
+                ):
+                    self.audio.close_peak_meter(current_meter)
+                    self.audio.close_peak_meter(alternate_meter)
+                    current_meter = None
+                    alternate_meter = None
+                    selection_key = key
+                    next_retry = now + 1.0
+                    try:
+                        current_meter = self.audio.create_peak_meter(mode, current_idx)
+                    except Exception:
+                        current_meter = None
+                    try:
+                        alternate_meter = (
+                            self.audio.create_peak_meter(mode, alternate_idx)
+                            if alternate_idx is not None else None
+                        )
+                    except Exception:
+                        alternate_meter = None
+
+                try:
+                    target_current = self._peak_to_level(
+                        self.audio.read_peak_meter(current_meter)
+                    )
+                    target_alternate = self._peak_to_level(
+                        self.audio.read_peak_meter(alternate_meter)
+                    )
+                except Exception:
+                    self.audio.close_peak_meter(current_meter)
+                    self.audio.close_peak_meter(alternate_meter)
+                    current_meter = None
+                    alternate_meter = None
+                    next_retry = now + 1.0
+                    target_current = 0
+                    target_alternate = 0
+
+                # Fast attack, slower decay gives a stable, readable meter.
+                shown_current = max(target_current, shown_current - 7)
+                shown_alternate = max(target_alternate, shown_alternate - 7)
+                levels = (shown_current, shown_alternate)
+                if levels != last_sent:
+                    self.serial.send_meter(MeterData(*levels))
+                    last_sent = levels
+        finally:
+            self.audio.close_peak_meter(current_meter)
+            self.audio.close_peak_meter(alternate_meter)
+            comtypes.CoUninitialize()

@@ -1,10 +1,11 @@
 #include "Communications.h"
 
-// Defined in the main file
+// Defined in main.cpp
 extern DeviceSettings g_Settings;
 extern SessionInfo g_SessionInfo;
 extern SessionData g_Sessions[4];
 extern ModeStates g_ModeStates;
+extern MeterData g_MeterData;
 extern uint32_t g_HeartbeatTimeout;
 extern uint32_t g_Now;
 extern uint32_t g_LastSteps;
@@ -12,43 +13,203 @@ extern TimeData g_TimeData;
 extern uint32_t g_TimeSyncMillis;
 extern bool g_TimeValid;
 
-//#define TEST_HARNESS
-
 namespace Communications
 {
-    // --- Outgoing message queue ---
-    // Simple queue: store up to 8 pending outgoing commands.
-    // The device can only generate a few commands per loop iteration.
-    static const uint8_t TX_QUEUE_SIZE = 8;
+    static constexpr uint8_t FRAME_MAGIC_0 = 0xA5;
+    static constexpr uint8_t FRAME_MAGIC_1 = 0x5A;
+    static constexpr uint8_t MAX_PAYLOAD = 64;
+    // A complete state burst is roughly 170 bytes (info, mode state and
+    // current/previous/next sessions). Keep enough headroom so USB CDC can
+    // deliver several frames in one packet without discarding the first one.
+    static constexpr uint16_t RX_BUFFER_SIZE = 512;
+
+    static uint8_t s_rxBuffer[RX_BUFFER_SIZE];
+    static uint16_t s_rxLength = 0;
+
+    static constexpr uint8_t TX_QUEUE_SIZE = 16;
     static Command s_txQueue[TX_QUEUE_SIZE];
     static uint8_t s_txHead = 0;
     static uint8_t s_txTail = 0;
     static uint8_t s_txCount = 0;
 
-    static void TxEnqueue(Command cmd) {
-        if (s_txCount >= TX_QUEUE_SIZE) return; // drop if full
-        s_txQueue[s_txHead] = cmd;
+    static uint16_t Crc16(const uint8_t *data, size_t length)
+    {
+        uint16_t crc = 0xFFFF;
+        for (size_t i = 0; i < length; ++i)
+        {
+            crc ^= (uint16_t)data[i] << 8;
+            for (uint8_t bit = 0; bit < 8; ++bit)
+                crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+        }
+        return crc;
+    }
+
+    static void DiscardRx(uint16_t count)
+    {
+        if (count >= s_rxLength)
+        {
+            s_rxLength = 0;
+            return;
+        }
+        memmove(s_rxBuffer, s_rxBuffer + count, s_rxLength - count);
+        s_rxLength -= count;
+    }
+
+    static void SendFrame(Command command, const void *payload = nullptr, uint8_t payloadLength = 0)
+    {
+        if (payloadLength > MAX_PAYLOAD) return;
+
+        uint8_t frame[2 + 2 + MAX_PAYLOAD + 2];
+        frame[0] = FRAME_MAGIC_0;
+        frame[1] = FRAME_MAGIC_1;
+        frame[2] = (uint8_t)command;
+        frame[3] = payloadLength;
+        if (payloadLength > 0 && payload != nullptr)
+            memcpy(frame + 4, payload, payloadLength);
+
+        uint16_t crc = Crc16(frame + 2, (size_t)payloadLength + 2);
+        frame[4 + payloadLength] = (uint8_t)(crc & 0xFF);
+        frame[5 + payloadLength] = (uint8_t)(crc >> 8);
+        Serial.write(frame, (size_t)payloadLength + 6);
+        Serial.flush();
+    }
+
+    static void TxEnqueue(Command command)
+    {
+        if (s_txCount >= TX_QUEUE_SIZE)
+        {
+            // Commands carry snapshots of the latest global state. Prefer the
+            // newest snapshot over an old queue entry if the consumer stalls.
+            s_txTail = (s_txTail + 1) % TX_QUEUE_SIZE;
+            --s_txCount;
+        }
+        s_txQueue[s_txHead] = command;
         s_txHead = (s_txHead + 1) % TX_QUEUE_SIZE;
-        s_txCount++;
+        ++s_txCount;
     }
 
-    static Command TxDequeue() {
+    static Command TxDequeue()
+    {
         if (s_txCount == 0) return Command::NONE;
-        Command cmd = s_txQueue[s_txTail];
+        Command command = s_txQueue[s_txTail];
         s_txTail = (s_txTail + 1) % TX_QUEUE_SIZE;
-        s_txCount--;
-        return cmd;
+        --s_txCount;
+        return command;
     }
 
-    static bool ReadPayload(void *dest, size_t len) {
-        return Serial.readBytes(reinterpret_cast<char *>(dest), len) == len;
+    static Command ProcessFrame(Command command, const uint8_t *payload, uint8_t payloadLength)
+    {
+        if (command == Command::TEST)
+        {
+            if (payloadLength != 0) return Command::ERROR;
+            WriteImmediate(Command::TEST);
+        }
+        else if (command == Command::OK || command == Command::SLEEP)
+        {
+            if (payloadLength != 0) return Command::ERROR;
+        }
+        else if (command == Command::SETTINGS)
+        {
+            if (payloadLength != sizeof(DeviceSettings)) return Command::ERROR;
+            DeviceSettings settings;
+            memcpy(&settings, payload, sizeof(DeviceSettings));
+            settings.accelerationPercentage = min((uint8_t)100, settings.accelerationPercentage);
+            if (settings.standbyLedMode > 15) settings.standbyLedMode = 0;
+            g_Settings = settings;
+        }
+        else if (command == Command::SESSION_INFO)
+        {
+            if (payloadLength != sizeof(SessionInfo)) return Command::ERROR;
+            SessionInfo info;
+            memcpy(&info, payload, sizeof(SessionInfo));
+            if (info.mode >= DisplayMode::MODE_MAX) return Command::ERROR;
+            uint8_t modeIndex = info.mode == DisplayMode::MODE_INPUT ? 1
+                              : (info.mode == DisplayMode::MODE_APPLICATION || info.mode == DisplayMode::MODE_GAME) ? 2
+                              : 0;
+            if (info.sessions[modeIndex] > 0 && info.current >= info.sessions[modeIndex])
+                info.current = info.sessions[modeIndex] - 1;
+            g_SessionInfo = info;
+        }
+        else if (command >= Command::CURRENT_SESSION && command <= Command::NEXT_SESSION)
+        {
+            if (payloadLength != sizeof(SessionData)) return Command::ERROR;
+            memcpy(&g_Sessions[(int8_t)command - (int8_t)Command::CURRENT_SESSION],
+                   payload, sizeof(SessionData));
+            // Always guarantee termination before constructing Arduino String/LVGL text.
+            SessionData &session = g_Sessions[(int8_t)command - (int8_t)Command::CURRENT_SESSION];
+            session.name[29] = '\0';
+            session.data.volume = min((uint8_t)100, session.data.volume);
+        }
+        else if (command >= Command::VOLUME_CURR_CHANGE && command <= Command::VOLUME_NEXT_CHANGE)
+        {
+            if (payloadLength != sizeof(VolumeData)) return Command::ERROR;
+            if ((uint32_t)(g_Now - g_LastSteps) > 500U)
+            {
+                VolumeData volume;
+                memcpy(&volume, payload, sizeof(VolumeData));
+                volume.volume = min((uint8_t)100, volume.volume);
+                g_Sessions[(int8_t)command - (int8_t)Command::VOLUME_CURR_CHANGE].data = volume;
+            }
+        }
+        else if (command == Command::MODE_STATES)
+        {
+            if (payloadLength != sizeof(ModeStates)) return Command::ERROR;
+            ModeStates states;
+            memcpy(&states, payload, sizeof(ModeStates));
+            for (uint8_t mode = 0; mode < DisplayMode::MODE_MAX; ++mode)
+            {
+                uint8_t maximum = mode == DisplayMode::MODE_GAME ? STATE_GAME_MAX : STATE_MAX;
+                if (states.states[mode] >= maximum)
+                    states.states[mode] = 0;
+            }
+            g_ModeStates = states;
+        }
+        else if (command == Command::TIME_SYNC)
+        {
+            if (payloadLength != sizeof(TimeData)) return Command::ERROR;
+            TimeData time;
+            memcpy(&time, payload, sizeof(TimeData));
+            if (time.hour > 23 || time.minute > 59 || time.second > 59)
+                return Command::ERROR;
+            g_TimeData = time;
+            g_TimeSyncMillis = g_Now;
+            g_TimeValid = true;
+        }
+        else if (command == Command::METER_LEVEL)
+        {
+            if (payloadLength != sizeof(MeterData)) return Command::ERROR;
+            MeterData meter;
+            memcpy(&meter, payload, sizeof(MeterData));
+            meter.current = min((uint8_t)100, meter.current);
+            meter.alternate = min((uint8_t)100, meter.alternate);
+            g_MeterData = meter;
+        }
+        else if (command == Command::DEBUG)
+        {
+            if (payloadLength != 0) return Command::ERROR;
+            // Explicit diagnostics request only; the production stream remains
+            // quiet and framed. This allows end-to-end state verification.
+            WriteImmediate(Command::SETTINGS);
+            WriteImmediate(Command::SESSION_INFO);
+            WriteImmediate(Command::CURRENT_SESSION);
+            WriteImmediate(Command::ALTERNATE_SESSION);
+            WriteImmediate(Command::PREVIOUS_SESSION);
+            WriteImmediate(Command::NEXT_SESSION);
+            WriteImmediate(Command::MODE_STATES);
+            WriteImmediate(Command::METER_LEVEL);
+        }
+        else
+        {
+            return Command::ERROR;
+        }
+
+        g_HeartbeatTimeout = g_Now + DEVICE_RESET_AFTER_INACTIVTY;
+        return command;
     }
 
     void Initialize(void)
     {
-        // Serial.begin() is already called in setup() for USB CDC.
-        // Do NOT call it again here - it can reset the USB CDC state on ESP32-S3.
-        Serial.setTimeout(SERIAL_TIMEOUT);
+        s_rxLength = 0;
         s_txHead = 0;
         s_txTail = 0;
         s_txCount = 0;
@@ -56,90 +217,62 @@ namespace Communications
 
     Command Read(void)
     {
-        Command command = Command::NONE;
-        if (Serial.available())
+        while (Serial.available())
         {
-            g_HeartbeatTimeout = g_Now + DEVICE_RESET_AFTER_INACTIVTY;
-            command = (Command)Serial.read();
-            if (command == Command::TEST)
-                WriteImmediate(command);
-            else if (command == Command::SETTINGS)
-            {
-                DeviceSettings temp;
-                if (ReadPayload(&temp, sizeof(DeviceSettings)))
-                    g_Settings = temp;
-                else
-                    command = Command::ERROR;
-            }
-            else if (command == Command::SESSION_INFO)
-            {
-                SessionInfo temp;
-                if (ReadPayload(&temp, sizeof(SessionInfo)))
-                    g_SessionInfo = temp;
-                else
-                    command = Command::ERROR;
-            }
-            else if (command >= Command::CURRENT_SESSION && command <= Command::NEXT_SESSION)
-            {
-                SessionData temp;
-                if (ReadPayload(&temp, sizeof(SessionData)))
-                    g_Sessions[(int8_t)command - (int8_t)Command::CURRENT_SESSION] = temp;
-                else
-                    command = Command::ERROR;
-            }
-            else if (command >= Command::VOLUME_CURR_CHANGE && command <= Command::VOLUME_NEXT_CHANGE)
-            {
-                VolumeData temp;
-                if (ReadPayload(&temp, sizeof(VolumeData))) {
-                    // Anti-echo debounce: if the user turned the knob locally within the last 500ms,
-                    // ignore volume updates from the PC to prevent the volume from bouncing back and forth.
-                    // This prevents the PC's audio event loop from overwriting our local changes with stale values.
-                    if (g_Now - g_LastSteps > 500) {
-                        g_Sessions[(int8_t)command - (int8_t)Command::VOLUME_CURR_CHANGE].data = temp;
-                    }
-                } else {
-                    command = Command::ERROR;
-                }
-            }
-            else if (command == Command::MODE_STATES)
-            {
-                ModeStates temp;
-                if (ReadPayload(&temp, sizeof(ModeStates)))
-                    g_ModeStates = temp;
-                else
-                    command = Command::ERROR;
-            }
-            else if (command == Command::TIME_SYNC)
-            {
-                TimeData temp;
-                if (ReadPayload(&temp, sizeof(TimeData))) {
-                    g_TimeData = temp;
-                    g_TimeSyncMillis = g_Now;
-                    g_TimeValid = true;
-                } else {
-                    command = Command::ERROR;
-                }
-            }
-#ifdef TEST_HARNESS
-            else if (command == Command::DEBUG)
-            {
-                WriteImmediate(Command::SETTINGS);
-                WriteImmediate(Command::SESSION_INFO);
-                WriteImmediate(Command::CURRENT_SESSION);
-                WriteImmediate(Command::ALTERNATE_SESSION);
-                WriteImmediate(Command::PREVIOUS_SESSION);
-                WriteImmediate(Command::NEXT_SESSION);
-                WriteImmediate(Command::VOLUME_CURR_CHANGE);
-                WriteImmediate(Command::VOLUME_ALT_CHANGE);
-                WriteImmediate(Command::VOLUME_PREV_CHANGE);
-                WriteImmediate(Command::VOLUME_NEXT_CHANGE);
-            }
-#endif
-            // Reply OK only after a complete command payload was consumed.
-            if (command != Command::ERROR)
-                WriteImmediate(Command::OK);
+            if (s_rxLength >= RX_BUFFER_SIZE)
+                DiscardRx(1);
+            s_rxBuffer[s_rxLength++] = (uint8_t)Serial.read();
         }
-        return command;
+
+        while (s_rxLength >= 2)
+        {
+            uint16_t magicAt = 0;
+            while (magicAt + 1 < s_rxLength &&
+                   (s_rxBuffer[magicAt] != FRAME_MAGIC_0 || s_rxBuffer[magicAt + 1] != FRAME_MAGIC_1))
+            {
+                ++magicAt;
+            }
+
+            if (magicAt + 1 >= s_rxLength)
+            {
+                bool retainFirstMagic = s_rxBuffer[s_rxLength - 1] == FRAME_MAGIC_0;
+                s_rxBuffer[0] = FRAME_MAGIC_0;
+                s_rxLength = retainFirstMagic ? 1 : 0;
+                return Command::NONE;
+            }
+            if (magicAt > 0)
+                DiscardRx(magicAt);
+            if (s_rxLength < 6)
+                return Command::NONE;
+
+            uint8_t payloadLength = s_rxBuffer[3];
+            if (payloadLength > MAX_PAYLOAD)
+            {
+                DiscardRx(1);
+                continue;
+            }
+
+            uint16_t frameLength = (uint16_t)payloadLength + 6U;
+            if (s_rxLength < frameLength)
+                return Command::NONE;
+
+            uint16_t expected = (uint16_t)s_rxBuffer[4 + payloadLength]
+                              | ((uint16_t)s_rxBuffer[5 + payloadLength] << 8);
+            uint16_t actual = Crc16(s_rxBuffer + 2, (size_t)payloadLength + 2);
+            if (actual != expected)
+            {
+                DiscardRx(1);
+                continue;
+            }
+
+            Command command = (Command)(int8_t)s_rxBuffer[2];
+            Command result = ProcessFrame(command, s_rxBuffer + 4, payloadLength);
+            DiscardRx(frameLength);
+            if (result != Command::ERROR)
+                WriteImmediate(Command::OK);
+            return result;
+        }
+        return Command::NONE;
     }
 
     void WriteImmediate(Command command)
@@ -149,72 +282,48 @@ namespace Communications
 
         if (command == Command::TEST)
         {
-            Serial.write((uint8_t)command);
-            Serial.println(F(VERSION));
-            Serial.flush();
-            return;
+            const char *version = VERSION;
+            SendFrame(command, version, (uint8_t)strlen(version));
         }
-
-        uint8_t buf[33];
-        buf[0] = (uint8_t)command;
-        size_t len = 1;
-
-        if (command == Command::SETTINGS) {
-            memcpy(&buf[len], (char *)&g_Settings, sizeof(DeviceSettings));
-            len += sizeof(DeviceSettings);
-        }
-        else if (command == Command::SESSION_INFO) {
-            memcpy(&buf[len], (char *)&g_SessionInfo, sizeof(SessionInfo));
-            len += sizeof(SessionInfo);
-        }
-        else if (command >= Command::CURRENT_SESSION && command <= Command::NEXT_SESSION) {
-            memcpy(&buf[len], (char *)&g_Sessions[(int8_t)command - (int8_t)Command::CURRENT_SESSION], sizeof(SessionData));
-            len += sizeof(SessionData);
-        }
-        else if (command >= Command::VOLUME_CURR_CHANGE && command <= Command::VOLUME_NEXT_CHANGE) {
-            memcpy(&buf[len], (char *)&g_Sessions[(int8_t)command - (int8_t)Command::VOLUME_CURR_CHANGE].data, sizeof(VolumeData));
-            len += sizeof(VolumeData);
-        }
-        else if (command == Command::MODE_STATES) {
-            memcpy(&buf[len], (char *)&g_ModeStates, sizeof(ModeStates));
-            len += sizeof(ModeStates);
-        }
-
-        Serial.write(buf, len);
-        Serial.flush();
+        else if (command == Command::SETTINGS)
+            SendFrame(command, &g_Settings, sizeof(DeviceSettings));
+        else if (command == Command::SESSION_INFO)
+            SendFrame(command, &g_SessionInfo, sizeof(SessionInfo));
+        else if (command >= Command::CURRENT_SESSION && command <= Command::NEXT_SESSION)
+            SendFrame(command, &g_Sessions[(int8_t)command - (int8_t)Command::CURRENT_SESSION], sizeof(SessionData));
+        else if (command >= Command::VOLUME_CURR_CHANGE && command <= Command::VOLUME_NEXT_CHANGE)
+            SendFrame(command, &g_Sessions[(int8_t)command - (int8_t)Command::VOLUME_CURR_CHANGE].data, sizeof(VolumeData));
+        else if (command == Command::MODE_STATES)
+            SendFrame(command, &g_ModeStates, sizeof(ModeStates));
+        else if (command == Command::METER_LEVEL)
+            SendFrame(command, &g_MeterData, sizeof(MeterData));
+        else
+            SendFrame(command);
     }
 
-    // Write: queues a command to be sent AFTER Read() has finished its OK response.
-    // This prevents interleaving device-initiated messages with protocol responses.
     void Write(Command command)
     {
-        // Prevent duplicate commands in the queue.
-        // Since WriteImmediate always sends the current global state (g_Sessions),
-        // having the command in the queue once is sufficient to send the latest data.
-        for (uint8_t i = 0; i < s_txCount; i++) {
-            uint8_t idx = (s_txTail + i) % TX_QUEUE_SIZE;
-            if (s_txQueue[idx] == command) return;
+        for (uint8_t i = 0; i < s_txCount; ++i)
+        {
+            uint8_t index = (s_txTail + i) % TX_QUEUE_SIZE;
+            if (s_txQueue[index] == command) return;
         }
         TxEnqueue(command);
     }
 
-    // Rate-limit transmissions to the PC to avoid overflowing the desktop app's polling loop
     static uint32_t s_lastTxTime = 0;
-    static const uint32_t TX_INTERVAL = 30; // Max 1 message per 30ms (~33Hz)
+    static constexpr uint32_t TX_INTERVAL = 30;
 
-    // SendPending: called from main loop AFTER Read(). Drains the TX queue.
     void SendPending(void)
     {
-        if (s_txCount == 0) return;
-        
-        // Ensure we don't send device-initiated messages too fast
-        if (g_Now - s_lastTxTime < TX_INTERVAL) return;
+        if (s_txCount == 0 || (uint32_t)(g_Now - s_lastTxTime) < TX_INTERVAL)
+            return;
 
-        Command cmd = TxDequeue();
-        if (cmd != Command::NONE) {
-            WriteImmediate(cmd);
+        Command command = TxDequeue();
+        if (command != Command::NONE)
+        {
+            WriteImmediate(command);
             s_lastTxTime = g_Now;
         }
     }
-
-} // namespace Communications
+}
