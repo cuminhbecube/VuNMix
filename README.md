@@ -1,428 +1,434 @@
-# VuNMix - Cyber-Tactile PC Volume Controller (ESP32-S3)
+# VuNMix
 
-🌍 *[Read in English](#english-version) | 🇻🇳 [Đọc bằng Tiếng Việt](#phiên-bản-tiếng-việt)*
+VuNMix là bộ điều khiển âm lượng PC dùng ESP32-S3, màn hình màu ST7789, bàn phím ma trận 2x3 và cảm ứng CST816S. Thiết bị giao tiếp với ứng dụng VuNMix Desktop trên Windows qua USB-CDC để điều khiển âm lượng đầu ra, đầu vào, từng ứng dụng và chế độ trộn Game/Voice.
 
----
+Dự án lấy cảm hứng từ ý tưởng MaxMix, nhưng firmware ESP32-S3, giao thức truyền, giao diện LVGL và ứng dụng desktop Python đã được viết lại để phù hợp với phần cứng VuNMix.
 
-<a id="english-version"></a>
-# 🌍 English Version
+## Tính năng chính
 
-**VuNMix** is an open-source PC Volume Mixer built and developed based on the original [MaxMix](https://maxmixproject.com/) project. This version features comprehensive hardware and software upgrades, utilizing the **ESP32-S3** microcontroller, a high-resolution ST7789 color TFT display, a 2x3 physical matrix keypad, and a CST816S capacitive touch IC.
+- Điều khiển âm lượng Windows trực tiếp từ thiết bị phần cứng.
+- 4 chế độ hiển thị: Output, Input, Application và Game Mixer.
+- Chọn nhanh thiết bị đầu ra hoặc đầu vào mặc định của Windows.
+- Điều chỉnh âm lượng từng ứng dụng đang phát âm thanh.
+- Chế độ Game Mixer có 2 kênh A/B để cân bằng Game và Voice chat.
+- VU Meter thời gian thực cho Output, Input, Application và Game Mixer.
+- VU Meter Input dùng capture stream riêng nên vẫn đo được mức microphone thực tế.
+- Cảm ứng CST816S: vuốt, chạm, chạm hai lần và nhấn giữ.
+- Tên thiết bị Input/Output dài tự chạy chữ khi đang ở màn hình thiết bị mặc định.
+- Giao diện Cyber-Tactile bằng LVGL 8.3, màu riêng theo từng chế độ.
+- LED NeoPixel hiển thị trạng thái, hiệu ứng standby và sleep mode.
+- Ứng dụng desktop có system tray, settings popup, auto reconnect và firmware updater.
+- Có thể cập nhật firmware `.bin` từ app desktop mà không cần mở PlatformIO.
 
-The highlight of **VuNMix** is its modern **Cyber-Tactile** graphical user interface, built entirely from scratch using **LVGL 8.3**. The UI delivers a stunning high-tech (Cyberpunk) visual experience with glassmorphism effects, high-contrast neon accents, and buttery-smooth animations.
+## Kiến trúc tổng quan
 
-VuNMix communicates directly with its custom **VuNMix Desktop** app (written in Python) on your PC via the USB-CDC protocol, allowing you to independently adjust app volumes, switch audio devices, and balance Game/Voice chat levels intuitively right on your desk.
+```text
+Windows Audio APIs
+        ^
+        |
+VuNMix Desktop App (Python)
+        ^
+        | USB-CDC framed protocol + CRC
+        v
+ESP32-S3 Firmware
+        |
+        +-- ST7789 TFT / LVGL UI
+        +-- CST816S touch
+        +-- Matrix keypad
+        +-- NeoPixel LEDs
+```
 
----
+### Firmware ESP32-S3
 
-## 🌟 What's New in the Cyber-Tactile Version?
+Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
 
-### 1. User Interface (UI) Upgrades
-The UI was completely rebuilt following the **Cyber-Tactile** design philosophy:
-- **Persistent UI Shell:** Standardized screen layout with a Header (mode name & status) and a Bottom Navigation Bar. The main content resides in the middle, ensuring flicker-free, seamless tab switching.
-- **Glassmorphism Panels:** Display cards and volume faders feature an elegant frosted glass outline effect, adding depth to the UI.
-- **Color-coded Modes:** Each mode has a distinct accent color: Cyan (Output), Purple (Input), Green (Application), Orange (Game).
-- **RGB Glow Strip:** A glowing neon strip separates the main content and the navigation bar, dynamically changing colors based on the active mode.
-- **Large Circular Gauges:** High-resolution circular volume gauges with drop-shadow effects.
+- `main.cpp`: vòng lặp chính, xử lý mode, input, sleep, cập nhật display và LED.
+- `Communications.cpp`: giao thức USB-CDC, frame, CRC, queue gửi lệnh.
+- `Display.cpp`: toàn bộ UI LVGL, màn hình mode, VU meter, marquee text.
+- `Input.cpp`: bàn phím ma trận và cảm ứng CST816S.
+- `Config.h`: phiên bản firmware, chân GPIO, thông số phần cứng.
+- `Enums.h`, `Structs.h`: command, mode và cấu trúc dữ liệu chia sẻ với desktop.
 
-### 2. Communication Protocol (Firmware) Upgrades
-The USB-CDC connection protocol between the ESP32-S3 and the Python PC software has been re-architected for maximum speed and stability:
-- **CRC-protected USB framing:** Every message uses a `0xA5 0x5A` marker, command, payload length and CRC-16. Both endpoints reject damaged frames and resynchronize after boot noise, partial transfers or unexpected bytes.
-- **Rate-Limited TX:** Device-initiated updates are limited to one command every 30ms (about 33Hz), preventing USB buffer congestion during rapid volume adjustments.
-- **Anti-Echo Debounce:** After a local volume change, the ESP32 ignores stale Windows volume feedback for 500ms to prevent visible ping-pong.
+### VuNMix Desktop
 
----
-
-## 🎛️ Display Modes
+Ứng dụng desktop nằm trong thư mục `desktop/`.
 
-VuNMix features 4 primary audio management modes. You can easily identify the active mode via the Bottom Navigation Bar and the accent color.
-
-### 1. 🎧 Output Mode (Cyan)
-Manage audio output devices (Speakers, Headphones).
-- **Navigate:** Scroll through available output devices.
-- **Edit:** Adjust volume or mute the selected device.
-
-### 2. 🎙️ Input Mode (Purple)
-Manage audio input devices (Microphones).
-- **Navigate:** View connected microphones.
-- **Edit:** Adjust microphone gain/volume or mute.
-
-### 3. 📱 Application Mode (Green)
-Displays a list of applications currently playing audio (Spotify, Chrome, Games, Discord...).
-- **Navigate:** Select an application to adjust.
-- **Edit:** Increase/decrease volume or mute individual apps independently without affecting the master volume or other apps.
-
-### 4. 🎮 Game Mixer Mode (Orange)
-An advanced audio mixing mode featuring a **Dual Fader** (two vertical sliders) interface.
-Perfect for balancing audio between two specific applications (e.g., balancing your Game audio and Voice chat audio).
-- Displays volume levels for Channel **A (GAME)** and Channel **B (VOICE)** side by side.
-- A center MIX indicator helps you quickly visualize and balance the audio distribution.
-
----
-
-## 🕹️ Hardware Controls
-
-The device utilizes a Matrix Keypad combined with software simulation instead of traditional rotary encoders:
-
-### Key Matrix (2x3)
-| Key Name | Mapped Char | Detailed Function |
-| :--- | :--- | :--- |
-| **Mute** | `P` | Press once to mute/unmute the current application or device. |
-| **Navigate/Edit**| `M` | Press once to toggle between selecting items and adjusting volume. |
-| **Next Mode** | `N` | Press once to cycle through Output -> Input -> App -> Game. |
-| **Vol -** | `-` | Edit mode: Decrease volume. Navigate mode: Scroll left. Hold for continuous adjustment. |
-| **Vol +** | `+` | Edit mode: Increase volume. Navigate mode: Scroll right. Hold for continuous adjustment. |
-| **Play/Pause** | ` ` | (Future) Pause/Resume Windows Media playback. |
+- `vunmix.py`: entry point.
+- `app_controller.py`: điều phối serial, audio service, meter, reconnect và firmware update.
+- `audio_service.py`: lấy danh sách output/input/app session, đổi default device, chỉnh volume.
+- `audio_capture.py`: đo peak microphone bằng `sounddevice`.
+- `serial_service.py`: đọc/ghi USB serial.
+- `protocol.py`: frame protocol, struct pack/unpack tương ứng firmware.
+- `gui.py`: giao diện settings và firmware update.
+- `firmware_updater.py`: kiểm tra và nạp firmware ESP32-S3 application image.
 
-### CST816S Touch Gestures
-
-| Gesture | Action |
-| :--- | :--- |
-| **Swipe left / right** | Select the previous / next output, input device, or application. |
-| **Swipe up / down** | Increase / decrease the current volume by 5%. |
-| **Single tap** | Toggle between Navigate and Edit. |
-| **Double tap** | Mute / unmute the current channel. |
-| **Long press (1 second)** | Cycle Output -> Input -> App -> Game. |
-| **Any gesture while asleep** | Wake the display without applying the gesture action. |
-
-The driver uses the CST816S interrupt pin and performs I2C reads only in the
-main loop. The keypad remains available as a parallel control method.
-
-### Live VU Meter
-
-VuNMix reads the active Windows audio peak level at 15Hz and displays it in
-the top header. Input mode opens a lightweight capture stream for the selected
-microphone so its real PCM peak is available even when no other recording app
-is running. Output, Input and App modes show one meter. Game Mixer shows
-two independent meters for channels A and B. Peak values use a readable
-`-60dB..0dB` scale with fast attack and smooth decay; they do not modify the
-configured volume.
+## Chế độ sử dụng
 
-### NeoPixel LED & Sleep Mode
-- **RGB Backlight (NeoPixel):** Acts as a dynamic audio level meter colored according to the active app/mode during normal operation. On startup, it shows a color wave splash screen.
-- **16 Standby Effects:** When entering Sleep Mode, the LED transitions to one of 16 stunning standby effects (including Aura, Fire, Meteor, Rainbow, Ocean, Lava, and more) inspired by WLED.
-- **Power Saving (Sleep Mode):** Automatically turns off the TFT backlight and transitions to the standby LED effect if no user input is detected. You can configure the sleep timeout, toggle sleep mode on/off, and select your preferred standby LED effect directly from the VuNMix Desktop App's custom Red GUI. Press any key to wake the device.
-
----
-
-## 🛠 Hardware Requirements
-
-1. **Microcontroller:** ESP32-S3 (DevKitC-1 or equivalent).
-2. **Display:** ST7789 2.4-inch TFT LCD (SPI interface, 320x240 resolution).
-3. **Touch IC:** CST816S (I2C interface).
-4. **Keypad:** 2 Columns x 3 Rows Matrix Keypad (6 keys total).
-5. **LED:** NeoPixel RGB LED.
-
-### Pinout Configuration
+### 1. Output
 
-#### 1. TFT Display (ST7789 - SPI)
-| TFT Pin | ESP32-S3 Pin | Note |
-| :--- | :--- | :--- |
-| **MOSI (SDA)** | GPIO 17 | |
-| **SCK (SCL)** | GPIO 16 | |
-| **DC / RS** | GPIO 15 | |
-| **RST / RES** | GPIO 18 | |
-| **CS** | GND | Hard-wired to GND (Always On) |
-| **BLK** | GPIO 8 | Backlight PWM control |
+Dùng để quản lý thiết bị phát âm thanh như loa, tai nghe, HDMI audio hoặc USB DAC.
 
-#### 2. Touch (CST816S - I2C)
-| Touch Pin | ESP32-S3 Pin | Note |
-| :--- | :--- | :--- |
-| **SDA** | GPIO 5 | |
-| **SCL** | GPIO 4 | |
-| **INT** | GPIO 3 | |
-| **RST** | GPIO 2 | |
+- Ở màn hình chọn, bạn có thể chuyển qua lại giữa các output device.
+- Khi chọn một thiết bị không phải default, thao tác vào edit sẽ gửi yêu cầu đặt thiết bị đó làm default của Windows.
+- Khi đang edit, tăng/giảm sẽ thay đổi âm lượng output hiện tại.
+- VU Meter hiển thị mức âm thanh đang phát trên output được chọn.
 
-#### 3. Matrix Keypad (2x3)
-| Keypad Pin | ESP32-S3 Pin | Corresponding Keys |
-| :--- | :--- | :--- |
-| **Row 0** | GPIO 38 | Connects one side of: Prev Tab (Col 0), Mute/Set Def (Col 1), Next Tab (Col 2) |
-| **Row 1** | GPIO 41 | Connects one side of: Vol- (Col 0), Play/Pause (Col 1), Vol+ (Col 2) |
-| **Col 0** | GPIO 42 | Column 0 Scanner |
-| **Col 1** | GPIO 40 | Column 1 Scanner |
-| **Col 2** | GPIO 39 | Column 2 Scanner |
+### 2. Input
 
-#### 4. Misc
-| Component | ESP32-S3 Pin | Note |
-| :--- | :--- | :--- |
-| **NeoPixel (RGB)** | GPIO 45 | Status RGB LED |
-| **BOOT Button** | GPIO 9 | Onboard hardware BOOT button |
+Dùng để quản lý microphone hoặc thiết bị thu âm.
 
----
+- Hiển thị danh sách input device Windows nhận được.
+- Có thể chọn microphone làm default input.
+- Khi edit, tăng/giảm sẽ chỉnh mức volume/gain của microphone.
+- VU Meter Input lấy peak PCM thực tế từ microphone, không phụ thuộc việc có app ghi âm đang mở hay không.
 
-## 💻 Firmware Installation & Build Instructions
+### 3. Application
 
-This project is built on the Arduino framework and managed using **PlatformIO**.
+Dùng để chỉnh âm lượng từng ứng dụng.
 
-### 1. Prerequisites:
-- [Visual Studio Code](https://code.visualstudio.com/)
-- VS Code Extension: [PlatformIO IDE](https://platformio.org/install/ide?install=vscode)
+- Chỉ các ứng dụng có audio session đang hoạt động mới xuất hiện.
+- Có thể chỉnh riêng Chrome, Spotify, game, Discord, Zalo... mà không đổi master volume.
+- Nếu ứng dụng chưa phát âm thanh, Windows có thể chưa tạo session nên app chưa hiện trong danh sách.
 
-### 2. Build & Upload
-1. Clone or download this repository to your computer.
-2. Open the project folder in VS Code.
-3. PlatformIO will automatically initialize the environment and download required libraries (`TFT_eSPI`, `lvgl 8.3`, `Adafruit NeoPixel`, `Keypad`, etc.).
-4. **Connect the ESP32-S3 via USB** (Ensure you plug into the native USB data port, not the UART/CH340 port, as the software relies on native USB-CDC).
-5. Click **Build** (✓ icon) in the bottom PlatformIO status bar.
-6. Once built successfully, click **Upload** (➔ icon) to flash the firmware onto the ESP32.
+### 4. Game Mixer
 
----
+Dùng để cân bằng hai nguồn âm thanh, ví dụ Game và Discord.
 
-## 🖥 PC Control Software (VuNMix Desktop App)
+- Kênh A thường dùng cho game.
+- Kênh B thường dùng cho voice chat.
+- Thiết bị hiển thị 2 thanh volume và 2 meter độc lập.
+- Có thể chọn kênh A/B rồi chỉnh âm lượng từng bên.
 
-VuNMix acts as the display and controller interface. To actually manipulate Windows volume, you need to run the companion background app on your PC. 
-While the project's concept was originally inspired by the open-source MaxMix project, the entire system (both the ESP32 firmware and the Windows Desktop application) has been completely rewritten from scratch to support our specific hardware. The new custom desktop software is built using Python and is located in the `desktop/` directory.
+## Điều khiển bằng phím
 
-**Desktop App Highlights:**
-- **Minimalist Design:** Inspired by the Microsoft PC Manager, the Settings UI is designed as a compact, frameless popup with Native Windows Rounded Corners.
-- **Single-Instance:** Limits the settings window to a single instance at any given time, keeping your screen clutter-free.
-- **Draggable:** Supports drag-and-drop to easily reposition the settings window.
-- **System Tray:** Operates entirely in the background via a system tray icon, offering quick 1-click access to the settings.
+Thiết bị dùng keypad 2 hàng x 3 cột. Mapping mặc định:
 
-You can either run the pre-built executable or run the app from source:
+| Phím | Ký tự nội bộ | Chức năng |
+| :--- | :---: | :--- |
+| Mute | `P` | Mute/unmute kênh hoặc thiết bị hiện tại |
+| Navigate/Edit | `M` | Chuyển giữa màn hình chọn và màn hình chỉnh |
+| Next Mode | `N` | Chuyển vòng Output -> Input -> Application -> Game |
+| Vol - | `-` | Edit: giảm volume; Navigate: chọn mục trước |
+| Vol + | `+` | Edit: tăng volume; Navigate: chọn mục sau |
+| Play/Pause | khoảng trắng | Dự phòng cho điều khiển media |
 
-**Option A: Pre-built Executable (Recommended)**
-1. Navigate to the `desktop/dist_release/VuNMix` folder (if available).
-2. Run `VuNMix.exe`.
-3. The app will run in the background (check the system tray icon).
+Khi giữ `Vol -` hoặc `Vol +`, firmware tạo bước lặp liên tục để cuộn hoặc chỉnh âm lượng nhanh hơn.
 
-**Option B: Run from Source**
-1. Open a terminal and navigate to the `desktop/` folder.
-2. Install the required Python dependencies: `pip install -r requirements.txt`
-3. Run the application: `python vunmix.py`
-
-Runtime settings and logs are stored in `%LOCALAPPDATA%\VuNMix`, so the installed application does not need write permission in `Program Files`.
-
-Once running, the ESP32-S3 device will automatically be recognized and establish a connection via a Virtual COM port (USB-CDC). The splash screen on the device will disappear, transitioning to the control interface.
-
-### Firmware Update from the Desktop App
-
-1. Open **Settings** and keep VuNMix connected.
-2. Select **Update .bin** under **Device Firmware**.
-3. Choose PlatformIO's `.pio/build/esp32-s3-devkitc1-n16r8/firmware.bin`.
-4. Confirm and wait for all blocks to finish. The app reconnects automatically.
-
-The updater validates that the file is an ESP32-S3 application image and only
-writes the application partition at `0x10000`; bootloader, partition table,
-NVS settings and the second OTA slot are preserved. Do not unplug the device
-while an update is running.
-
----
-
-## 📜 Credits & License
-
-- **UI Design / Hardware / ESP32-S3 Firmware / Desktop App:** Developed and optimized by VuNL.
-- **Inspiration:** Inspired by the concept and protocol idea of the [MaxMix Project](https://maxmixproject.com) by [t3knomanzer](https://github.com/t3knomanzer).
-
-<br><br><br>
-
----
----
-
-<a id="phiên-bản-tiếng-việt"></a>
-# 🇻🇳 Phiên bản Tiếng Việt
-
-**VuNMix** là dự án bộ điều khiển âm lượng PC (PC Volume Mixer) mã nguồn mở, được xây dựng và phát triển dựa trên dự án gốc [MaxMix](https://maxmixproject.com/). Phiên bản VuNMix được nâng cấp toàn diện về mặt phần cứng và phần mềm, sử dụng vi điều khiển **ESP32-S3**, kết hợp cùng màn hình màu TFT ST7789 độ phân giải cao, bàn phím ma trận vật lý 2x3 và IC cảm ứng điện dung CST816S.
-
-Điểm nhấn của **VuNMix** là giao diện đồ hoạ **Cyber-Tactile** hiện đại được thiết kế hoàn toàn mới bằng thư viện **LVGL 8.3**. Giao diện mang lại trải nghiệm thị giác High-tech (Cyberpunk) cực kỳ đẹp mắt với hiệu ứng kính mờ (Glassmorphism), màu sắc tương phản cao (Neon accents) và hình ảnh chuyển động mượt mà.
-
-VuNMix giao tiếp trực tiếp với phần mềm **VuNMix Desktop** (được viết bằng Python) trên PC thông qua giao thức USB-CDC, cho phép bạn điều chỉnh âm lượng của từng ứng dụng riêng biệt, chuyển đổi thiết bị âm thanh, và cân bằng âm lượng Game/Voice chat một cách trực quan ngay trên bàn làm việc của bạn.
-
----
-
-## 🌟 Có gì mới ở phiên bản VuNMix Cyber-Tactile?
-
-### 1. Nâng cấp Giao diện (UI)
-Giao diện được đập đi xây lại theo triết lý thiết kế **Cyber-Tactile**:
-- **Persistent UI Shell:** Bố cục màn hình được chuẩn hoá với Header (chứa tên chế độ & trạng thái) và Navigation Bar ở dưới cùng. Nội dung chính nằm ở giữa giúp chuyển đổi giữa các tab cực kỳ mượt mà, loại bỏ hoàn toàn hiện tượng nháy màn hình (flicker-free).
-- **Glassmorphism Panels:** Các khung hiển thị và thanh trượt (faders) sử dụng hiệu ứng viền kính trong suốt sang trọng, tạo chiều sâu cho giao diện.
-- **Color-coded Modes:** Mỗi chế độ hoạt động có một màu nhấn (accent color) đặc trưng: Cyan (Output), Purple (Input), Green (Application), Orange (Game).
-- **RGB Glow Strip:** Giao diện có một dải màu Neon sáng rực phân tách vùng nội dung và thanh điều hướng, thay đổi màu sắc tương ứng theo chế độ.
-- **Large Circular Gauges:** Thanh hiển thị âm lượng dạng cung tròn lớn với độ phân giải cao và hiệu ứng đổ bóng.
-
-### 2. Nâng cấp Giao thức Giao tiếp (Firmware)
-Dự án VuNMix đã tái thiết kế giao thức kết nối USB-CDC giữa ESP32-S3 và phần mềm Python PC để đạt tốc độ và sự ổn định cao nhất:
-- **Khung USB có CRC:** Mỗi bản tin gồm marker `0xA5 0x5A`, command, độ dài payload và CRC-16. Hai phía loại frame lỗi và tự đồng bộ lại sau byte rác, log khởi động hoặc truyền thiếu.
-- **Giới hạn tốc độ TX:** Bản tin do thiết bị chủ động gửi được giới hạn một lệnh mỗi 30ms (khoảng 33Hz), tránh nghẽn bộ đệm USB khi thao tác nhanh.
-- **Chống dội âm thanh:** Sau thao tác volume tại thiết bị, ESP32 bỏ qua phản hồi Windows cũ trong 500ms để tránh giá trị nhảy lùi.
-
----
-
-## 🎛️ Các chế độ hoạt động (Display Modes)
-
-VuNMix được chia thành 4 chế độ quản lý âm thanh chính. Bạn có thể dễ dàng nhận biết chế độ đang sử dụng thông qua thanh điều hướng (Bottom Navigation Bar) và màu sắc chủ đạo.
-
-### 1. 🎧 Output Mode (Cyan / Xanh lơ)
-Quản lý các thiết bị đầu ra (Loa, Tai nghe). 
-- **Navigate:** Cuộn qua danh sách các thiết bị đầu ra khả dụng trên PC.
-- **Edit:** Tăng/giảm âm lượng hoặc tắt tiếng (Mute) thiết bị đang chọn.
-
-### 2. 🎙️ Input Mode (Purple / Tím)
-Quản lý các thiết bị đầu vào (Microphone). 
-- **Navigate:** Xem danh sách microphone đang kết nối.
-- **Edit:** Điều chỉnh âm lượng thu âm, hoặc tắt tiếng (Mute) microphone.
-
-### 3. 📱 Application Mode (Green / Xanh lá)
-Hiển thị danh sách các phần mềm đang phát âm thanh (Spotify, Chrome, Game, Zalo...).
-- **Navigate:** Chọn ứng dụng cần điều chỉnh.
-- **Edit:** Tăng/giảm âm lượng hoặc tắt tiếng từng ứng dụng một cách độc lập mà không ảnh hưởng đến âm lượng tổng của máy tính hay các ứng dụng khác.
-
-### 4. 🎮 Game Mixer Mode (Orange / Cam)
-Chế độ "Mix" (trộn) âm lượng nâng cao với giao diện **Dual Fader** (2 thanh trượt dọc).
-Hỗ trợ cân bằng trực tiếp âm thanh giữa 2 ứng dụng bất kỳ (Ví dụ: Giữa Game bạn đang chơi và ứng dụng Voice chat như Discord).
-- Hiển thị song song âm lượng của kênh **A (GAME)** và kênh **B (VOICE)**.
-- Thanh chia (MIX) ở giữa giúp bạn dễ dàng so sánh và cân bằng âm thanh hai bên.
-
----
-
-## 🕹️ Thao tác điều khiển (Hardware Controls)
-
-Thiết bị loại bỏ núm vặn truyền thống và sử dụng Bàn phím Ma trận kết hợp mô phỏng phần mềm:
-
-### Bàn phím ma trận (Key Matrix 2x3)
-| Tên Phím | Kí tự Map | Chức năng chi tiết |
-| :--- | :--- | :--- |
-| **Mute** | `P` | Nhấn một lần để Mute/Unmute ứng dụng hoặc thiết bị hiện tại. |
-| **Navigate/Edit** | `M` | Nhấn một lần để chuyển giữa chọn mục và chỉnh volume. |
-| **Next Mode** | `N` | Nhấn một lần để chuyển vòng Output -> Input -> App -> Game. |
-| **Vol -** | `-` | Ở chế độ Edit: Giảm âm lượng. Ở chế độ Navigate: Cuộn sang trái. Nhấn giữ để cuộn/chỉnh liên tục. |
-| **Vol +** | `+` | Ở chế độ Edit: Tăng âm lượng. Ở chế độ Navigate: Cuộn sang phải. Nhấn giữ để cuộn/chỉnh liên tục. |
-| **Play/Pause** | ` ` | (Tương lai) Tạm dừng / Tiếp tục Media của Windows. |
-
-### Thao tác cảm ứng CST816S
+## Điều khiển cảm ứng CST816S
 
 | Thao tác | Chức năng |
 | :--- | :--- |
-| **Vuốt trái / phải** | Chọn thiết bị đầu vào, đầu ra hoặc ứng dụng trước / tiếp theo. |
-| **Vuốt lên / xuống** | Tăng / giảm 5% âm lượng hiện tại. |
-| **Chạm một lần** | Chuyển đổi giữa Navigate và Edit. |
-| **Chạm hai lần** | Tắt / bật tiếng kênh hiện tại. |
-| **Nhấn giữ 1 giây** | Chuyển vòng Output -> Input -> App -> Game. |
-| **Thao tác khi màn hình ngủ** | Chỉ đánh thức màn hình, không thực hiện lệnh ngoài ý muốn. |
+| Vuốt trái/phải | Chọn thiết bị hoặc ứng dụng trước/sau |
+| Vuốt lên/xuống | Tăng/giảm volume theo bước 5% |
+| Chạm một lần | Chuyển Navigate/Edit |
+| Chạm hai lần | Mute/unmute |
+| Nhấn giữ khoảng 1 giây | Chuyển mode |
+| Thao tác khi màn hình ngủ | Chỉ đánh thức màn hình, không thực hiện lệnh |
 
-Driver sử dụng chân ngắt của CST816S và chỉ đọc I2C trong vòng lặp chính.
-Bàn phím ma trận vẫn hoạt động song song như trước.
+Cảm ứng và keypad hoạt động song song. Nếu cảm ứng bị đảo hướng trên biến thể màn hình khác, kiểm tra `TOUCH_ROTATION` trong `src/Config.h`.
 
-### VU Meter thời gian thực
+## VU Meter
 
-VuNMix đọc mức peak âm thanh Windows với tần số 15Hz và hiển thị trên thanh
-ở phần header. Chế độ Input mở một luồng thu nhẹ cho microphone đang chọn để
-lấy peak PCM thực ngay cả khi chưa có ứng dụng ghi âm nào chạy. Output, Input
-và App có một thanh; Game Mixer có hai thanh độc
-lập cho kênh A/B. Giá trị được đổi sang thang `-60dB..0dB`, lên nhanh và giảm
-mượt, hoàn toàn không thay đổi mức volume đã đặt.
+VuNMix Desktop đọc peak audio khoảng 15 lần/giây và gửi về firmware bằng command `METER_LEVEL`.
 
-### LED NeoPixel & Chế độ Chờ (Sleep Mode)
-- **Đèn nền RGB (NeoPixel):** Hoạt động như thanh Audio Level tương ứng với màu sắc của từng ứng dụng/chế độ trong quá trình sử dụng. Khi khởi động, hiển thị hiệu ứng sóng màu (Color wave).
-- **16 Hiệu ứng chờ (Standby Effects):** Khi thiết bị bước vào chế độ Sleep, đèn LED sẽ tự động chuyển sang 1 trong 16 hiệu ứng chờ tuyệt đẹp (như Aura, Lửa, Sao băng, Cầu vồng, Đại dương...) được lấy cảm hứng từ thư viện WLED.
-- **Chế độ tiết kiệm điện (Sleep):** Tự động tắt đèn nền màn hình TFT và chuyển sang hiệu ứng LED chờ nếu không có thao tác nào từ người dùng. Bạn có thể dễ dàng thiết lập thời gian chờ (timeout), bật/tắt chế độ Sleep, cũng như chọn hiệu ứng LED yêu thích trực tiếp ngay trên giao diện màu Đỏ cá tính của App VuNMix Desktop trên PC. Chạm phím bất kỳ để đánh thức màn hình.
+- Output: đọc peak từ endpoint render của Windows.
+- Input: mở capture stream nhẹ bằng `sounddevice` để lấy peak microphone thật.
+- Application: đọc peak từ audio session của ứng dụng.
+- Game: gửi 2 giá trị meter cho kênh A và B.
 
----
+Meter chỉ dùng để hiển thị. Nó không thay đổi volume đã đặt.
 
-## 🛠 Phần cứng yêu cầu
+## Marquee tên dài
 
-1. **Vi điều khiển:** ESP32-S3 (DevKitC-1 hoặc tương đương).
-2. **Màn hình:** Màn hình ST7789 2.4 inch TFT LCD giao tiếp SPI (Độ phân giải 320x240).
-3. **Cảm ứng:** IC cảm ứng CST816S giao tiếp I2C.
-4. **Phím bấm:** Bàn phím ma trận 2 cột x 3 hàng (tổng 6 phím).
-5. **LED:** NeoPixel RGB LED.
+Ở màn hình chỉnh của Input/Output, nếu mục đang chọn là thiết bị default và tên quá dài, label sẽ tự chạy chữ để đọc được đầy đủ tên thiết bị. Chức năng này không áp dụng cho màn hình chọn nhanh hoặc danh sách app để tránh gây rối khi chuyển mục liên tục.
 
-### Sơ đồ chân kết nối (Pinout)
+## Sleep, clock standby và LED
 
-#### 1. Màn hình TFT (ST7789 - SPI)
-| Chân TFT | Chân ESP32-S3 | Ghi chú |
-| :--- | :--- | :--- |
-| **MOSI (SDA)** | GPIO 17 | |
-| **SCK (SCL)** | GPIO 16 | |
-| **DC / RS** | GPIO 15 | |
-| **RST / RES** | GPIO 18 | |
-| **CS** | GND | Nối thẳng xuống mass (Luôn bật) |
-| **BLK** | GPIO 8 | Điều khiển tắt/bật đèn nền màn hình |
+VuNMix có cơ chế tiết kiệm điện và hiệu ứng chờ:
 
-#### 2. Cảm ứng (CST816S - I2C)
-| Chân Touch | Chân ESP32-S3 | Ghi chú |
-| :--- | :--- | :--- |
-| **SDA** | GPIO 5 | |
-| **SCL** | GPIO 4 | |
-| **INT** | GPIO 3 | |
-| **RST** | GPIO 2 | |
+- Tự tắt backlight TFT sau thời gian không thao tác.
+- NeoPixel chuyển sang hiệu ứng standby khi màn hình ngủ.
+- Có nhiều hiệu ứng LED chờ, chọn trong VuNMix Desktop Settings.
+- Có thể bật/tắt Auto Sleep.
+- Có thể cấu hình Clock Standby để hiển thị đồng hồ khi không có hoạt động âm thanh trong một khoảng thời gian.
+- Khi PC sleep, desktop app gửi lệnh để thiết bị chuyển trạng thái nghỉ; khi PC resume, app đẩy lại state để đồng bộ.
 
-#### 3. Bàn phím ma trận (Key Matrix 2x3)
-| Chân Keypad | Chân ESP32-S3 | Phím tương ứng |
-| :--- | :--- | :--- |
-| **Row 0** | GPIO 38 | Nối chân một bên của nhóm phím: Prev Tab (Col 0), Mute/Set Def (Col 1), Next Tab (Col 2) |
-| **Row 1** | GPIO 41 | Nối chân một bên của nhóm phím: Vol- (Col 0), Play/Pause (Col 1), Vol+ (Col 2) |
-| **Col 0** | GPIO 42 | Quét cột 0 |
-| **Col 1** | GPIO 40 | Quét cột 1 |
-| **Col 2** | GPIO 39 | Quét cột 2 |
+## Phần cứng yêu cầu
 
-#### 4. Thành phần khác
-| Thành phần | Chân ESP32-S3 | Ghi chú |
-| :--- | :--- | :--- |
-| **NeoPixel (RGB)** | GPIO 45 | LED RGB hiển thị trạng thái |
-| **BOOT Button** | GPIO 9 | Nút Boot cứng trên mạch ESP32 |
+- ESP32-S3 DevKitC-1 N16R8 hoặc board ESP32-S3 tương đương có native USB.
+- Màn hình ST7789 TFT 2.4 inch, 320x240, SPI.
+- IC cảm ứng CST816S, giao tiếp I2C.
+- Bàn phím ma trận 2x3.
+- NeoPixel/WS2812 RGB LED, cấu hình hiện tại dùng 10 LED.
+- Cáp USB data tốt, cắm vào cổng native USB của ESP32-S3.
 
----
+## Pinout
 
-## 💻 Cài đặt và Biên dịch Firmware
+### ST7789 TFT
 
-Dự án được xây dựng trên framework Arduino và quản lý thư viện thông qua **PlatformIO**.
+| TFT | ESP32-S3 | Ghi chú |
+| :--- | :---: | :--- |
+| MOSI/SDA | GPIO 17 | SPI MOSI |
+| SCK/SCL | GPIO 16 | SPI clock |
+| DC/RS | GPIO 15 | Data/command |
+| RST/RES | GPIO 18 | Reset display |
+| CS | GND | Luôn chọn màn hình |
+| BLK | GPIO 8 | Điều khiển backlight |
 
-### 1. Phần mềm yêu cầu:
-- [Visual Studio Code](https://code.visualstudio.com/) (VS Code)
-- Extension VS Code: [PlatformIO IDE](https://platformio.org/install/ide?install=vscode)
+### CST816S Touch
 
-### 2. Biên dịch & Nạp Firmware (Upload)
-1. Tải toàn bộ thư mục mã nguồn dự án này về máy của bạn.
-2. Mở thư mục dự án bằng VS Code.
-3. PlatformIO sẽ tự động khởi tạo môi trường và tải các thư viện cần thiết (`TFT_eSPI`, `lvgl 8.3`, `Adafruit NeoPixel`, `Keypad`, v.v.).
-4. **Cắm cáp USB vào cổng USB của ESP32-S3** (Sử dụng cổng native USB hỗ trợ truyền dữ liệu, không cắm vào cổng UART/CH340 nếu có để tính năng USB-CDC của phần mềm hoạt động).
-5. Nhấn **Build** (biểu tượng ✓) ở thanh trạng thái bên dưới cùng màn hình của VS Code.
-6. Khi Build hoàn tất không có lỗi, nhấn **Upload** (biểu tượng ➔) để nạp Firmware vào ESP32.
+| Touch | ESP32-S3 | Ghi chú |
+| :--- | :---: | :--- |
+| SDA | GPIO 5 | I2C data |
+| SCL | GPIO 4 | I2C clock |
+| INT | GPIO 3 | Interrupt |
+| RST | GPIO 2 | Reset touch |
 
----
+### Keypad 2x3
 
-## 🖥 Phần mềm điều khiển trên PC (VuNMix Desktop App)
+| Keypad | ESP32-S3 |
+| :--- | :---: |
+| Row 0 | GPIO 38 |
+| Row 1 | GPIO 41 |
+| Col 0 | GPIO 42 |
+| Col 1 | GPIO 40 |
+| Col 2 | GPIO 39 |
 
-VuNMix chỉ là màn hình hiển thị và bộ điều khiển, để thiết bị có thể thay đổi âm lượng trên Windows, bạn cần chạy ứng dụng nền trên PC.
-Mặc dù ý tưởng ban đầu được lấy cảm hứng từ dự án mã nguồn mở MaxMix, toàn bộ hệ thống (từ Firmware ESP32 cho tới phần mềm Desktop) đều đã được viết lại hoàn toàn từ đầu bằng Python để phù hợp và tối ưu hoá cho kiến trúc phần cứng mới. Mã nguồn phần mềm Desktop được lưu trong thư mục `desktop/`.
+### NeoPixel và nút boot
 
-**Điểm nhấn của App Desktop:**
-- **Thiết kế tối giản (Minimalist Design):** Lấy cảm hứng từ Microsoft PC Manager, giao diện cài đặt (Settings) được thiết kế dạng Popup nhỏ gọn, không có viền cửa sổ (frameless) và được bo tròn ở mức hệ điều hành (Native Windows Rounded Corners).
-- **Single-Instance:** Giới hạn chỉ cho phép mở một cửa sổ cài đặt tại một thời điểm, giữ không gian màn hình gọn gàng.
-- **Draggable:** Hỗ trợ kéo thả để di chuyển cửa sổ linh hoạt.
-- **System Tray:** Hoạt động hoàn toàn ngầm với biểu tượng trên khay hệ thống, truy cập nhanh cài đặt với 1 cú click chuột.
+| Thành phần | ESP32-S3 | Ghi chú |
+| :--- | :---: | :--- |
+| NeoPixel data | GPIO 45 | `PIXELS_COUNT = 10` |
+| BOOT | GPIO 9 | Nút boot trên board |
 
-Bạn có thể chạy trực tiếp file thực thi hoặc chạy từ mã nguồn:
+## Build firmware bằng PlatformIO
 
-**Cách 1: Chạy file thực thi (Khuyên dùng)**
-1. Mở thư mục `desktop/dist_release/VuNMix` (nếu có bản build sẵn).
-2. Chạy file `VuNMix.exe`.
-3. Ứng dụng sẽ chạy ngầm (biểu tượng nằm dưới khay hệ thống System Tray).
+### Yêu cầu
 
-**Cách 2: Chạy từ mã nguồn**
-1. Mở Terminal (hoặc Command Prompt) và trỏ vào thư mục `desktop/`.
-2. Cài đặt các thư viện Python cần thiết: `pip install -r requirements.txt`
-3. Chạy ứng dụng: `python vunmix.py`
+- Visual Studio Code.
+- Extension PlatformIO IDE.
+- Board ESP32-S3 đúng với cấu hình `esp32-s3-devkitc1-n16r8`.
 
-Cấu hình và log runtime được lưu tại `%LOCALAPPDATA%\VuNMix`, vì vậy bản cài trong `Program Files` không cần quyền ghi vào thư mục ứng dụng.
+### Build
 
-Khi ứng dụng đã chạy, thiết bị ESP32-S3 sẽ tự động được nhận dạng và thiết lập kết nối qua cổng COM ảo (Virtual USB-CDC). Màn hình Splash "VuNMix" trên thiết bị sẽ tự động biến mất và chuyển sang giao diện điều khiển.
+Mở thư mục project trong VS Code và chạy PlatformIO Build, hoặc dùng terminal:
 
-### Cập nhật firmware từ ứng dụng Desktop
+```powershell
+C:\Users\adimi\.platformio\penv\Scripts\pio.exe run
+```
 
-1. Mở **Settings** khi VuNMix đang kết nối.
-2. Chọn **Update .bin** trong mục **Device Firmware**.
-3. Chọn file `.pio/build/esp32-s3-devkitc1-n16r8/firmware.bin`.
-4. Xác nhận và chờ ghi đủ các block; app sẽ tự kết nối lại.
+### Upload firmware
 
-Updater kiểm tra đúng firmware ESP32-S3 và chỉ ghi phân vùng ứng dụng tại
-`0x10000`; bootloader, partition table, cấu hình NVS và OTA slot thứ hai được
-giữ nguyên. Không rút cáp trong lúc cập nhật.
+Cắm ESP32-S3 vào cổng native USB và chạy:
 
----
+```powershell
+C:\Users\adimi\.platformio\penv\Scripts\pio.exe run --target upload --upload-port COM3
+```
 
-## 📜 Giấy phép & Tác giả
+Thay `COM3` bằng cổng thực tế của thiết bị.
 
-- **Thiết kế UI / Phần cứng / Firmware ESP32-S3 / Desktop App:** Phát triển và tối ưu hoá giao thức bởi VuNL.
-- **Cảm hứng dự án:** Ý tưởng giao thức và dự án được lấy cảm hứng từ [MaxMix Project](https://maxmixproject.com) của tác giả [t3knomanzer](https://github.com/t3knomanzer).
+### File firmware sau khi build
+
+Firmware application image nằm tại:
+
+```text
+.pio/build/esp32-s3-devkitc1-n16r8/firmware.bin
+```
+
+File này có thể được chọn trong VuNMix Desktop để cập nhật firmware.
+
+## Chạy VuNMix Desktop từ source
+
+Yêu cầu Windows và Python 3.11 hoặc 3.12.
+
+```powershell
+cd desktop
+python -m pip install -r requirements.txt
+python vunmix.py
+```
+
+Sau khi chạy, app nằm ở system tray. Settings và log runtime được lưu ở:
+
+```text
+%LOCALAPPDATA%\VuNMix
+```
+
+Log thường dùng để kiểm tra lỗi:
+
+```text
+%LOCALAPPDATA%\VuNMix\vunmix.log
+```
+
+## Build bản desktop release
+
+Từ thư mục `desktop/`, có thể build bằng PyInstaller:
+
+```powershell
+cd desktop
+python -m pip install -r requirements.txt
+python -m PyInstaller --clean --noconfirm VuNMix.spec --distpath dist_release --workpath build_release
+```
+
+File chạy sau build:
+
+```text
+desktop/dist_release/VuNMix/VuNMix.exe
+```
+
+Script Inno Setup nằm ở:
+
+```text
+desktop/VuNMix_Installer.iss
+```
+
+## Cập nhật firmware từ Desktop App
+
+1. Chạy `VuNMix.exe` hoặc `python vunmix.py`.
+2. Đảm bảo thiết bị đang connected.
+3. Mở Settings từ system tray.
+4. Ở mục Device Firmware, chọn `Update .bin`.
+5. Chọn file `.pio/build/esp32-s3-devkitc1-n16r8/firmware.bin`.
+6. Chờ quá trình ghi hoàn tất và thiết bị tự reconnect.
+
+Updater chỉ ghi application partition ở địa chỉ `0x10000`. Bootloader, partition table, NVS và OTA slot còn lại được giữ nguyên. Không rút cáp trong lúc cập nhật.
+
+## Giao thức USB-CDC
+
+Firmware và desktop dùng frame nhị phân có marker và CRC để tránh lỗi do byte rác khi boot hoặc mất đồng bộ serial.
+
+Các nhóm dữ liệu chính:
+
+- `TEST`: handshake và đọc version firmware.
+- `SETTINGS`: cấu hình sleep, LED, clock standby.
+- `SESSION_INFO`: mode hiện tại, index đang chọn, số lượng session.
+- `CURRENT_SESSION`, `ALTERNATE_SESSION`, `PREVIOUS_SESSION`, `NEXT_SESSION`: thông tin các mục quanh vị trí hiện tại.
+- `VOLUME_*_CHANGE`: thay đổi volume/mute/default.
+- `MODE_STATES`: trạng thái Navigate/Edit của từng mode.
+- `TIME_SYNC`: đồng bộ giờ cho clock standby.
+- `METER_LEVEL`: VU meter hiện tại.
+- `SLEEP`: PC sleep hoặc app yêu cầu thiết bị nghỉ.
+
+Desktop và firmware phải giữ `Enums.h`, `Structs.h` và `desktop/protocol.py` đồng bộ. Khi thêm command hoặc đổi struct, cần cập nhật cả hai phía và test protocol.
+
+## Cấu hình người dùng
+
+Desktop lưu cấu hình tại `%LOCALAPPDATA%\VuNMix`, không ghi trực tiếp vào thư mục cài đặt. Điều này giúp bản cài trong `Program Files` vẫn chạy bình thường mà không cần quyền administrator.
+
+Các thiết lập chính:
+
+- COM port hoặc auto detect.
+- Sleep timeout.
+- Auto Sleep.
+- Standby LED effect.
+- Clock Standby minutes.
+- Update interval.
+
+## Kiểm thử
+
+Chạy unit test desktop:
+
+```powershell
+python -m unittest discover -s desktop/tests -v
+```
+
+Các nhóm test hiện có:
+
+- Protocol frame, CRC, parser và struct pack/unpack.
+- Serial service.
+- App controller selection/default logic.
+- Audio service helper.
+- Firmware updater validation.
+
+## Xử lý lỗi thường gặp
+
+### App báo connected nhưng thiết bị vẫn waiting
+
+- Kiểm tra đã cắm đúng cổng native USB của ESP32-S3 chưa.
+- Đóng app rồi mở lại để serial reconnect.
+- Kiểm tra log tại `%LOCALAPPDATA%\VuNMix\vunmix.log`.
+- Nếu vừa flash firmware, chờ ESP32-S3 reset xong rồi reconnect.
+- Đảm bảo desktop và firmware dùng cùng protocol version/struct.
+
+### Tất cả giá trị volume hoặc meter đều là 0
+
+- Kiểm tra thiết bị audio Windows có đang phát/thu thật không.
+- Với Input, chọn đúng microphone trong Windows và cấp quyền microphone cho desktop nếu Windows yêu cầu.
+- Một số app chỉ xuất hiện khi đang phát âm thanh.
+- Thử đổi sang Output/Input default rồi quay lại.
+- Kiểm tra `sounddevice` đã cài đúng nếu chạy từ source.
+
+### Không chọn được đầu ra hoặc đầu vào âm thanh
+
+- Ở Output/Input, chuyển tới thiết bị cần chọn rồi vào Edit. Firmware sẽ đánh dấu thiết bị đó là default và desktop sẽ gọi Windows API để đổi default device.
+- Nếu Windows chặn đổi default, thử chạy app lại hoặc kiểm tra quyền hệ thống/audio driver.
+- Nếu có nhiều thiết bị trùng tên, xem log để biết endpoint nào đang được chọn.
+
+### Input VU Meter không nhảy
+
+- Kiểm tra microphone có tín hiệu thật không.
+- Kiểm tra Windows Privacy > Microphone.
+- Thử chọn đúng input device trong VuNMix.
+- Nếu dùng USB mic, thử rút cắm lại để PortAudio/WASAPI cập nhật danh sách.
+
+### Màn hình cảm ứng bị ngược hướng
+
+Mở `src/Config.h` và thử đổi:
+
+```cpp
+static const uint8_t TOUCH_ROTATION = 1;
+```
+
+sang giá trị khác phù hợp với module màn hình.
+
+### Upload firmware không thấy cổng COM
+
+- Dùng cáp USB data, không dùng cáp chỉ sạc.
+- Giữ BOOT rồi nhấn RESET nếu board không tự vào bootloader.
+- Kiểm tra Device Manager của Windows.
+- Dùng `--upload-port COMx` đúng cổng.
+
+### Desktop release thiếu thư viện audio
+
+Nếu build lại app, đảm bảo đã cài dependency trong `requirements.txt`, đặc biệt:
+
+- `pycaw`
+- `comtypes`
+- `sounddevice`
+- `pyserial`
+- `esptool`
+
+## Cấu trúc thư mục
+
+```text
+VuNMix/
+├─ src/                     Firmware ESP32-S3
+├─ include/                 Header bổ sung nếu có
+├─ lib/                     Thư viện local nếu có
+├─ data/                    Asset nhúng vào firmware
+├─ desktop/                 Ứng dụng Windows Python
+│  ├─ assets/               Icon và tài nguyên desktop
+│  ├─ tests/                Unit tests
+│  ├─ VuNMix.spec           PyInstaller spec
+│  └─ VuNMix_Installer.iss  Inno Setup script
+├─ boards/                  Board definition nếu cần
+├─ hardware.md              Ghi chú phần cứng
+├─ platformio.ini           Cấu hình PlatformIO
+└─ README.md
+```
+
+## Ghi chú phát triển
+
+- Khi đổi protocol, luôn sửa cả firmware và desktop.
+- Khi thêm struct mới, kiểm tra size và thứ tự field ở cả C++ và Python.
+- Không gửi meter quá nhanh; hiện desktop gửi khoảng 15Hz để UI mượt mà nhưng không nghẽn USB.
+- Các lệnh từ firmware được rate-limit để tránh spam serial khi giữ phím.
+- Nên test build firmware, unit test desktop và chạy app thật trước khi đóng gói release.
+
+## English short summary
+
+VuNMix is an ESP32-S3 based PC volume controller with an ST7789 display, CST816S touch input, matrix keypad, NeoPixel LEDs and a Python Windows companion app. It controls Windows output devices, input devices, per-application volume and a dual-channel Game/Voice mixer over a CRC-protected USB-CDC protocol. The project includes live VU meters, touch gestures, sleep/standby effects, desktop settings and firmware update support.
+
+## Credits
+
+- Firmware, hardware integration, LVGL UI and desktop app: VuNL.
+- Inspired by the original MaxMix concept by t3knomanzer.
