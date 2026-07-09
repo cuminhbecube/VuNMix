@@ -20,8 +20,22 @@ namespace Input {
     static volatile bool s_touchInterruptPending = false;
     static bool s_touchAvailable = false;
     static TouchEvent s_touchEvent = TouchEvent::None;
+    static TouchEvent s_lastTouchEvent = TouchEvent::None;
+    static uint8_t s_lastRawGesture = 0;
+    static uint8_t s_lastFingers = 0;
+    static uint16_t s_lastX = 0;
+    static uint16_t s_lastY = 0;
+    static uint32_t s_touchSampleCounter = 0;
     static uint8_t s_lastGesture = 0;
     static uint32_t s_lastGestureAt = 0;
+    static uint32_t s_lastTouchPollAt = 0;
+    static bool s_touchDown = false;
+    static uint16_t s_touchDownX = 0;
+    static uint16_t s_touchDownY = 0;
+    static uint16_t s_touchLastX = 0;
+    static uint16_t s_touchLastY = 0;
+    static uint32_t s_touchDownAt = 0;
+    static uint32_t s_lastTapAt = 0;
 
     volatile int8_t g_EncoderSteps = 0;
     volatile ButtonEvent g_ButtonEvent = none;
@@ -128,6 +142,98 @@ namespace Input {
         }
     }
 
+    static void QueueTouchEvent(TouchEvent event)
+    {
+        if (event == TouchEvent::None)
+            return;
+
+        uint32_t now = millis();
+        if (event == s_lastTouchEvent && (uint32_t)(now - s_lastGestureAt) < 90U)
+            return;
+
+        s_touchEvent = event;
+        s_lastTouchEvent = event;
+        s_lastGestureAt = now;
+    }
+
+    static void DecodeTouchPoint(uint8_t fingers, uint16_t x, uint16_t y)
+    {
+        uint32_t now = millis();
+        if (fingers > 0)
+        {
+            if (!s_touchDown)
+            {
+                s_touchDown = true;
+                s_touchDownX = x;
+                s_touchDownY = y;
+                s_touchDownAt = now;
+            }
+            s_touchLastX = x;
+            s_touchLastY = y;
+            return;
+        }
+
+        if (!s_touchDown)
+            return;
+
+        s_touchDown = false;
+        uint32_t duration = now - s_touchDownAt;
+        int16_t dx = (int16_t)s_touchLastX - (int16_t)s_touchDownX;
+        int16_t dy = (int16_t)s_touchLastY - (int16_t)s_touchDownY;
+
+        // Rotate dx and dy based on TOUCH_ROTATION to match screen orientation
+        int16_t rdx = dx;
+        int16_t rdy = dy;
+        switch (TOUCH_ROTATION % 4) {
+            case 1:
+                rdx = -dy;
+                rdy = dx;
+                break;
+            case 2:
+                rdx = -dx;
+                rdy = -dy;
+                break;
+            case 3:
+                rdx = dy;
+                rdy = -dx;
+                break;
+            default:
+                break;
+        }
+        dx = rdx;
+        dy = rdy;
+
+        int16_t adx = abs(dx);
+        int16_t ady = abs(dy);
+
+        if (duration <= 800U && (adx > 50 || ady > 50))
+        {
+            if (adx >= ady)
+                QueueTouchEvent(dx > 0 ? TouchEvent::SwipeRight : TouchEvent::SwipeLeft);
+            else
+                QueueTouchEvent(dy > 0 ? TouchEvent::SwipeDown : TouchEvent::SwipeUp);
+            return;
+        }
+
+        if (duration <= 650U && adx <= 35 && ady <= 35)
+        {
+            if ((uint32_t)(now - s_lastTapAt) <= 350U)
+            {
+                s_lastTapAt = 0;
+                QueueTouchEvent(TouchEvent::DoubleTap);
+            }
+            else
+            {
+                s_lastTapAt = now;
+                QueueTouchEvent(TouchEvent::Tap);
+            }
+        }
+        else if (duration > 650U && adx <= 35 && ady <= 35)
+        {
+            QueueTouchEvent(TouchEvent::LongPress);
+        }
+    }
+
     static void InitializeTouch()
     {
         pinMode(PIN_TOUCH_INT, INPUT_PULLUP);
@@ -223,10 +329,16 @@ namespace Input {
             lastHoldTime = millis();
         }
 
-        if (s_touchAvailable &&
-            (s_touchInterruptPending || digitalRead(PIN_TOUCH_INT) == LOW))
+        uint32_t now = millis();
+        bool intActive = s_touchAvailable && digitalRead(PIN_TOUCH_INT) == LOW;
+        bool shouldPollTouch = s_touchAvailable &&
+            (s_touchInterruptPending || intActive ||
+             (uint32_t)(now - s_lastTouchPollAt) >= 25U);
+
+        if (shouldPollTouch)
         {
             s_touchInterruptPending = false;
+            s_lastTouchPollAt = now;
 
             // Gesture, finger count, X high/low and Y high/low are one report.
             // Coordinates are retained in the read for future direct-hit UI.
@@ -234,7 +346,11 @@ namespace Input {
             if (ReadTouchRegisters(REG_GESTURE, report, sizeof(report)))
             {
                 uint8_t gesture = report[0];
-                uint32_t now = millis();
+                s_lastRawGesture = gesture;
+                s_lastFingers = report[1] & 0x0F;
+                s_lastX = (uint16_t)(((report[2] & 0x0F) << 8) | report[3]);
+                s_lastY = (uint16_t)(((report[4] & 0x0F) << 8) | report[5]);
+                ++s_touchSampleCounter;
                 TouchEvent event = DecodeGesture(gesture);
 
                 // One physical gesture can produce several IRQ pulses.
@@ -242,10 +358,11 @@ namespace Input {
                     (gesture != s_lastGesture ||
                      (uint32_t)(now - s_lastGestureAt) >= 180U))
                 {
-                    s_touchEvent = event;
+                    QueueTouchEvent(event);
                     s_lastGesture = gesture;
-                    s_lastGestureAt = now;
                 }
+
+                DecodeTouchPoint(s_lastFingers, s_lastX, s_lastY);
             }
         }
     }
@@ -260,5 +377,40 @@ namespace Input {
         TouchEvent event = s_touchEvent;
         s_touchEvent = TouchEvent::None;
         return event;
+    }
+
+    TouchEvent LastTouchEvent()
+    {
+        return s_lastTouchEvent;
+    }
+
+    uint8_t LastTouchRawGesture()
+    {
+        return s_lastRawGesture;
+    }
+
+    uint8_t LastTouchFingers()
+    {
+        return s_lastFingers;
+    }
+
+    uint16_t LastTouchX()
+    {
+        return s_lastX;
+    }
+
+    uint16_t LastTouchY()
+    {
+        return s_lastY;
+    }
+
+    bool TouchIntActive()
+    {
+        return s_touchAvailable && digitalRead(PIN_TOUCH_INT) == LOW;
+    }
+
+    uint32_t TouchSampleCounter()
+    {
+        return s_touchSampleCounter;
     }
 }

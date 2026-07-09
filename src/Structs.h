@@ -34,6 +34,28 @@ struct __attribute__((__packed__)) MeterData
 };
 static_assert(sizeof(MeterData) == 2, "Invalid Expected Message Size");
 
+struct __attribute__((__packed__)) AppIconMeta
+{
+    uint8_t id;
+    uint8_t width;
+    uint8_t height;
+    uint16_t dataLength;
+
+    AppIconMeta() : id(0), width(0), height(0), dataLength(0) {}
+};
+static_assert(sizeof(AppIconMeta) == 5, "Invalid Expected Message Size");
+
+struct __attribute__((__packed__)) AppIconChunk
+{
+    uint8_t id;
+    uint8_t index;
+    uint8_t length;
+    uint8_t data[60];
+
+    AppIconChunk() : id(0), index(0), length(0), data{0} {}
+};
+static_assert(sizeof(AppIconChunk) == 63, "Invalid Expected Message Size");
+
 struct __attribute__((__packed__)) SessionData
 {
     char name[30]; // 240 bits
@@ -89,10 +111,10 @@ static_assert(sizeof(DeviceSettings) == 19, "Invalid Expected Message Size");
 
 struct __attribute__((__packed__)) ModeStates
 {
-    uint8_t states[DisplayMode::MODE_MAX]; // 40 bits
-    // 40 bits - 5 bytes
+    uint8_t states[DisplayMode::MODE_MAX]; // 48 bits
+    // 48 bits - 6 bytes
 
-    ModeStates() : states{0, 1, 1, 0, 0} {}
-    // states{STATE_LOGO, STATE_EDIT, STATE_EDIT, STATE_NAVIGATE, STATE_SELECT_A}
+    ModeStates() : states{0, 1, 1, 0, 0, 0} {}
+    // states{STATE_LOGO, STATE_EDIT, STATE_EDIT, STATE_NAVIGATE, STATE_SELECT_A, STATE_NAVIGATE}
 };
-static_assert(sizeof(ModeStates) == 5, "Invalid Expected Message Size");
+static_assert(sizeof(ModeStates) == 6, "Invalid Expected Message Size");

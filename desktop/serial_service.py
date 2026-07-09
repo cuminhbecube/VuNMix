@@ -15,6 +15,7 @@ import serial
 from protocol import (
     Command, COMMAND_PAYLOAD_SIZE,
     SessionInfo, SessionData, VolumeData, MeterData, DeviceSettings, ModeStates,
+    AppIconMeta, AppIconChunk,
     SESSION_COMMANDS, VOLUME_COMMANDS,
     FrameParser, encode_frame,
 )
@@ -159,6 +160,20 @@ class SerialService:
 
     def send_meter(self, meter: MeterData) -> bool:
         return self.send_command(Command.METER_LEVEL, meter.pack())
+
+    def send_app_icon(self, app_id: int, data: bytes, width: int = 16, height: int = 16) -> bool:
+        if not data:
+            return False
+        if not self.send_command(Command.APP_ICON_META, AppIconMeta(app_id, width, height, len(data)).pack()):
+            return False
+        ok = True
+        for index, offset in enumerate(range(0, len(data), 60)):
+            ok = self.send_command(
+                Command.APP_ICON_CHUNK,
+                AppIconChunk(app_id, index, data[offset:offset + 60]).pack(),
+            ) and ok
+            time.sleep(0.006)
+        return ok
 
     def _read_loop(self):
         """Background thread: parse framed messages from hardware."""

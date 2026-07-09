@@ -128,6 +128,18 @@ void loop()
         }
     }
 
+    static uint32_t lastTouchSampleCounter = 0;
+    uint32_t touchSampleCounter = Input::TouchSampleCounter();
+    if (touchSampleCounter != lastTouchSampleCounter)
+    {
+        lastTouchSampleCounter = touchSampleCounter;
+        if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
+        {
+            g_DisplayDirty = true;
+            g_LastActivity = g_Now;
+        }
+    }
+
     Command command = Communications::Read();
     g_DisplayDirty = g_DisplayDirty || (command != Command::NONE && command != Command::ERROR);
 
@@ -200,6 +212,14 @@ void loop()
 
     if (ProcessClockStandby())
     {
+        g_DisplayDirty = true;
+    }
+
+    static uint32_t lastHealthRefresh = 0;
+    if (g_SessionInfo.mode == DisplayMode::MODE_HEALTH &&
+        (uint32_t)(g_Now - lastHealthRefresh) >= 1000U)
+    {
+        lastHealthRefresh = g_Now;
         g_DisplayDirty = true;
     }
 
@@ -311,6 +331,7 @@ uint8_t GetIndexForMode(DisplayMode mode)
     if (mode == DisplayMode::MODE_OUTPUT || mode == DisplayMode::MODE_SPLASH) return 0;
     if (mode == DisplayMode::MODE_INPUT) return 1;
     if (mode == DisplayMode::MODE_GAME || mode == DisplayMode::MODE_APPLICATION) return 2;
+    if (mode == DisplayMode::MODE_HEALTH) return 0;
     return 0;
 }
 
@@ -335,7 +356,8 @@ bool ProcessEncoderRotation()
     uint32_t deltaTime = g_Now - g_LastSteps;
     g_LastSteps = g_Now;
 
-    if (g_DisplayAsleep || g_SessionInfo.mode == DisplayMode::MODE_SPLASH) return true;
+    if (g_DisplayAsleep || g_SessionInfo.mode == DisplayMode::MODE_SPLASH ||
+        g_SessionInfo.mode == DisplayMode::MODE_HEALTH) return true;
 
     bool inGameMode = g_SessionInfo.mode == DisplayMode::MODE_GAME;
     if ((inGameMode && g_ModeStates.states[g_SessionInfo.mode] == STATE_GAME_EDIT) || (!inGameMode && g_ModeStates.states[g_SessionInfo.mode] == STATE_EDIT))
@@ -374,6 +396,7 @@ bool ProcessEncoderButton()
     if (readButtonEvent == Input::tap)
     {
         if (g_DisplayAsleep) return true;
+        if (g_SessionInfo.mode == DisplayMode::MODE_HEALTH) return true;
         g_ModeStates.states[g_SessionInfo.mode] = (g_ModeStates.states[g_SessionInfo.mode] + 1) % (g_SessionInfo.mode != DisplayMode::MODE_GAME ? STATE_MAX : STATE_GAME_MAX);
         Communications::Write(Command::MODE_STATES);
 
@@ -401,6 +424,7 @@ bool ProcessEncoderButton()
     else if (readButtonEvent == Input::doubleTap)
     {
         if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH) return false;
+        if (g_SessionInfo.mode == DisplayMode::MODE_HEALTH) return true;
         if (g_SessionInfo.mode != DisplayMode::MODE_GAME)
         {
             g_Sessions[SessionIndex::INDEX_CURRENT].data.isMuted = !g_Sessions[SessionIndex::INDEX_CURRENT].data.isMuted;
@@ -457,6 +481,13 @@ bool ProcessTouch()
 
     if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
         return true;
+
+    if (g_SessionInfo.mode == DisplayMode::MODE_HEALTH)
+    {
+        if (event == Input::TouchEvent::LongPress)
+            Input::g_ButtonEvent = Input::hold;
+        return true;
+    }
 
     if (event == Input::TouchEvent::Tap)
     {
@@ -650,6 +681,7 @@ void UpdateDisplay()
     if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
     {
         if (!keyTestMode) {
+            keyTestMode = Input::LastTouchEvent() != Input::TouchEvent::None;
             for (int i = 0; i < 6; i++) {
                 if (Input::g_RawKeyStates[i]) {
                     keyTestMode = true;
@@ -665,6 +697,40 @@ void UpdateDisplay()
         } else {
             Display::InfoScreen(Input::TouchAvailable());
         }
+    }
+    else if (g_SessionInfo.mode == DisplayMode::MODE_HEALTH)
+    {
+        bool pcConnected = !g_PcAsleep &&
+            (g_HeartbeatTimeout != 0) &&
+            ((int32_t)(g_HeartbeatTimeout - g_Now) > 0);
+        uint32_t serialAgeMs = 0;
+        if (g_HeartbeatTimeout != 0)
+        {
+            uint32_t lastSeen = g_HeartbeatTimeout - DEVICE_RESET_AFTER_INACTIVTY;
+            serialAgeMs = g_Now - lastSeen;
+        }
+
+        Display::HealthScreen(
+            pcConnected,
+            g_Now / 1000UL,
+            serialAgeMs,
+            ESP.getFreeHeap(),
+            ESP.getMinFreeHeap(),
+            ESP.getMaxAllocHeap(),
+            Communications::ReceivedFrames(),
+            Communications::TransmittedFrames(),
+            Communications::CrcErrors(),
+            Communications::ProtocolErrors(),
+            Communications::LastCommand(),
+            Communications::LastErrorCommand(),
+            (uint8_t)g_SessionInfo.mode,
+            g_SessionInfo.current,
+            g_SessionInfo.sessions[0],
+            g_SessionInfo.sessions[1],
+            g_SessionInfo.sessions[2],
+            Input::TouchAvailable(),
+            Input::TouchSampleCounter()
+        );
     }
     else if (g_SessionInfo.mode == DisplayMode::MODE_INPUT || g_SessionInfo.mode == DisplayMode::MODE_OUTPUT)
     {

@@ -50,6 +50,7 @@ from protocol import (
     SessionIndex,
     SessionInfo,
     VolumeData,
+    ModeStates,
 )
 
 
@@ -87,12 +88,16 @@ class RecordingSerial:
     def __init__(self):
         self.info = []
         self.sessions = []
+        self.mode_states = []
 
     def send_session_info(self, info):
         self.info.append(info)
 
     def send_session(self, command, session):
         self.sessions.append((command, session))
+
+    def send_mode_states(self, states):
+        self.mode_states.append(states)
 
 
 class PreferredSessionTests(unittest.TestCase):
@@ -160,6 +165,26 @@ class PreferredSessionTests(unittest.TestCase):
             if command == Command.CURRENT_SESSION
         ]
         self.assertEqual(current_commands[-1].name, "Default input")
+
+    def test_health_mode_does_not_push_audio_sessions(self):
+        controller = AppController.__new__(AppController)
+        controller.audio = CachedAudio([Item(name="Speaker", id=1)])
+        controller.serial = RecordingSerial()
+        controller._session_info = SessionInfo(mode=DisplayMode.MODE_GAME, current=2)
+        controller._mode_states = ModeStates()
+        controller._sessions = [
+            SessionData() for _ in range(SessionIndex.INDEX_MAX)
+        ]
+
+        controller._handle_session_info_from_hw(
+            SessionInfo(mode=DisplayMode.MODE_HEALTH, current=3, sessions=[2, 3, 4])
+        )
+
+        self.assertEqual(controller._session_info.mode, DisplayMode.MODE_HEALTH)
+        self.assertEqual(controller._session_info.current, 0)
+        self.assertEqual(controller.serial.info[-1].mode, DisplayMode.MODE_HEALTH)
+        self.assertEqual(controller.serial.sessions, [])
+        self.assertEqual(controller.audio.refresh_calls, 0)
 
 
 if __name__ == "__main__":

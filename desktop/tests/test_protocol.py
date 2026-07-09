@@ -12,6 +12,8 @@ from protocol import (
     Color,
     Command,
     DeviceSettings,
+    AppIconChunk,
+    AppIconMeta,
     FrameParser,
     MeterData,
     ModeStates,
@@ -30,7 +32,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(len(SessionData().pack()), 32)
         self.assertEqual(len(SessionInfo().pack()), 5)
         self.assertEqual(len(DeviceSettings().pack()), 19)
-        self.assertEqual(len(ModeStates().pack()), 5)
+        self.assertEqual(len(ModeStates().pack()), 6)
+        self.assertEqual(len(AppIconMeta().pack()), 5)
+        self.assertEqual(len(AppIconChunk(data=b"x" * 60).pack()), 63)
 
     def test_frame_parser_handles_fragmentation_noise_and_multiple_frames(self):
         first = encode_frame(Command.OK)

@@ -29,8 +29,10 @@ Dự án VuNMix sử dụng vi điều khiển ESP32-S3 kết hợp với màn h
 | :--- | :--- | :--- |
 | **SDA** | GPIO 5 | Dữ liệu I2C |
 | **SCL** | GPIO 4 | Xung nhịp I2C |
-| **INT** | GPIO 3 | Báo ngắt khi có sự kiện chạm (Active LOW) |
-| **RST** | GPIO 2 | Reset IC cảm ứng (Active LOW) |
+| **INT** | GPIO 6 | Báo ngắt khi có sự kiện chạm (Active LOW) |
+| **RST** | GPIO 7 | Reset IC cảm ứng (Active LOW) |
+
+Khi chưa kết nối PC, chạm/vuốt màn hình hoặc nhấn bất kỳ phím vật lý nào để vào màn `INPUT TEST`. Màn này hiển thị trạng thái `TOUCH READY/TOUCH NOT FOUND` và thao tác cảm ứng cuối cùng để kiểm tra nhanh wiring CST816S.
 
 ### 3. Ma trận nút bấm (Key Matrix 2x3)
 | Chức năng | Chân ESP32-S3 | Ghi chú |

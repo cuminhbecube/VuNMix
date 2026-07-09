@@ -7,7 +7,7 @@ a = Analysis(
     binaries=[],
     datas=[('assets', 'assets')],
     hiddenimports=[
-        'win32api', 'win32con', 'win32gui',
+        'win32api', 'win32con', 'win32gui', 'win32ui',
         'esptool', 'esptool.targets.esp32s3',
     ],
     hookspath=[],

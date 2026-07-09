@@ -1,4 +1,5 @@
 #include "Communications.h"
+#include "Display.h"
 
 // Defined in main.cpp
 extern DeviceSettings g_Settings;
@@ -31,6 +32,12 @@ namespace Communications
     static uint8_t s_txHead = 0;
     static uint8_t s_txTail = 0;
     static uint8_t s_txCount = 0;
+    static uint32_t s_receivedFrames = 0;
+    static uint32_t s_transmittedFrames = 0;
+    static uint32_t s_crcErrors = 0;
+    static uint32_t s_protocolErrors = 0;
+    static Command s_lastCommand = Command::NONE;
+    static Command s_lastErrorCommand = Command::NONE;
 
     static uint16_t Crc16(const uint8_t *data, size_t length)
     {
@@ -72,6 +79,7 @@ namespace Communications
         frame[5 + payloadLength] = (uint8_t)(crc >> 8);
         Serial.write(frame, (size_t)payloadLength + 6);
         Serial.flush();
+        ++s_transmittedFrames;
     }
 
     static void TxEnqueue(Command command)
@@ -184,6 +192,20 @@ namespace Communications
             meter.alternate = min((uint8_t)100, meter.alternate);
             g_MeterData = meter;
         }
+        else if (command == Command::APP_ICON_META)
+        {
+            if (payloadLength != sizeof(AppIconMeta)) return Command::ERROR;
+            AppIconMeta meta;
+            memcpy(&meta, payload, sizeof(AppIconMeta));
+            Display::ReceiveAppIconMeta(&meta);
+        }
+        else if (command == Command::APP_ICON_CHUNK)
+        {
+            if (payloadLength != sizeof(AppIconChunk)) return Command::ERROR;
+            AppIconChunk chunk;
+            memcpy(&chunk, payload, sizeof(AppIconChunk));
+            Display::ReceiveAppIconChunk(&chunk);
+        }
         else if (command == Command::DEBUG)
         {
             if (payloadLength != 0) return Command::ERROR;
@@ -213,6 +235,12 @@ namespace Communications
         s_txHead = 0;
         s_txTail = 0;
         s_txCount = 0;
+        s_receivedFrames = 0;
+        s_transmittedFrames = 0;
+        s_crcErrors = 0;
+        s_protocolErrors = 0;
+        s_lastCommand = Command::NONE;
+        s_lastErrorCommand = Command::NONE;
     }
 
     Command Read(void)
@@ -248,6 +276,8 @@ namespace Communications
             uint8_t payloadLength = s_rxBuffer[3];
             if (payloadLength > MAX_PAYLOAD)
             {
+                ++s_protocolErrors;
+                s_lastErrorCommand = Command::ERROR;
                 DiscardRx(1);
                 continue;
             }
@@ -261,15 +291,24 @@ namespace Communications
             uint16_t actual = Crc16(s_rxBuffer + 2, (size_t)payloadLength + 2);
             if (actual != expected)
             {
+                ++s_crcErrors;
+                s_lastErrorCommand = (Command)(int8_t)s_rxBuffer[2];
                 DiscardRx(1);
                 continue;
             }
 
             Command command = (Command)(int8_t)s_rxBuffer[2];
             Command result = ProcessFrame(command, s_rxBuffer + 4, payloadLength);
+            ++s_receivedFrames;
+            s_lastCommand = command;
             DiscardRx(frameLength);
             if (result != Command::ERROR)
                 WriteImmediate(Command::OK);
+            else
+            {
+                ++s_protocolErrors;
+                s_lastErrorCommand = command;
+            }
             return result;
         }
         return Command::NONE;
@@ -326,4 +365,11 @@ namespace Communications
             s_lastTxTime = g_Now;
         }
     }
+
+    uint32_t ReceivedFrames(void) { return s_receivedFrames; }
+    uint32_t TransmittedFrames(void) { return s_transmittedFrames; }
+    uint32_t CrcErrors(void) { return s_crcErrors; }
+    uint32_t ProtocolErrors(void) { return s_protocolErrors; }
+    Command LastCommand(void) { return s_lastCommand; }
+    Command LastErrorCommand(void) { return s_lastErrorCommand; }
 }

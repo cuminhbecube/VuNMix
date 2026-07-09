@@ -34,6 +34,8 @@ class Command(IntEnum):
     SLEEP              = 15
     TIME_SYNC          = 16
     METER_LEVEL        = 17
+    APP_ICON_META      = 18
+    APP_ICON_CHUNK     = 19
 
 
 class SessionIndex(IntEnum):
@@ -50,7 +52,8 @@ class DisplayMode(IntEnum):
     MODE_INPUT       = 2
     MODE_APPLICATION = 3
     MODE_GAME        = 4
-    MODE_MAX         = 5
+    MODE_HEALTH      = 5
+    MODE_MAX         = 6
 
 
 class StandbyLedMode(IntEnum):
@@ -244,6 +247,50 @@ class MeterData:
 
 
 @dataclass
+class AppIconMeta:
+    """App icon transfer header: 16x16 RGB565 icons are sent in chunks."""
+    id: int = 0
+    width: int = 16
+    height: int = 16
+    data_length: int = 512
+
+    def pack(self) -> bytes:
+        return struct.pack(
+            '<BBBH',
+            _clamp_int(self.id, 0, 127),
+            _clamp_int(self.width, 0, 255),
+            _clamp_int(self.height, 0, 255),
+            _clamp_int(self.data_length, 0, 65535),
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'AppIconMeta':
+        app_id, width, height, data_length = struct.unpack('<BBBH', data[:5])
+        return cls(app_id, width, height, data_length)
+
+
+@dataclass
+class AppIconChunk:
+    """One icon data chunk. Payload is fixed to fit the 64-byte frame limit."""
+    id: int = 0
+    index: int = 0
+    data: bytes = b''
+
+    def pack(self) -> bytes:
+        chunk = bytes(self.data[:60])
+        return bytes([
+            _clamp_int(self.id, 0, 127),
+            _clamp_int(self.index, 0, 255),
+            len(chunk),
+        ]) + chunk.ljust(60, b'\x00')
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'AppIconChunk':
+        app_id, index, length = data[0], data[1], min(data[2], 60)
+        return cls(app_id, index, bytes(data[3:3 + length]))
+
+
+@dataclass
 class SessionData:
     """
     32 bytes total:
@@ -379,17 +426,17 @@ class DeviceSettings:
 @dataclass
 class ModeStates:
     """
-    5 bytes: state per display mode.
-    Default: {0, 1, 1, 0, 0} = {LOGO, EDIT, EDIT, NAVIGATE, SELECT_A}
+    6 bytes: state per display mode.
+    Default: {0, 1, 1, 0, 0, 0} = {LOGO, EDIT, EDIT, NAVIGATE, SELECT_A, NAVIGATE}
     """
-    states: list = field(default_factory=lambda: [0, 1, 1, 0, 0])
+    states: list = field(default_factory=lambda: [0, 1, 1, 0, 0, 0])
 
     def pack(self) -> bytes:
-        return bytes(_clamp_int(x, 0, 255) for x in self.states[:5]).ljust(5, b'\x00')
+        return bytes(_clamp_int(x, 0, 255) for x in self.states[:6]).ljust(6, b'\x00')
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ModeStates':
-        return cls(states=list(data[:5]))
+        return cls(states=list(data[:6]))
 
 
 # ─── Message Helpers ───────────────────────────────────────────────────────
@@ -408,10 +455,12 @@ COMMAND_PAYLOAD_SIZE = {
     Command.VOLUME_ALT_CHANGE:  2,
     Command.VOLUME_PREV_CHANGE: 2,
     Command.VOLUME_NEXT_CHANGE: 2,
-    Command.MODE_STATES:        5,
+    Command.MODE_STATES:        6,
     Command.SLEEP:              0,
     Command.TIME_SYNC:          3,
     Command.METER_LEVEL:        2,
+    Command.APP_ICON_META:      5,
+    Command.APP_ICON_CHUNK:     63,
 }
 
 # Commands that represent session data (index = cmd - CURRENT_SESSION)

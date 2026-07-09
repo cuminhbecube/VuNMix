@@ -7,12 +7,13 @@ Dự án lấy cảm hứng từ ý tưởng MaxMix, nhưng firmware ESP32-S3, g
 ## Tính năng chính
 
 - Điều khiển âm lượng Windows trực tiếp từ thiết bị phần cứng.
-- 4 chế độ hiển thị: Output, Input, Application và Game Mixer.
+- 5 chế độ hiển thị: Output, Input, Application, Game Mixer và Device Health.
 - Chọn nhanh thiết bị đầu ra hoặc đầu vào mặc định của Windows.
 - Điều chỉnh âm lượng từng ứng dụng đang phát âm thanh.
 - Chế độ Game Mixer có 2 kênh A/B để cân bằng Game và Voice chat.
 - VU Meter thời gian thực cho Output, Input, Application và Game Mixer.
 - VU Meter Input dùng capture stream riêng nên vẫn đo được mức microphone thực tế.
+- Device Health / Debug screen hiển thị kết nối, RAM, serial, lỗi CRC/protocol và trạng thái touch.
 - Cảm ứng CST816S: vuốt, chạm, chạm hai lần và nhấn giữ.
 - Tên thiết bị Input/Output dài tự chạy chữ khi đang ở màn hình thiết bị mặc định.
 - Giao diện Cyber-Tactile bằng LVGL 8.3, màu riêng theo từng chế độ.
@@ -89,6 +90,8 @@ Dùng để chỉnh âm lượng từng ứng dụng.
 - Chỉ các ứng dụng có audio session đang hoạt động mới xuất hiện.
 - Có thể chỉnh riêng Chrome, Spotify, game, Discord, Zalo... mà không đổi master volume.
 - Nếu ứng dụng chưa phát âm thanh, Windows có thể chưa tạo session nên app chưa hiện trong danh sách.
+- Có thể chọn App Favorites trong VuNMix Desktop Settings. Các app favorite sẽ được ưu tiên hiện trước trong Application/Game mode.
+- Desktop gửi icon 16x16 của app xuống thiết bị; nếu không trích xuất được icon thật, app sẽ dùng icon fallback theo chữ cái/màu riêng để vẫn dễ nhận diện.
 
 ### 4. Game Mixer
 
@@ -126,6 +129,17 @@ Khi giữ `Vol -` hoặc `Vol +`, firmware tạo bước lặp liên tục để
 | Thao tác khi màn hình ngủ | Chỉ đánh thức màn hình, không thực hiện lệnh |
 
 Cảm ứng và keypad hoạt động song song. Nếu cảm ứng bị đảo hướng trên biến thể màn hình khác, kiểm tra `TOUCH_ROTATION` trong `src/Config.h`.
+
+### Test phím và cảm ứng khi chưa kết nối PC
+
+Khi thiết bị đang ở màn hình chờ kết nối PC, có thể test trực tiếp phần cứng mà không cần mở VuNMix Desktop:
+
+- Nhấn bất kỳ phím vật lý nào để vào màn `INPUT TEST`.
+- Hoặc chạm/vuốt màn hình cảm ứng để vào cùng màn test này.
+- 6 ô `P`, `M`, `N`, `-`, `SPC`, `+` sẽ sáng khi phím tương ứng được nhấn.
+- Dòng `TOUCH READY`/`TOUCH NOT FOUND` cho biết firmware có nhận được CST816S qua I2C hay không.
+- Dòng `LAST: ...` hiển thị thao tác cảm ứng cuối cùng như `TAP`, `DOUBLE TAP`, `LONG PRESS`, `SWIPE LEFT/RIGHT/UP/DOWN`.
+- Dòng raw `RAW/F/X/Y/INT` dùng để debug sâu hơn: raw gesture, số ngón, tọa độ và trạng thái chân INT. Firmware vẫn poll touch định kỳ nên vẫn test được cả khi chân INT không hoạt động đúng.
 
 ## VU Meter
 
@@ -181,8 +195,8 @@ VuNMix có cơ chế tiết kiệm điện và hiệu ứng chờ:
 | :--- | :---: | :--- |
 | SDA | GPIO 5 | I2C data |
 | SCL | GPIO 4 | I2C clock |
-| INT | GPIO 3 | Interrupt |
-| RST | GPIO 2 | Reset touch |
+| INT | GPIO 6 | Interrupt |
+| RST | GPIO 7 | Reset touch |
 
 ### Keypad 2x3
 
@@ -306,9 +320,26 @@ Các nhóm dữ liệu chính:
 - `MODE_STATES`: trạng thái Navigate/Edit của từng mode.
 - `TIME_SYNC`: đồng bộ giờ cho clock standby.
 - `METER_LEVEL`: VU meter hiện tại.
+- `APP_ICON_META`, `APP_ICON_CHUNK`: đẩy icon app 16x16 RGB565 lên thiết bị.
 - `SLEEP`: PC sleep hoặc app yêu cầu thiết bị nghỉ.
 
-Desktop và firmware phải giữ `Enums.h`, `Structs.h` và `desktop/protocol.py` đồng bộ. Khi thêm command hoặc đổi struct, cần cập nhật cả hai phía và test protocol.
+Desktop và firmware phải giữ `Enums.h`, `Structs.h` và `desktop/protocol.py` đồng bộ. Khi thêm command hoặc đổi struct, cần cập nhật cả hai phía và test protocol. `MODE_STATES` hiện có 6 byte vì có thêm `MODE_HEALTH`.
+
+## Device Health / Debug screen
+
+Firmware có thêm mode `HEALTH` để xem nhanh tình trạng thiết bị ngay trên màn hình. Từ các mode chính, nhấn giữ encoder hoặc long-press cảm ứng để chuyển qua các mode cho tới icon bánh răng.
+
+Màn hình Health hiển thị:
+
+- `CONN`: trạng thái PC/serial và thời gian từ frame gần nhất.
+- `UPTIME`: thời gian firmware đã chạy.
+- `HEAP` / `ALLOC`: RAM trống, RAM thấp nhất và block cấp phát lớn nhất.
+- `SERIAL`: số frame RX/TX.
+- `ERR`: số lỗi CRC/protocol và command gần nhất.
+- `STATE`: mode/index và số Output/Input/App session.
+- `TOUCH`: trạng thái CST816S và số sample touch đã đọc.
+
+Trong Health mode, xoay encoder hoặc swipe không thay đổi session/volume. Nhấn giữ để chuyển sang mode tiếp theo.
 
 ## Cấu hình người dùng
 
@@ -317,6 +348,7 @@ Desktop lưu cấu hình tại `%LOCALAPPDATA%\VuNMix`, không ghi trực tiếp
 Các thiết lập chính:
 
 - COM port hoặc auto detect.
+- App Favorites.
 - Sleep timeout.
 - Auto Sleep.
 - Standby LED effect.

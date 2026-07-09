@@ -113,7 +113,7 @@ class SettingsDialog:
         self._window.overrideredirect(True)
         
         window_width = 320
-        window_height = 545
+        window_height = 625
         screen_width = self._window.winfo_screenwidth()
         screen_height = self._window.winfo_screenheight()
         x = screen_width - window_width - 15
@@ -220,6 +220,33 @@ class SettingsDialog:
         # Auto Sleep (default off)
         self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
         add_row(content, "Auto Sleep", lambda r: ctk.CTkSwitch(r, text="", variable=self._sleep_enabled_var, switch_width=36, switch_height=18))
+
+        # Favorite apps
+        favorites_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
+        favorites_frame.pack(fill='x', padx=12, pady=(5, 2))
+        favorites_top = ctk.CTkFrame(favorites_frame, fg_color="transparent")
+        favorites_top.pack(fill='x', padx=8, pady=(6, 2))
+        ctk.CTkLabel(
+            favorites_top,
+            text="App Favorites",
+            font=ctk.CTkFont(size=12),
+        ).pack(side='left')
+        ctk.CTkButton(
+            favorites_top,
+            text="Choose",
+            width=82,
+            height=24,
+            command=self._choose_favorite_apps,
+        ).pack(side='right')
+        self._favorites_status_var = tk.StringVar()
+        self._refresh_favorites_label()
+        ctk.CTkLabel(
+            favorites_frame,
+            textvariable=self._favorites_status_var,
+            font=ctk.CTkFont(size=10),
+            text_color="#a0a0a0",
+            anchor="w",
+        ).pack(fill='x', padx=8, pady=(0, 6))
 
         # Firmware update
         firmware_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
@@ -356,6 +383,64 @@ class SettingsDialog:
         self._firmware_progress.set(max(0.0, min(1.0, float(value))))
         self._firmware_status_var.set(text)
 
+    def _refresh_favorites_label(self):
+        favorites = sorted(set(self.config.favorite_apps))
+        if favorites:
+            text = ", ".join(favorites[:4])
+            if len(favorites) > 4:
+                text += f" +{len(favorites) - 4}"
+        else:
+            text = "No favorite apps selected"
+        if hasattr(self, "_favorites_status_var"):
+            self._favorites_status_var.set(text)
+
+    def _choose_favorite_apps(self):
+        if not self._window or not self._window.winfo_exists():
+            return
+
+        try:
+            self.controller.audio.refresh()
+        except Exception:
+            log.exception("Failed to refresh app list for favorites")
+
+        from protocol import DisplayMode
+        apps = self.controller.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
+        names = sorted({item.name.lower().removesuffix(".exe") for item in apps if item.name})
+        for existing in self.config.favorite_apps:
+            if existing not in names:
+                names.append(existing)
+
+        picker = ctk.CTkToplevel(self._window)
+        picker.title("App Favorites")
+        picker.geometry("260x360")
+        picker.attributes("-topmost", True)
+        picker.transient(self._window)
+        frame = ctk.CTkScrollableFrame(picker)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        vars_by_name = {}
+        selected = set(self.config.favorite_apps)
+        if not names:
+            ctk.CTkLabel(frame, text="No active audio apps found.").pack(anchor="w", pady=4)
+        for name in names:
+            var = tk.BooleanVar(value=name in selected)
+            vars_by_name[name] = var
+            ctk.CTkCheckBox(frame, text=name, variable=var).pack(anchor="w", pady=3)
+
+        buttons = ctk.CTkFrame(picker, fg_color="transparent")
+        buttons.pack(fill="x", padx=10, pady=(0, 10))
+
+        def apply_selection():
+            self.config.favorite_apps = sorted(
+                name for name, var in vars_by_name.items() if var.get()
+            )
+            self.controller.audio.set_favorite_apps(self.config.favorite_apps)
+            self._refresh_favorites_label()
+            picker.destroy()
+
+        ctk.CTkButton(buttons, text="Apply", command=apply_selection, height=28).pack(side="right")
+        ctk.CTkButton(buttons, text="Cancel", command=picker.destroy, height=28, fg_color="#444444").pack(side="right", padx=6)
+
     def _firmware_complete(self, success, message):
         self._firmware_progress.set(1.0 if success else 0.0)
         self._firmware_status_var.set(
@@ -388,6 +473,7 @@ class SettingsDialog:
             self.config.com_port = new_port
 
             self.config.run_on_startup = self._startup_var.get()
+            self.config.favorite_apps = sorted(set(self.config.favorite_apps))
             self.config.device_settings.sleep_after_seconds = max(
                 0, min(65535, int(self._sleep_var.get()))
             )
@@ -399,6 +485,7 @@ class SettingsDialog:
             self.config.device_settings.continuous_scroll = self._scroll_var.get()
             self.config.device_settings.led_brightness = int(self._brightness_var.get())
             self.config.save()
+            self.controller.audio.set_favorite_apps(self.config.favorite_apps)
             
             set_run_on_startup(self.config.run_on_startup)
             
@@ -484,6 +571,7 @@ class TrayApp:
             from protocol import Command
             if self.controller._device_connected:
                 self.controller.serial.send_command(Command.SETTINGS, self.config.device_settings.pack())
+                self.controller._push_updated_state()
 
     def _on_reconnect(self, icon, item):
         log.info("Manual reconnect requested")

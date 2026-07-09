@@ -12,6 +12,14 @@ namespace VideoPlayer {
 
     static bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
         if (y >= s_tft.height()) return 0;
+
+        // Swap red and blue channels (RGB565 to BGR565) because the new video frames are in BGR color order
+        uint32_t count = (uint32_t)w * h;
+        for (uint32_t i = 0; i < count; i++) {
+            uint16_t val = bitmap[i];
+            bitmap[i] = ((val & 0x001F) << 11) | (val & 0x07E0) | ((val & 0xF800) >> 11);
+        }
+
         s_tft.pushImage(x, y, w, h, bitmap);
         return 1;
     }

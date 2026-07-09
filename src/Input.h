@@ -29,6 +29,13 @@ namespace Input {
 
     bool TouchAvailable();
     TouchEvent ConsumeTouchEvent();
+    TouchEvent LastTouchEvent();
+    uint8_t LastTouchRawGesture();
+    uint8_t LastTouchFingers();
+    uint16_t LastTouchX();
+    uint16_t LastTouchY();
+    bool TouchIntActive();
+    uint32_t TouchSampleCounter();
 
     // These variables act as the interface to the main loop, simulating the rotary encoder
     extern volatile int8_t g_EncoderSteps;

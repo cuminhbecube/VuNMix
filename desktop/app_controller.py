@@ -28,6 +28,7 @@ from protocol import (
 from config import AppConfig
 from serial_service import SerialService
 from audio_service import AudioService
+from app_icon import app_icon_rgb565
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class AppController:
         self.config = config
         self.serial = SerialService(port=config.com_port)
         self.audio = AudioService()
+        self.audio.set_favorite_apps(config.favorite_apps)
 
         # Firmware state mirrors
         self._session_info = SessionInfo()
@@ -101,6 +103,7 @@ class AppController:
         self._device_connected = False
         self._is_sleeping = False
         self._handshake_token = 0
+        self._sent_icon_ids = set()
 
         # Sync thread
         self._sync_thread: Optional[threading.Thread] = None
@@ -281,6 +284,7 @@ class AppController:
         log.info("Device disconnected")
         self._handshake_token += 1
         self._device_connected = False
+        self._sent_icon_ids.clear()
         self._session_info = SessionInfo()
         if self.on_connection_changed:
             self.on_connection_changed(False)
@@ -330,6 +334,19 @@ class AppController:
     def _handle_session_info_from_hw(self, info: SessionInfo):
         """Hardware changed mode or navigated — send appropriate sessions."""
         mode_changed = info.mode != self._session_info.mode
+
+        # Device Health is rendered fully on the firmware from local counters.
+        # Do not push audio sessions/volume here: there is no Windows audio
+        # target for this mode, and treating it like an app mode can create
+        # confusing "No sessions" traffic while the user is debugging.
+        if info.mode == DisplayMode.MODE_HEALTH:
+            info.current = 0
+            self._session_info = info
+            if mode_changed:
+                self.serial.send_session_info(info)
+                self.serial.send_mode_states(self._mode_states)
+            return
+
         if mode_changed:
             # Use the cache immediately. A full Windows audio enumeration can
             # take around one second and made every mode change feel blocked.
@@ -346,6 +363,8 @@ class AppController:
     def _apply_volume_to_windows(self, session_idx: int, vol: VolumeData):
         """Apply volume change from hardware knob to Windows."""
         mode = self._session_info.mode
+        if mode == DisplayMode.MODE_HEALTH:
+            return
         items = self.audio.get_sessions_for_mode(mode)
 
         # Determine which Windows session to modify
@@ -400,10 +419,21 @@ class AppController:
 
     def _push_full_state(self, mode: int):
         """Send complete state for a display mode to hardware."""
-        items = self.audio.get_sessions_for_mode(mode)
         n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
         n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
         n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
+        if mode == DisplayMode.MODE_HEALTH:
+            self._session_info = SessionInfo(
+                mode=mode,
+                current=0,
+                sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
+            )
+            self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
+            self.serial.send_session_info(self._session_info)
+            self.serial.send_mode_states(self._mode_states)
+            return
+
+        items = self.audio.get_sessions_for_mode(mode)
         current_idx = self._preferred_index(mode, items)
 
         self._session_info = SessionInfo(
@@ -411,7 +441,7 @@ class AppController:
             current=current_idx,
             sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
         )
-        self._mode_states = ModeStates(states=[0, 1, 1, 0, 0])
+        self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
 
         # Send session info
         self.serial.send_session_info(self._session_info)
@@ -425,6 +455,16 @@ class AppController:
     def _push_updated_state(self):
         """Re-push state after a refresh, preserving current index if possible."""
         mode = self._session_info.mode
+        if mode == DisplayMode.MODE_HEALTH:
+            n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
+            n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
+            n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
+            self._session_info.current = 0
+            self._session_info.sessions = [max(n_output, 1), max(n_input, 1), max(n_app, 1)]
+            self.serial.send_session_info(self._session_info)
+            self.serial.send_mode_states(self._mode_states)
+            return
+
         items = self.audio.get_sessions_for_mode(mode)
         
         n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
@@ -450,6 +490,9 @@ class AppController:
 
     def _push_sessions_for_mode(self, mode: int, current_idx: int):
         """Send current/prev/next sessions for a mode."""
+        if mode == DisplayMode.MODE_HEALTH:
+            return
+
         items = self.audio.get_sessions_for_mode(mode)
         if not items:
             # Send empty session
@@ -464,6 +507,7 @@ class AppController:
         cur = items[current_idx].to_session_data()
         self._sessions[SessionIndex.INDEX_CURRENT] = cur
         self.serial.send_session(Command.CURRENT_SESSION, cur)
+        self._send_app_icon_if_needed(mode, items[current_idx])
 
         # Previous
         if count > 1:
@@ -471,6 +515,7 @@ class AppController:
             prev = items[prev_idx].to_session_data()
             self._sessions[SessionIndex.INDEX_PREVIOUS] = prev
             self.serial.send_session(Command.PREVIOUS_SESSION, prev)
+            self._send_app_icon_if_needed(mode, items[prev_idx])
 
         # Next
         if count > 1:
@@ -478,6 +523,19 @@ class AppController:
             nxt = items[next_idx].to_session_data()
             self._sessions[SessionIndex.INDEX_NEXT] = nxt
             self.serial.send_session(Command.NEXT_SESSION, nxt)
+            self._send_app_icon_if_needed(mode, items[next_idx])
+
+    def _send_app_icon_if_needed(self, mode: int, item):
+        if mode not in (DisplayMode.MODE_APPLICATION, DisplayMode.MODE_GAME):
+            return
+        if item.id <= 0 or item.id in self._sent_icon_ids:
+            return
+        try:
+            data = app_icon_rgb565(item.name, getattr(item, "_process_path", ""))
+            if self.serial.send_app_icon(item.id, data):
+                self._sent_icon_ids.add(item.id)
+        except Exception:
+            log.debug("Failed to send app icon for %s", item.name, exc_info=True)
 
     # ─── Periodic Sync ─────────────────────────────────────────────────
     def _sync_loop(self):
@@ -506,7 +564,7 @@ class AppController:
                 self.serial.send_time_sync(dt.hour, dt.minute, dt.second)
                 last_time_sync = now
 
-            if self._session_info.mode == DisplayMode.MODE_SPLASH:
+            if self._session_info.mode in (DisplayMode.MODE_SPLASH, DisplayMode.MODE_HEALTH):
                 continue
 
             # Periodic full refresh to catch new apps (every 5s)
@@ -577,7 +635,7 @@ class AppController:
                 time.sleep(1.0 / 15.0)
 
                 if (not self._device_connected or self._is_sleeping or
-                        self._session_info.mode == DisplayMode.MODE_SPLASH):
+                        self._session_info.mode in (DisplayMode.MODE_SPLASH, DisplayMode.MODE_HEALTH)):
                     self.audio.close_peak_meter(current_meter)
                     self.audio.close_peak_meter(alternate_meter)
                     current_meter = None

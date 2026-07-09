@@ -22,6 +22,7 @@ _DEFAULT_CONFIG = {
     "com_port": "COM14",
     "update_interval_ms": 500,
     "run_on_startup": False,
+    "favorite_apps": [],
     "settings": {
         "sleep_after_seconds": 300,
         "sleep_enabled": True,
@@ -43,6 +44,7 @@ class AppConfig:
     com_port: str = "COM14"
     update_interval_ms: int = 500
     run_on_startup: bool = False
+    favorite_apps: list = field(default_factory=list)
     device_settings: DeviceSettings = field(default_factory=DeviceSettings)
 
     @classmethod
@@ -87,6 +89,11 @@ class AppConfig:
             com_port=str(data.get('com_port', 'COM14')).strip() or 'COM14',
             update_interval_ms=max(50, min(10000, int(data.get('update_interval_ms', 500)))),
             run_on_startup=bool(data.get('run_on_startup', False)),
+            favorite_apps=[
+                str(item).lower().removesuffix(".exe")
+                for item in data.get("favorite_apps", [])
+                if str(item).strip()
+            ],
             device_settings=DeviceSettings.from_config(settings_dict),
         )
 
@@ -97,6 +104,7 @@ class AppConfig:
             "com_port": self.com_port,
             "update_interval_ms": self.update_interval_ms,
             "run_on_startup": self.run_on_startup,
+            "favorite_apps": sorted(set(self.favorite_apps)),
             "settings": {
                 "sleep_after_seconds": self.device_settings.sleep_after_seconds,
                 "sleep_enabled": self.device_settings.sleep_enabled,

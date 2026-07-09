@@ -62,6 +62,7 @@ class AudioItem:
     _endpoint_vol: Optional[object] = field(default=None, repr=False)
     _session_vol: Optional[object] = field(default=None, repr=False)
     _process_id: int = 0
+    _process_path: str = ""
     _device_id: str = ""
     _session_identifier: str = ""
 
@@ -85,10 +86,26 @@ class AudioService:
         self._output_devices: List[AudioItem] = []
         self._input_devices: List[AudioItem] = []
         self._app_sessions: List[AudioItem] = []
+        self._favorite_apps = set()
         self._lock = threading.Lock()
 
         # Callbacks
         self.on_sessions_changed: Optional[Callable] = None
+
+    def set_favorite_apps(self, names):
+        """Set favorite application names; favorites are sorted first."""
+        normalized = {
+            str(name).lower().removesuffix(".exe").strip()
+            for name in names
+            if str(name).strip()
+        }
+        with self._lock:
+            self._favorite_apps = normalized
+            self._app_sessions.sort(key=self._app_sort_key)
+
+    def _app_sort_key(self, item: AudioItem):
+        name = item.name.lower().removesuffix(".exe")
+        return (0 if name in self._favorite_apps else 1, name)
 
     def refresh(self):
         """Refresh all audio devices and sessions from Windows."""
@@ -322,6 +339,10 @@ class AudioService:
                     proc = session.Process
                     if proc is None:
                         continue
+                    try:
+                        process_path = proc.exe()
+                    except Exception:
+                        process_path = ""
                     name = proc.name()
                     if name.lower().endswith('.exe'):
                         name = name[:-4]
@@ -344,13 +365,14 @@ class AudioService:
                         is_muted=muted,
                         _session_vol=vol_interface,
                         _process_id=pid,
+                        _process_path=process_path,
                         _session_identifier=identifier,
                     )
                     temp_sessions.append(item)
                 except Exception as e:
                     log.debug(f"Skipping session: {e}")
                     
-            temp_sessions.sort(key=lambda x: x.name.lower())
+            temp_sessions.sort(key=self._app_sort_key)
             self._assign_protocol_ids(temp_sessions, lambda item: item._session_identifier)
             with self._lock:
                 self._app_sessions.extend(temp_sessions)

@@ -32,11 +32,11 @@ static const uint8_t  PIN_KEY_C2 = 39;
 // Touch (CST816S over I2C)
 static const uint8_t  PIN_TOUCH_SDA = 5;
 static const uint8_t  PIN_TOUCH_SCL = 4;
-static const uint8_t  PIN_TOUCH_INT = 3;
-static const uint8_t  PIN_TOUCH_RST = 2;
+static const uint8_t  PIN_TOUCH_INT = 6;
+static const uint8_t  PIN_TOUCH_RST = 7;
 // The touch sensor is portrait while TFT rotation 1 is landscape.
 // Change to 0 if a panel variant already reports landscape gestures.
-static const uint8_t  TOUCH_ROTATION = 1;
+static const uint8_t  TOUCH_ROTATION = 3;
 static const int8_t   TOUCH_VOLUME_STEP = 5;
 
 // --- States

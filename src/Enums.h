@@ -20,7 +20,9 @@ enum class Command : int8_t
     DEBUG,
     SLEEP,
     TIME_SYNC,
-    METER_LEVEL
+    METER_LEVEL,
+    APP_ICON_META,
+    APP_ICON_CHUNK
 };
 
 enum SessionIndex : uint8_t
@@ -39,5 +41,6 @@ enum DisplayMode : uint8_t
     MODE_INPUT,
     MODE_APPLICATION,
     MODE_GAME,
+    MODE_HEALTH,
     MODE_MAX
 };

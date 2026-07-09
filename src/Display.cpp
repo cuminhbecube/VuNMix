@@ -39,6 +39,7 @@ namespace Display {
     static const uint32_t COL_PURPLE = 0xCFBCFF; // Input
     static const uint32_t COL_GREEN  = 0x00FF88; // Application
     static const uint32_t COL_ORANGE = 0xFF7A00; // Game
+    static const uint32_t COL_BLUE   = 0x60A5FA; // Health / debug
 
     // Layout constants
     static const int16_t HEADER_H  = 32;
@@ -98,7 +99,7 @@ namespace Display {
     // Screen Tracking
     // =========================================================
     enum class ScreenType {
-        NONE, SPLASH, KEY_TEST, INFO, CLOCK, DEVICE_SELECT, DEVICE_EDIT, GAME_SELECT, GAME_EDIT
+        NONE, SPLASH, KEY_TEST, INFO, CLOCK, DEVICE_SELECT, DEVICE_EDIT, GAME_SELECT, GAME_EDIT, HEALTH
     };
 
     static ScreenType s_currentScreen = ScreenType::NONE;
@@ -108,13 +109,18 @@ namespace Display {
     static lv_obj_t* s_headerIcon = nullptr;
     static lv_obj_t* s_headerTitle= nullptr;
     static lv_obj_t* s_navbar     = nullptr;
-    static lv_obj_t* s_navBtns[4] = {nullptr};
+    static constexpr uint8_t NAV_MODE_COUNT = 5;
+    static lv_obj_t* s_navBtns[NAV_MODE_COUNT] = {nullptr};
     static lv_obj_t* s_glowStrip  = nullptr;
     static lv_obj_t* s_contentArea= nullptr;
     static lv_obj_t* s_meterCurrent = nullptr;
     static lv_obj_t* s_meterAlternate = nullptr;
+    static lv_obj_t* s_appIconImg = nullptr;
+    static lv_obj_t* s_modeIconLabel = nullptr;
     static uint8_t s_meterCurrentValue = 0;
     static uint8_t s_meterAlternateValue = 0;
+    static lv_color_t s_appIconCanvasBuf[16 * 16];
+    static lv_img_dsc_t s_appIconDsc;
 
     // --- Content widgets (reused per screen) ---
     static lv_obj_t* s_titleLabel  = nullptr;
@@ -137,13 +143,70 @@ namespace Display {
     static lv_anim_t s_dotAnim;
     static uint8_t   s_dotState = 0;
 
+    static constexpr uint8_t APP_ICON_SIZE = 16;
+    static constexpr uint16_t APP_ICON_BYTES = APP_ICON_SIZE * APP_ICON_SIZE * 2;
+    static constexpr uint8_t APP_ICON_CACHE_SIZE = 8;
+    struct AppIconCacheEntry {
+        uint8_t id = 0;
+        uint16_t received = 0;
+        uint8_t data[APP_ICON_BYTES] = {0};
+    };
+    static AppIconCacheEntry s_appIcons[APP_ICON_CACHE_SIZE];
+    static uint8_t s_appIconWriteSlot = 0;
+
     // Track which mode the shell was built for
     static DisplayMode s_shellMode = MODE_SPLASH;
     static bool s_shellBuilt = false;
 
+    static AppIconCacheEntry* FindAppIcon(uint8_t id) {
+        if (id == 0) return nullptr;
+        for (uint8_t i = 0; i < APP_ICON_CACHE_SIZE; ++i) {
+            if (s_appIcons[i].id == id)
+                return &s_appIcons[i];
+        }
+        return nullptr;
+    }
+
+    static void UpdateAppIcon(uint8_t id, DisplayMode mode) {
+        if (!s_appIconImg || mode != MODE_APPLICATION)
+            return;
+
+        AppIconCacheEntry* icon = FindAppIcon(id);
+        if (!icon || icon->received < APP_ICON_BYTES) {
+            lv_obj_add_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
+            if (s_modeIconLabel)
+                lv_obj_clear_flag(s_modeIconLabel, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+
+        if (s_modeIconLabel)
+            lv_obj_add_flag(s_modeIconLabel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
+
+        for (uint16_t i = 0; i < APP_ICON_SIZE * APP_ICON_SIZE; ++i) {
+            uint16_t rgb565 = (uint16_t)icon->data[i * 2] | ((uint16_t)icon->data[i * 2 + 1] << 8);
+            uint8_t r = (uint8_t)(((rgb565 >> 11) & 0x1F) * 255 / 31);
+            uint8_t g = (uint8_t)(((rgb565 >> 5) & 0x3F) * 255 / 63);
+            uint8_t b = (uint8_t)((rgb565 & 0x1F) * 255 / 31);
+            s_appIconCanvasBuf[i] = lv_color_make(r, g, b);
+        }
+        s_appIconDsc.header.always_zero = 0;
+        s_appIconDsc.header.w = APP_ICON_SIZE;
+        s_appIconDsc.header.h = APP_ICON_SIZE;
+        s_appIconDsc.header.cf = LV_IMG_CF_TRUE_COLOR;
+        s_appIconDsc.data_size = sizeof(s_appIconCanvasBuf);
+        s_appIconDsc.data = (const uint8_t*)s_appIconCanvasBuf;
+        lv_img_set_src(s_appIconImg, &s_appIconDsc);
+        lv_obj_invalidate(s_appIconImg);
+    }
+
     // Splash Keypad Test
     static lv_obj_t* s_keyGrid = nullptr;
     static lv_obj_t* s_keyBoxes[6] = {nullptr};
+    static lv_obj_t* s_touchStatusLabel = nullptr;
+    static lv_obj_t* s_touchEventLabel = nullptr;
+    static lv_obj_t* s_touchRawLabel = nullptr;
+    static lv_obj_t* s_healthRows[8] = {nullptr};
 
     // Clock Standby
     static lv_obj_t* s_clockHM     = nullptr;
@@ -162,6 +225,7 @@ namespace Display {
             case MODE_INPUT:       return "INPUT";
             case MODE_APPLICATION: return "APP";
             case MODE_GAME:        return "GAME MIXER";
+            case MODE_HEALTH:      return "HEALTH";
             default:               return "";
         }
     }
@@ -172,6 +236,7 @@ namespace Display {
             case MODE_INPUT:       return LV_SYMBOL_AUDIO;
             case MODE_APPLICATION: return LV_SYMBOL_LIST;
             case MODE_GAME:        return LV_SYMBOL_SHUFFLE;
+            case MODE_HEALTH:      return LV_SYMBOL_SETTINGS;
             default:               return "";
         }
     }
@@ -182,20 +247,22 @@ namespace Display {
             case MODE_INPUT:       return lv_color_hex(COL_PURPLE);
             case MODE_APPLICATION: return lv_color_hex(COL_GREEN);
             case MODE_GAME:        return lv_color_hex(COL_ORANGE);
+            case MODE_HEALTH:      return lv_color_hex(COL_BLUE);
             default:               return lv_color_hex(0xFFFFFF);
         }
     }
 
-    // Nav bar icon symbols (simple text for 4 modes)
-    static const char* s_navIcons[4] = {
+    // Nav bar icon symbols
+    static const char* s_navIcons[NAV_MODE_COUNT] = {
         LV_SYMBOL_VOLUME_MAX, // Output
         LV_SYMBOL_AUDIO,      // Input
         LV_SYMBOL_LIST,        // Apps
-        LV_SYMBOL_SHUFFLE      // Game
+        LV_SYMBOL_SHUFFLE,     // Game
+        LV_SYMBOL_SETTINGS     // Health
     };
 
-    static const DisplayMode s_navModes[4] = {
-        MODE_OUTPUT, MODE_INPUT, MODE_APPLICATION, MODE_GAME
+    static const DisplayMode s_navModes[NAV_MODE_COUNT] = {
+        MODE_OUTPUT, MODE_INPUT, MODE_APPLICATION, MODE_GAME, MODE_HEALTH
     };
 
     // =========================================================
@@ -213,6 +280,39 @@ namespace Display {
         lv_obj_set_style_pad_all(panel, 0, LV_PART_MAIN);
         lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
         return panel;
+    }
+
+    static const char* CommandName(Command command) {
+        switch (command) {
+            case Command::TEST: return "TEST";
+            case Command::OK: return "OK";
+            case Command::SETTINGS: return "SET";
+            case Command::SESSION_INFO: return "INFO";
+            case Command::CURRENT_SESSION: return "CUR";
+            case Command::ALTERNATE_SESSION: return "ALT";
+            case Command::PREVIOUS_SESSION: return "PREV";
+            case Command::NEXT_SESSION: return "NEXT";
+            case Command::VOLUME_CURR_CHANGE: return "VCUR";
+            case Command::VOLUME_ALT_CHANGE: return "VALT";
+            case Command::MODE_STATES: return "MODE";
+            case Command::DEBUG: return "DBG";
+            case Command::SLEEP: return "SLEEP";
+            case Command::TIME_SYNC: return "TIME";
+            case Command::METER_LEVEL: return "VU";
+            case Command::APP_ICON_META: return "IMETA";
+            case Command::APP_ICON_CHUNK: return "ICHK";
+            case Command::ERROR: return "ERR";
+            case Command::NONE:
+            default: return "---";
+        }
+    }
+
+    static void SetHealthRow(uint8_t row, const char* label, const char* value, uint32_t color) {
+        if (row >= 8 || !s_healthRows[row]) return;
+        char text[48];
+        snprintf(text, sizeof(text), "%s %s", label, value);
+        lv_label_set_text(s_healthRows[row], text);
+        lv_obj_set_style_text_color(s_healthRows[row], lv_color_hex(color), LV_PART_MAIN);
     }
 
     // =========================================================
@@ -315,7 +415,7 @@ namespace Display {
             lv_obj_clear_flag(s_navbar, LV_OBJ_FLAG_SCROLLABLE);
 
             // Nav buttons
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < NAV_MODE_COUNT; i++) {
                 s_navBtns[i] = lv_label_create(s_navbar);
                 lv_obj_set_style_text_font(s_navBtns[i], &lv_font_montserrat_20, LV_PART_MAIN);
                 lv_label_set_text(s_navBtns[i], s_navIcons[i]);
@@ -340,7 +440,11 @@ namespace Display {
             lv_obj_set_style_bg_color(s_meterCurrent, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
             lv_obj_set_style_bg_color(s_meterAlternate, lv_color_hex(COL_ORANGE), LV_PART_INDICATOR);
             lv_obj_set_style_bg_color(s_meterCurrent, lv_color_hex(COL_PRIMARY), LV_PART_INDICATOR);
+        } else if (mode == MODE_HEALTH) {
+            lv_obj_add_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_meterCurrent, LV_OBJ_FLAG_HIDDEN);
         } else {
+            lv_obj_clear_flag(s_meterCurrent, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_size(s_meterCurrent, 76, 4);
             lv_obj_align(s_meterCurrent, LV_ALIGN_RIGHT_MID, -24, 0);
@@ -355,7 +459,7 @@ namespace Display {
         lv_obj_set_style_shadow_color(s_glowStrip, accent, LV_PART_MAIN);
 
         // Nav buttons — highlight active
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < NAV_MODE_COUNT; i++) {
             if (s_navModes[i] == mode) {
                 lv_obj_set_style_text_color(s_navBtns[i], accent, LV_PART_MAIN);
                 lv_obj_set_style_text_opa(s_navBtns[i], LV_OPA_COVER, LV_PART_MAIN);
@@ -398,6 +502,7 @@ namespace Display {
             s_faderB = nullptr;
             s_faderNameA = nullptr;
             s_faderNameB = nullptr;
+            for (int i = 0; i < 8; ++i) s_healthRows[i] = nullptr;
         }
     }
 
@@ -413,8 +518,10 @@ namespace Display {
         s_headerTitle = nullptr;
         s_meterCurrent = nullptr;
         s_meterAlternate = nullptr;
+        s_appIconImg = nullptr;
+        s_modeIconLabel = nullptr;
         s_navbar = nullptr;
-        for (int i = 0; i < 4; i++) s_navBtns[i] = nullptr;
+        for (int i = 0; i < NAV_MODE_COUNT; i++) s_navBtns[i] = nullptr;
         s_glowStrip = nullptr;
         s_contentArea = nullptr;
         s_titleLabel = nullptr;
@@ -427,6 +534,10 @@ namespace Display {
         s_splashDots = nullptr;
         s_keyGrid = nullptr;
         for (int i=0; i<6; i++) s_keyBoxes[i] = nullptr;
+        s_touchStatusLabel = nullptr;
+        s_touchEventLabel = nullptr;
+        s_touchRawLabel = nullptr;
+        for (int i = 0; i < 8; ++i) s_healthRows[i] = nullptr;
         s_clockHM = nullptr;
         s_clockColon = nullptr;
         s_clockSec = nullptr;
@@ -445,6 +556,41 @@ namespace Display {
             lv_bar_set_value(s_meterCurrent, s_meterCurrentValue, LV_ANIM_OFF);
         if (s_meterAlternate)
             lv_bar_set_value(s_meterAlternate, s_meterAlternateValue, LV_ANIM_OFF);
+    }
+
+    void ReceiveAppIconMeta(const AppIconMeta* meta) {
+        if (!meta || meta->id == 0 || meta->width != APP_ICON_SIZE ||
+            meta->height != APP_ICON_SIZE || meta->dataLength != APP_ICON_BYTES) {
+            return;
+        }
+
+        AppIconCacheEntry* icon = FindAppIcon(meta->id);
+        if (!icon) {
+            icon = &s_appIcons[s_appIconWriteSlot];
+            s_appIconWriteSlot = (s_appIconWriteSlot + 1) % APP_ICON_CACHE_SIZE;
+        }
+        icon->id = meta->id;
+        icon->received = 0;
+        memset(icon->data, 0, sizeof(icon->data));
+    }
+
+    void ReceiveAppIconChunk(const AppIconChunk* chunk) {
+        if (!chunk || chunk->id == 0 || chunk->length == 0 || chunk->length > 60)
+            return;
+
+        AppIconCacheEntry* icon = FindAppIcon(chunk->id);
+        if (!icon)
+            return;
+
+        uint16_t offset = (uint16_t)chunk->index * 60U;
+        if (offset >= APP_ICON_BYTES)
+            return;
+
+        uint16_t writable = min((uint16_t)chunk->length, (uint16_t)(APP_ICON_BYTES - offset));
+        memcpy(icon->data + offset, chunk->data, writable);
+        uint16_t end = offset + writable;
+        if (end > icon->received)
+            icon->received = end;
     }
 
     // =========================================================
@@ -529,12 +675,12 @@ namespace Display {
             lv_obj_set_style_border_width(s_keyGrid, 0, LV_PART_MAIN);
             lv_obj_clear_flag(s_keyGrid, LV_OBJ_FLAG_SCROLLABLE);
             
-            int btnW = 80;
-            int btnH = 80;
+            int btnW = 72;
+            int btnH = 62;
             int gapX = 15;
-            int gapY = 15;
+            int gapY = 10;
             int startX = (SW - (3*btnW + 2*gapX)) / 2;
-            int startY = (SH - (2*btnH + gapY)) / 2;
+            int startY = 44;
 
             const char* keyNames[6] = {"P", "M", "N", "-", "SPC", "+"};
             for (int i=0; i<6; i++) {
@@ -557,6 +703,26 @@ namespace Display {
                 lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, LV_PART_MAIN);
                 lv_obj_center(lbl);
             }
+
+            s_titleLabel = lv_label_create(s_keyGrid);
+            lv_label_set_text(s_titleLabel, "INPUT TEST");
+            lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(COL_CYAN), LV_PART_MAIN);
+            lv_obj_set_style_text_font(s_titleLabel, &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_align(s_titleLabel, LV_ALIGN_TOP_MID, 0, 10);
+
+            s_touchStatusLabel = lv_label_create(s_keyGrid);
+            lv_obj_set_style_text_font(s_touchStatusLabel, &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_align(s_touchStatusLabel, LV_ALIGN_BOTTOM_MID, 0, -28);
+
+            s_touchEventLabel = lv_label_create(s_keyGrid);
+            lv_obj_set_style_text_font(s_touchEventLabel, &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_touchEventLabel, lv_color_hex(COL_ON_SURFACE_V), LV_PART_MAIN);
+            lv_obj_align(s_touchEventLabel, LV_ALIGN_BOTTOM_MID, 0, -13);
+
+            s_touchRawLabel = lv_label_create(s_keyGrid);
+            lv_obj_set_style_text_font(s_touchRawLabel, &lv_font_montserrat_10, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_touchRawLabel, lv_color_hex(0x8B949E), LV_PART_MAIN);
+            lv_obj_align(s_touchRawLabel, LV_ALIGN_BOTTOM_MID, 0, 5);
         }
 
         // Update key colors based on state
@@ -574,6 +740,46 @@ namespace Display {
                     if (lbl) lv_obj_set_style_text_color(lbl, lv_color_hex(0x8B949E), LV_PART_MAIN);
                 }
             }
+        }
+
+        if (s_touchStatusLabel) {
+            bool ready = Input::TouchAvailable();
+            lv_obj_set_style_text_color(
+                s_touchStatusLabel,
+                ready ? lv_color_hex(COL_GREEN) : lv_color_hex(0xFF3333),
+                LV_PART_MAIN
+            );
+            lv_label_set_text(s_touchStatusLabel, ready ? "TOUCH READY" : "TOUCH NOT FOUND");
+        }
+
+        if (s_touchEventLabel) {
+            const char *eventText = "---";
+            switch (Input::LastTouchEvent()) {
+                case Input::TouchEvent::Tap:        eventText = "LAST: TAP"; break;
+                case Input::TouchEvent::DoubleTap:  eventText = "LAST: DOUBLE TAP"; break;
+                case Input::TouchEvent::LongPress:  eventText = "LAST: LONG PRESS"; break;
+                case Input::TouchEvent::SwipeLeft:  eventText = "LAST: SWIPE LEFT"; break;
+                case Input::TouchEvent::SwipeRight: eventText = "LAST: SWIPE RIGHT"; break;
+                case Input::TouchEvent::SwipeUp:    eventText = "LAST: SWIPE UP"; break;
+                case Input::TouchEvent::SwipeDown:  eventText = "LAST: SWIPE DOWN"; break;
+                default: break;
+            }
+            lv_label_set_text(s_touchEventLabel, eventText);
+        }
+
+        if (s_touchRawLabel) {
+            char rawText[64];
+            snprintf(
+                rawText,
+                sizeof(rawText),
+                "RAW:%02X F:%u X:%u Y:%u INT:%u",
+                Input::LastTouchRawGesture(),
+                Input::LastTouchFingers(),
+                Input::LastTouchX(),
+                Input::LastTouchY(),
+                Input::TouchIntActive() ? 1 : 0
+            );
+            lv_label_set_text(s_touchRawLabel, rawText);
         }
     }
 
@@ -606,6 +812,94 @@ namespace Display {
             s_subLabel,
             touchAvailable ? "TOUCH READY" : "TOUCH NOT FOUND"
         );
+    }
+
+    // =========================================================
+    // DEVICE HEALTH / DEBUG SCREEN
+    // =========================================================
+    void HealthScreen(
+        bool pcConnected,
+        uint32_t uptimeSeconds,
+        uint32_t serialAgeMs,
+        uint32_t freeHeap,
+        uint32_t minFreeHeap,
+        uint32_t maxAllocHeap,
+        uint32_t rxFrames,
+        uint32_t txFrames,
+        uint32_t crcErrors,
+        uint32_t protocolErrors,
+        Command lastCommand,
+        Command lastErrorCommand,
+        uint8_t currentMode,
+        uint8_t currentIndex,
+        uint8_t outputCount,
+        uint8_t inputCount,
+        uint8_t appCount,
+        bool touchReady,
+        uint32_t touchSamples
+    ) {
+        BuildShell(MODE_HEALTH);
+        ClearContent(ScreenType::HEALTH);
+        ShowShell(true);
+
+        if (!s_healthRows[0]) {
+            lv_obj_t* panel = CreateGlassPanel(s_contentArea, SW - 12, CONTENT_H - 6);
+            lv_obj_align(panel, LV_ALIGN_CENTER, 0, 0);
+
+            s_titleLabel = lv_label_create(panel);
+            lv_label_set_text(s_titleLabel, "HEALTH / DEBUG");
+            lv_obj_set_style_text_font(s_titleLabel, &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(COL_BLUE), LV_PART_MAIN);
+            lv_obj_align(s_titleLabel, LV_ALIGN_TOP_MID, 0, 6);
+
+            for (uint8_t i = 0; i < 8; ++i) {
+                s_healthRows[i] = lv_label_create(panel);
+                lv_obj_set_style_text_font(s_healthRows[i], &lv_font_montserrat_10, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_healthRows[i], lv_color_hex(COL_ON_SURFACE), LV_PART_MAIN);
+                lv_obj_set_width(s_healthRows[i], 138);
+                lv_label_set_long_mode(s_healthRows[i], LV_LABEL_LONG_CLIP);
+                int16_t x = (i % 2 == 0) ? 12 : 158;
+                int16_t y = 31 + (i / 2) * 30;
+                lv_obj_align(s_healthRows[i], LV_ALIGN_TOP_LEFT, x, y);
+            }
+        }
+
+        char value[64];
+        snprintf(value, sizeof(value), "%s %lums", pcConnected ? "OK" : "WAIT", (unsigned long)serialAgeMs);
+        SetHealthRow(0, "PC", value, pcConnected ? COL_GREEN : 0xFF3333);
+
+        snprintf(value, sizeof(value), "%02luh %02lum %02lus",
+                 (unsigned long)(uptimeSeconds / 3600UL),
+                 (unsigned long)((uptimeSeconds / 60UL) % 60UL),
+                 (unsigned long)(uptimeSeconds % 60UL));
+        SetHealthRow(1, "Up", value, COL_ON_SURFACE);
+
+        snprintf(value, sizeof(value), "%lu/%luK",
+                 (unsigned long)(freeHeap / 1024UL),
+                 (unsigned long)(minFreeHeap / 1024UL));
+        SetHealthRow(2, "Heap", value, freeHeap > 80000 ? COL_GREEN : COL_ORANGE);
+
+        snprintf(value, sizeof(value), "%luK", (unsigned long)(maxAllocHeap / 1024UL));
+        SetHealthRow(3, "Blk", value, COL_ON_SURFACE);
+
+        snprintf(value, sizeof(value), "%lu/%lu", (unsigned long)rxFrames, (unsigned long)txFrames);
+        SetHealthRow(4, "RX/TX", value, COL_ON_SURFACE);
+
+        snprintf(value, sizeof(value), "%lu/%lu %s",
+                 (unsigned long)crcErrors,
+                 (unsigned long)protocolErrors,
+                 CommandName(lastCommand));
+        SetHealthRow(5, "Err", value, (crcErrors || protocolErrors) ? COL_ORANGE : COL_GREEN);
+
+        snprintf(value, sizeof(value), "M%u I%u %u/%u/%u",
+                 currentMode, currentIndex, outputCount, inputCount, appCount);
+        SetHealthRow(6, "State", value, COL_ON_SURFACE);
+
+        snprintf(value, sizeof(value), "%s %lu %s",
+                 touchReady ? "OK" : "NO",
+                 (unsigned long)touchSamples,
+                 CommandName(lastErrorCommand));
+        SetHealthRow(7, "Touch", value, touchReady ? COL_GREEN : 0xFF3333);
     }
 
     // =========================================================
@@ -765,11 +1059,17 @@ namespace Display {
             lv_obj_set_style_border_width(iconBg, 0, LV_PART_MAIN);
             lv_obj_clear_flag(iconBg, LV_OBJ_FLAG_SCROLLABLE);
 
-            lv_obj_t* devIcon = lv_label_create(iconBg);
-            lv_obj_set_style_text_font(devIcon, &lv_font_montserrat_12, LV_PART_MAIN);
-            lv_obj_set_style_text_color(devIcon, accent, LV_PART_MAIN);
-            lv_label_set_text(devIcon, GetModeIcon(mode));
-            lv_obj_center(devIcon);
+            s_modeIconLabel = lv_label_create(iconBg);
+            lv_obj_set_style_text_font(s_modeIconLabel, &lv_font_montserrat_12, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_modeIconLabel, accent, LV_PART_MAIN);
+            lv_label_set_text(s_modeIconLabel, GetModeIcon(mode));
+            lv_obj_center(s_modeIconLabel);
+
+            if (mode == MODE_APPLICATION) {
+                s_appIconImg = lv_img_create(iconBg);
+                lv_obj_center(s_appIconImg);
+                lv_obj_add_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
+            }
 
             // Device name
             s_titleLabel = lv_label_create(card);
@@ -806,6 +1106,7 @@ namespace Display {
         String name = String(session->name);
         if (name.length() == 0) name = "---";
         lv_label_set_text(s_titleLabel, name.c_str());
+        UpdateAppIcon(session->data.id, mode);
 
         // Scroll arrows
         String arrows = "";
