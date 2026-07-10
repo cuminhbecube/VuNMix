@@ -98,6 +98,7 @@ STANDBY_LED_NAMES = [
 # CRC-16/CCITT-FALSE covers command, payload_length and payload.
 FRAME_MAGIC = b'\xA5\x5A'
 MAX_FRAME_PAYLOAD = 64
+PROTOCOL_VERSION = 1
 
 
 def crc16_ccitt(data: bytes, initial: int = 0xFFFF) -> int:

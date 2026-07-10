@@ -77,8 +77,9 @@ namespace Communications
         uint16_t crc = Crc16(frame + 2, (size_t)payloadLength + 2);
         frame[4 + payloadLength] = (uint8_t)(crc & 0xFF);
         frame[5 + payloadLength] = (uint8_t)(crc >> 8);
+        // USB CDC writes are buffered. Do not wait for the host here: a slow
+        // or disconnected host must not stall the input/LVGL main loop.
         Serial.write(frame, (size_t)payloadLength + 6);
-        Serial.flush();
         ++s_transmittedFrames;
     }
 
@@ -321,8 +322,11 @@ namespace Communications
 
         if (command == Command::TEST)
         {
-            const char *version = VERSION;
-            SendFrame(command, version, (uint8_t)strlen(version));
+            char identity[32];
+            int length = snprintf(identity, sizeof(identity), "%s;P=%u", VERSION,
+                                  (unsigned)PROTOCOL_VERSION);
+            if (length > 0 && length < (int)sizeof(identity))
+                SendFrame(command, identity, (uint8_t)length);
         }
         else if (command == Command::SETTINGS)
             SendFrame(command, &g_Settings, sizeof(DeviceSettings));

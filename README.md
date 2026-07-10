@@ -349,7 +349,7 @@ Các thiết lập chính:
 
 - COM port hoặc auto detect.
 - App Favorites.
-- Sleep timeout.
+- Sleep timeout (minutes in the desktop UI; stored/transmitted as seconds for compatibility).
 - Auto Sleep.
 - Standby LED effect.
 - Clock Standby minutes.

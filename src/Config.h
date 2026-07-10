@@ -14,6 +14,10 @@
     #define VERSION "v0.4-VU"
 #endif
 
+// Increment only for an incompatible USB-CDC protocol change. The desktop
+// validates this value during TEST before sending state frames.
+static constexpr uint8_t PROTOCOL_VERSION = 1;
+
 //********************************************************
 // *** CONSTS
 //********************************************************

@@ -33,6 +33,7 @@ class SerialService:
         self._read_thread: Optional[threading.Thread] = None
         self._running = False
         self._write_lock = threading.Lock()
+        self._icon_lock = threading.Lock()
         self._connect_lock = threading.Lock()
         self._parser = FrameParser()
 
@@ -164,16 +165,19 @@ class SerialService:
     def send_app_icon(self, app_id: int, data: bytes, width: int = 16, height: int = 16) -> bool:
         if not data:
             return False
-        if not self.send_command(Command.APP_ICON_META, AppIconMeta(app_id, width, height, len(data)).pack()):
-            return False
-        ok = True
-        for index, offset in enumerate(range(0, len(data), 60)):
-            ok = self.send_command(
-                Command.APP_ICON_CHUNK,
-                AppIconChunk(app_id, index, data[offset:offset + 60]).pack(),
-            ) and ok
-            time.sleep(0.006)
-        return ok
+        # Metadata and chunks are one transaction. Without this lock a second
+        # sender can replace the active icon between chunks on the firmware.
+        with self._icon_lock:
+            if not self.send_command(Command.APP_ICON_META, AppIconMeta(app_id, width, height, len(data)).pack()):
+                return False
+            for index, offset in enumerate(range(0, len(data), 60)):
+                if not self.send_command(
+                    Command.APP_ICON_CHUNK,
+                    AppIconChunk(app_id, index, data[offset:offset + 60]).pack(),
+                ):
+                    return False
+                time.sleep(0.006)
+        return True
 
     def _read_loop(self):
         """Background thread: parse framed messages from hardware."""

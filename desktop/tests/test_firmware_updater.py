@@ -17,7 +17,6 @@ except ModuleNotFoundError:
     sys.modules["esptool"] = esptool_stub
 
 from firmware_updater import (
-    CHUNK_SIZE,
     FirmwareValidationError,
     flash_firmware,
     validate_firmware,
@@ -37,10 +36,10 @@ class FirmwareUpdaterTests(unittest.TestCase):
             with self.assertRaises(FirmwareValidationError):
                 validate_firmware(str(invalid))
 
-    def test_flash_splits_image_into_short_reconnectable_blocks(self):
+    def test_flash_writes_image_in_one_esptool_transaction(self):
         with tempfile.TemporaryDirectory() as directory:
             firmware = pathlib.Path(directory) / "firmware.bin"
-            firmware.write_bytes(b"\xE9" * (CHUNK_SIZE * 2 + 17))
+            firmware.write_bytes(b"\xE9" * (0x40000 * 2 + 17))
             calls = []
             progress = []
 
@@ -58,10 +57,9 @@ class FirmwareUpdaterTests(unittest.TestCase):
                     progress=lambda value, text: progress.append((value, text)),
                 )
 
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(calls), 1)
             self.assertIn("0x10000", calls[0])
-            self.assertIn("0x50000", calls[1])
-            self.assertIn("0x90000", calls[2])
+            self.assertIn(str(firmware), calls[0])
             self.assertEqual(progress[-1][0], 1.0)
 
 

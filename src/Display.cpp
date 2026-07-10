@@ -838,6 +838,16 @@ namespace Display {
         bool touchReady,
         uint32_t touchSamples
     ) {
+        // Splash, info, keypad test and clock are full-screen layouts. They do
+        // not own the persistent shell, so clear them before building Health;
+        // otherwise their LVGL objects remain attached to the active screen
+        // and Health creates a second UI tree on top of them.
+        if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH ||
+            s_currentScreen == ScreenType::KEY_TEST || s_currentScreen == ScreenType::INFO ||
+            s_currentScreen == ScreenType::CLOCK) {
+            FullReset();
+            s_shellBuilt = false;
+        }
         BuildShell(MODE_HEALTH);
         ClearContent(ScreenType::HEALTH);
         ShowShell(true);

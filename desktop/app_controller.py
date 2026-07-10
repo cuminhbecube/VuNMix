@@ -23,7 +23,7 @@ import win32gui
 from protocol import (
     Command, DisplayMode, SessionIndex,
     SessionInfo, SessionData, VolumeData, MeterData, DeviceSettings, ModeStates,
-    SESSION_COMMANDS, VOLUME_COMMANDS,
+    SESSION_COMMANDS, VOLUME_COMMANDS, PROTOCOL_VERSION,
 )
 from config import AppConfig
 from serial_service import SerialService
@@ -101,9 +101,11 @@ class AppController:
         self._mode_states = ModeStates()
         self._meter_data = MeterData()
         self._device_connected = False
+        self._update_only_connected = False
         self._is_sleeping = False
         self._handshake_token = 0
         self._sent_icon_ids = set()
+        self._connection_lock = threading.RLock()
 
         # Sync thread
         self._sync_thread: Optional[threading.Thread] = None
@@ -154,11 +156,23 @@ class AppController:
 
     @property
     def is_connected(self) -> bool:
-        return self._device_connected
+        with self._connection_lock:
+            return self._device_connected
 
     @property
     def firmware_updating(self) -> bool:
         return self._firmware_updating
+
+    @property
+    def can_update_firmware(self) -> bool:
+        """A TEST response identifies a serial target safe enough to flash.
+
+        This deliberately differs from ``is_connected``: an older firmware
+        may be protocol-incompatible, but must remain updatable from the new
+        desktop application.
+        """
+        with self._connection_lock:
+            return self._update_only_connected and self.serial.is_connected and not self._firmware_updating
 
     def start_firmware_update(self, path, on_progress=None, on_complete=None) -> bool:
         """Stop protocol traffic, flash firmware in a worker, then reconnect."""
@@ -178,15 +192,30 @@ class AppController:
                     path,
                     progress=on_progress,
                 )
-                success = True
-                message = "Firmware update completed successfully."
+                # A successful esptool exit only proves the bytes were
+                # written. Do not report success until the application has
+                # rebooted and completed its USB-CDC protocol handshake.
+                if self._running:
+                    self.serial.start()
+                    deadline = time.monotonic() + 15.0
+                    while time.monotonic() < deadline:
+                        if self.is_connected:
+                            success = True
+                            message = "Firmware updated and device reconnected."
+                            break
+                        time.sleep(0.1)
+                    if not success:
+                        message = "Firmware flashed, but the device did not reconnect within 15 seconds."
+                else:
+                    success = True
+                    message = "Firmware image flashed. Start VuNMix to verify reconnect."
             except Exception as exc:
                 log.exception("Firmware update failed")
                 message = str(exc)
             finally:
                 self._firmware_updating = False
                 self._firmware_update_lock.release()
-                if self._running:
+                if self._running and not self.serial.is_connected:
                     self.serial.start()
                 if on_complete:
                     on_complete(success, message)
@@ -232,15 +261,23 @@ class AppController:
     def _on_device_connected(self):
         """Called when the COM port opens; protocol identity is not verified yet."""
         log.info("Serial port opened, verifying VuNMix firmware...")
-        self._device_connected = False
-        self._handshake_token += 1
-        token = self._handshake_token
+        with self._connection_lock:
+            self._device_connected = False
+            self._update_only_connected = False
+            self._handshake_token += 1
+            token = self._handshake_token
         time.sleep(0.2)
         self.serial.send_test()
 
         def handshake_watchdog():
             time.sleep(10.0)
-            if token == self._handshake_token and not self._device_connected:
+            with self._connection_lock:
+                timed_out = (
+                    token == self._handshake_token
+                    and not self._device_connected
+                    and not self._update_only_connected
+                )
+            if timed_out:
                 log.warning("VuNMix handshake timed out; reconnecting")
                 self.serial.disconnect()
 
@@ -251,7 +288,9 @@ class AppController:
         ).start()
 
     def _complete_handshake(self, token: int):
-        if token != self._handshake_token or not self.serial.is_connected:
+        with self._connection_lock:
+            valid_token = token == self._handshake_token
+        if not valid_token or not self.serial.is_connected:
             return
 
         try:
@@ -282,19 +321,44 @@ class AppController:
     def _on_device_disconnected(self):
         """Called when serial port closes."""
         log.info("Device disconnected")
-        self._handshake_token += 1
-        self._device_connected = False
-        self._sent_icon_ids.clear()
-        self._session_info = SessionInfo()
+        with self._connection_lock:
+            self._handshake_token += 1
+            self._device_connected = False
+            self._update_only_connected = False
+            self._sent_icon_ids.clear()
+            self._session_info = SessionInfo()
         if self.on_connection_changed:
             self.on_connection_changed(False)
 
     def _on_version(self, version: str):
-        log.info(f"Firmware version: {version}")
-        if self._device_connected:
+        firmware_version, separator, protocol_value = version.rpartition(";P=")
+        if not separator:
+            log.error("Rejecting firmware without protocol version: %s", version)
+            with self._connection_lock:
+                self._update_only_connected = True
             return
-        self._device_connected = True
-        token = self._handshake_token
+        try:
+            firmware_protocol = int(protocol_value)
+        except ValueError:
+            log.error("Rejecting firmware with invalid protocol version: %s", version)
+            with self._connection_lock:
+                self._update_only_connected = True
+            return
+        if firmware_protocol != PROTOCOL_VERSION:
+            log.error(
+                "Protocol mismatch: desktop=%d firmware=%d (%s)",
+                PROTOCOL_VERSION, firmware_protocol, firmware_version,
+            )
+            with self._connection_lock:
+                self._update_only_connected = True
+            return
+        log.info("Firmware version: %s (protocol %d)", firmware_version, firmware_protocol)
+        with self._connection_lock:
+            if self._device_connected:
+                return
+            self._device_connected = True
+            self._update_only_connected = True
+            token = self._handshake_token
         if self.on_connection_changed:
             self.on_connection_changed(True)
         threading.Thread(
@@ -336,15 +400,13 @@ class AppController:
         mode_changed = info.mode != self._session_info.mode
 
         # Device Health is rendered fully on the firmware from local counters.
-        # Do not push audio sessions/volume here: there is no Windows audio
-        # target for this mode, and treating it like an app mode can create
-        # confusing "No sessions" traffic while the user is debugging.
+        # Do not echo SESSION_INFO/MODE_STATES from the serial callback: Health
+        # is owned by firmware and has no Windows audio target. Echoing these
+        # frames re-enters the serial writer during a mode transition and can
+        # race the meter/sync workers.
         if info.mode == DisplayMode.MODE_HEALTH:
             info.current = 0
             self._session_info = info
-            if mode_changed:
-                self.serial.send_session_info(info)
-                self.serial.send_mode_states(self._mode_states)
             return
 
         if mode_changed:

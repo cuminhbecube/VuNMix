@@ -8,6 +8,7 @@ Provides:
 """
 
 import logging
+import math
 import os
 import sys
 import threading
@@ -201,9 +202,12 @@ class SettingsDialog:
 
 
 
-        # Sleep Timeout (default 60s)
-        self._sleep_var = tk.StringVar(value=str(self.config.device_settings.sleep_after_seconds))
-        add_row(content, "Sleep Timeout (s)", lambda r: ctk.CTkEntry(r, textvariable=self._sleep_var, width=55, height=24))
+        # Sleep Timeout is shown in minutes; the wire/config representation
+        # remains seconds for compatibility with existing firmware/configs.
+        sleep_seconds = max(0, int(self.config.device_settings.sleep_after_seconds))
+        sleep_minutes = math.ceil(sleep_seconds / 60) if sleep_seconds else 0
+        self._sleep_var = tk.StringVar(value=str(sleep_minutes))
+        add_row(content, "Sleep Timeout (minutes)", lambda r: ctk.CTkEntry(r, textvariable=self._sleep_var, width=55, height=24))
 
         # Clock Standby Timeout (minutes, 0=disabled, default=10)
         self._clock_standby_var = tk.StringVar(value=str(self.config.device_settings.clock_standby_minutes))
@@ -316,8 +320,7 @@ class SettingsDialog:
         )
         if hasattr(self, "btn_firmware"):
             firmware_ready = (
-                self.controller._device_connected and
-                not self.controller.firmware_updating
+                self.controller.can_update_firmware
             )
             self.btn_firmware.configure(
                 state="normal" if firmware_ready else "disabled"
@@ -330,7 +333,7 @@ class SettingsDialog:
             window.after(0, callback)
 
     def _select_firmware(self):
-        if not self.controller.is_connected:
+        if not self.controller.can_update_firmware:
             messagebox.showwarning("Firmware Update", "Connect VuNMix first.")
             return
 
@@ -474,8 +477,9 @@ class SettingsDialog:
 
             self.config.run_on_startup = self._startup_var.get()
             self.config.favorite_apps = sorted(set(self.config.favorite_apps))
-            self.config.device_settings.sleep_after_seconds = max(
-                0, min(65535, int(self._sleep_var.get()))
+            sleep_minutes = max(0, int(self._sleep_var.get()))
+            self.config.device_settings.sleep_after_seconds = min(
+                65535, sleep_minutes * 60
             )
             self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
             self.config.device_settings.clock_standby_minutes = max(0, min(255, int(self._clock_standby_var.get())))
@@ -541,12 +545,16 @@ class TrayApp:
         self._icon.run()
 
     def _on_connection_status(self, connected: bool):
-        """Update tray icon and tooltip based on connection status."""
+        """Refresh the visible tray identity after a serial state change.
+
+        The menu's status label is dynamic, so it is rebuilt by Windows when
+        opened. Avoid ``update_menu()`` from SerialRead; only refresh the
+        icon and tooltip here.
+        """
+        log.info("Tray connection state changed: %s", "connected" if connected else "disconnected")
         if self._icon:
             self._icon.icon = create_tray_icon(connected)
-            status = "Connected" if connected else "Disconnected"
-            self._icon.title = f"VuNMix - {status}"
-            self._icon.update_menu()
+            self._icon.title = f"VuNMix - {'Connected' if connected else 'Disconnected'}"
 
     def _on_settings(self, icon, item):
         if self._settings_open:

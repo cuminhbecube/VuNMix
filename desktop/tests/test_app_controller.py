@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import threading
 import types
 import unittest
 from dataclasses import dataclass
@@ -101,6 +102,19 @@ class RecordingSerial:
 
 
 class PreferredSessionTests(unittest.TestCase):
+    def test_incompatible_firmware_is_update_only(self):
+        controller = AppController.__new__(AppController)
+        controller.serial = object()
+        controller._connection_lock = threading.RLock()
+        controller._device_connected = False
+        controller._update_only_connected = False
+
+        controller._on_version("v0.4-VU")
+        controller._on_version("v0.4-VU;P=2")
+
+        self.assertFalse(controller._device_connected)
+        self.assertTrue(controller._update_only_connected)
+
     def test_peak_meter_db_mapping(self):
         self.assertEqual(AppController._peak_to_level(0.0), 0)
         self.assertEqual(AppController._peak_to_level(1.0), 100)
@@ -182,7 +196,8 @@ class PreferredSessionTests(unittest.TestCase):
 
         self.assertEqual(controller._session_info.mode, DisplayMode.MODE_HEALTH)
         self.assertEqual(controller._session_info.current, 0)
-        self.assertEqual(controller.serial.info[-1].mode, DisplayMode.MODE_HEALTH)
+        self.assertEqual(controller.serial.info, [])
+        self.assertEqual(controller.serial.mode_states, [])
         self.assertEqual(controller.serial.sessions, [])
         self.assertEqual(controller.audio.refresh_calls, 0)
 
