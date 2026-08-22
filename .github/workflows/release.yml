@@ -172,11 +172,11 @@ jobs:
             --clean `
             --noconfirm `
             VuNMix.spec `
-            --distpath dist_release `
+            --distpath dist `
             --workpath build_release
 
-          if (!(Test-Path "dist_release\VuNMix\VuNMix.exe")) {
-            throw "PyInstaller output not found: desktop\dist_release\VuNMix\VuNMix.exe"
+          if (!(Test-Path "dist\VuNMix\VuNMix.exe")) {
+            throw "PyInstaller output not found: desktop\dist\VuNMix\VuNMix.exe"
           }
 
       - name: Package portable app
@@ -187,7 +187,7 @@ jobs:
 
           $zip = "dist_packages\VuNMix-Windows-Portable-$env:VERSION.zip"
           Compress-Archive `
-            -Path "dist_release\VuNMix\*" `
+            -Path "dist\VuNMix\*" `
             -DestinationPath $zip `
             -CompressionLevel Optimal `
             -Force
