@@ -10,8 +10,9 @@ import logging
 import threading
 import time
 import zlib
-from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Tuple
 
 import comtypes
 from comtypes import CLSCTX_ALL
@@ -58,9 +59,6 @@ class AudioItem:
     volume: int        # 0-100
     is_muted: bool
     is_default: bool = False
-    # Internal reference for pycaw
-    _endpoint_vol: Optional[object] = field(default=None, repr=False)
-    _session_vol: Optional[object] = field(default=None, repr=False)
     _process_id: int = 0
     _process_path: str = ""
     _device_id: str = ""
@@ -86,11 +84,26 @@ class AudioService:
         self._output_devices: List[AudioItem] = []
         self._input_devices: List[AudioItem] = []
         self._app_sessions: List[AudioItem] = []
+        self._stable_id_map: Dict[str, int] = {}
         self._favorite_apps = set()
         self._lock = threading.Lock()
+        # pycaw/comtypes ultimately dispatches through ctypes.  The desktop
+        # controller reaches it from SerialRead, AudioSync and AudioMeter, so
+        # concurrent calls can crash the frozen process inside _ctypes.pyd.
+        self._com_lock = threading.RLock()
 
         # Callbacks
         self.on_sessions_changed: Optional[Callable] = None
+
+    @contextmanager
+    def _com_scope(self):
+        """Serialize all WASAPI/COM calls across desktop worker threads."""
+        with self._com_lock:
+            comtypes.CoInitialize()
+            try:
+                yield
+            finally:
+                comtypes.CoUninitialize()
 
     def set_favorite_apps(self, names):
         """Set favorite application names; favorites are sorted first."""
@@ -109,38 +122,31 @@ class AudioService:
 
     def refresh(self):
         """Refresh all audio devices and sessions from Windows."""
-        comtypes.CoInitialize()
-        try:
+        with self._com_scope():
             self._refresh_output_devices()
             self._refresh_input_devices()
             self._refresh_app_sessions()
-        finally:
-            comtypes.CoUninitialize()
 
     def check_system_changes(self) -> bool:
         """Check if default devices have changed, requiring a full refresh."""
-        try:
-            from pycaw.pycaw import AudioUtilities
-            
-            # Check Output
-            default_out = AudioUtilities.GetSpeakers()
-            out_id = default_out.GetId() if default_out else None
-            with self._lock:
-                current_default_out = next((d._device_id for d in self._output_devices if d.is_default), None)
-            if out_id != current_default_out:
-                return True
+        with self._com_scope():
+            try:
+                # Check Output
+                default_out = AudioUtilities.GetSpeakers()
+                out_id = default_out.GetId() if default_out else None
+                with self._lock:
+                    current_default_out = next((d._device_id for d in self._output_devices if d.is_default), None)
+                if out_id != current_default_out:
+                    return True
 
-            # Check Input
-            default_in = AudioUtilities.GetMicrophone()
-            in_id = default_in.GetId() if default_in else None
-            with self._lock:
-                current_default_in = next((d._device_id for d in self._input_devices if d.is_default), None)
-            if in_id != current_default_in:
-                return True
-                
-            return False
-        except Exception:
-            return False
+                # Check Input
+                default_in = AudioUtilities.GetMicrophone()
+                in_id = default_in.GetId() if default_in else None
+                with self._lock:
+                    current_default_in = next((d._device_id for d in self._input_devices if d.is_default), None)
+                return in_id != current_default_in
+            except Exception:
+                return False
 
     def get_sessions_for_mode(self, mode: int) -> List[AudioItem]:
         """Get audio items for the given display mode."""
@@ -160,8 +166,7 @@ class AudioService:
 
     def set_volume(self, mode: int, index: int, volume: int, is_muted: bool):
         """Apply volume change from hardware to Windows audio."""
-        comtypes.CoInitialize()
-        try:
+        with self._com_scope():
             items = self.get_sessions_for_mode(mode)
             if index < 0 or index >= len(items):
                 return
@@ -200,32 +205,29 @@ class AudioService:
                             pass
                 except Exception as e:
                     log.error(f"Failed to set session volume: {e}")
-        finally:
-            comtypes.CoUninitialize()
 
     def set_default_device(self, mode: int, index: int):
         """Mark a device as default and apply to Windows."""
-        items = self.get_sessions_for_mode(mode)
-        if index < 0 or index >= len(items) or not items[index]._device_id:
-            return
-
-        selected = items[index]
         succeeded = False
-        try:
-            comtypes.CoInitialize()
-            CLSID_PolicyConfigClient = GUID('{870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}')
-            policyConfig = CoCreateInstance(CLSID_PolicyConfigClient, IPolicyConfig, CLSCTX_ALL)
-            policyConfig.SetDefaultEndpoint(selected._device_id, 0)
-            policyConfig.SetDefaultEndpoint(selected._device_id, 1)
-            policyConfig.SetDefaultEndpoint(selected._device_id, 2)
-            succeeded = True
-            log.info("Set Windows default audio device to %s", selected.name)
-        except Exception as e:
-            log.error("Failed to set Windows default device: %s", e)
-        finally:
-            comtypes.CoUninitialize()
+        selected = None
+        with self._com_scope():
+            items = self.get_sessions_for_mode(mode)
+            if index < 0 or index >= len(items) or not items[index]._device_id:
+                return
 
-        if succeeded:
+            selected = items[index]
+            try:
+                CLSID_PolicyConfigClient = GUID('{870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}')
+                policyConfig = CoCreateInstance(CLSID_PolicyConfigClient, IPolicyConfig, CLSCTX_ALL)
+                policyConfig.SetDefaultEndpoint(selected._device_id, 0)
+                policyConfig.SetDefaultEndpoint(selected._device_id, 1)
+                policyConfig.SetDefaultEndpoint(selected._device_id, 2)
+                succeeded = True
+                log.info("Set Windows default audio device to %s", selected.name)
+            except Exception as e:
+                log.error("Failed to set Windows default device: %s", e)
+
+        if succeeded and selected is not None:
             with self._lock:
                 target = self._output_devices if mode == DisplayMode.MODE_OUTPUT else self._input_devices
                 for item in target:
@@ -262,7 +264,6 @@ class AudioService:
                             volume=vol,
                             is_muted=muted,
                             is_default=is_default,
-                            _endpoint_vol=endpoint_vol,
                             _device_id=d.id,
                         )
                         temp_devices.append(item)
@@ -308,7 +309,6 @@ class AudioService:
                             volume=vol,
                             is_muted=muted,
                             is_default=is_default,
-                            _endpoint_vol=endpoint_vol,
                             _device_id=d.id,
                         )
                         temp_devices.append(item)
@@ -363,7 +363,6 @@ class AudioService:
                         name=name,
                         volume=vol,
                         is_muted=muted,
-                        _session_vol=vol_interface,
                         _process_id=pid,
                         _process_path=process_path,
                         _session_identifier=identifier,
@@ -381,8 +380,7 @@ class AudioService:
 
     def read_current_volume(self, mode: int, index: int) -> Optional[VolumeData]:
         """Read the current volume from Windows for a specific session."""
-        comtypes.CoInitialize()
-        try:
+        with self._com_scope():
             items = self.get_sessions_for_mode(mode)
             if index < 0 or index >= len(items):
                 return None
@@ -422,49 +420,81 @@ class AudioService:
                     pass
 
             return item.to_session_data().data
-        finally:
-            comtypes.CoUninitialize()
 
     def create_peak_meter(self, mode: int, index: int):
         """Create an IAudioMeterInformation interface in the calling thread."""
-        items = self.get_sessions_for_mode(mode)
-        if index < 0 or index >= len(items):
+        with self._com_lock:
+            items = self.get_sessions_for_mode(mode)
+            if index < 0 or index >= len(items):
+                return None
+            item = items[index]
+
+            if item._device_id:
+                if mode == DisplayMode.MODE_INPUT:
+                    device = find_input_capture_device(item.name)
+                    if device is not None:
+                        device_index, channels, sample_rate = device
+                        return InputPeakMeter(device_index, channels, sample_rate)
+
+                for device in AudioUtilities.GetAllDevices():
+                    if device.id == item._device_id:
+                        interface = device._dev.Activate(
+                            IAudioMeterInformation._iid_,
+                            CLSCTX_ALL,
+                            None,
+                        )
+                        return cast(interface, POINTER(IAudioMeterInformation))
+                return None
+
+            for session in AudioUtilities.GetAllSessions():
+                if self._session_matches(session, item):
+                    return session._ctl.QueryInterface(IAudioMeterInformation)
             return None
-        item = items[index]
 
-        if item._device_id:
-            if mode == DisplayMode.MODE_INPUT:
-                device = find_input_capture_device(item.name)
-                if device is not None:
-                    device_index, channels, sample_rate = device
-                    return InputPeakMeter(device_index, channels, sample_rate)
+    def read_peak_meter(self, meter) -> float:
+        with self._com_lock:
+            if meter is None:
+                return 0.0
+            try:
+                val = float(meter.GetPeakValue())
+                return max(0.0, min(1.0, val))
+            except Exception:
+                return 0.0
 
-            for device in AudioUtilities.GetAllDevices():
-                if device.id == item._device_id:
-                    interface = device._dev.Activate(
-                        IAudioMeterInformation._iid_,
-                        CLSCTX_ALL,
-                        None,
-                    )
-                    return cast(interface, POINTER(IAudioMeterInformation))
-            return None
+    def read_stereo_peak_meter(self, meter) -> Tuple[float, float]:
+        with self._com_lock:
+            if meter is None:
+                return 0.0, 0.0
+            try:
+                if hasattr(meter, "GetChannelsPeakValues"):
+                    return meter.GetChannelsPeakValues()
+                count = meter.GetMeteringChannelCount()
+                if count >= 2:
+                    import ctypes
+                    arr = (ctypes.c_float * count)()
+                    meter.GetChannelsPeakValues(count, arr)
+                    return max(0.0, min(1.0, float(arr[0]))), max(0.0, min(1.0, float(arr[1])))
+                val = float(meter.GetPeakValue())
+                clamped = max(0.0, min(1.0, val))
+                return clamped, clamped
+            except Exception:
+                try:
+                    val = float(meter.GetPeakValue())
+                    clamped = max(0.0, min(1.0, val))
+                    return clamped, clamped
+                except Exception:
+                    return 0.0, 0.0
 
-        for session in AudioUtilities.GetAllSessions():
-            if self._session_matches(session, item):
-                return session._ctl.QueryInterface(IAudioMeterInformation)
-        return None
-
-    @staticmethod
-    def read_peak_meter(meter) -> float:
-        if meter is None:
-            return 0.0
-        return max(0.0, min(1.0, float(meter.GetPeakValue())))
-
-    @staticmethod
-    def close_peak_meter(meter):
-        close = getattr(meter, "close", None)
-        if close is not None:
-            close()
+    def close_peak_meter(self, meter):
+        with self._com_lock:
+            if meter is None:
+                return
+            try:
+                close = getattr(meter, "close", None)
+                if close is not None:
+                    close()
+            except Exception:
+                pass
 
     @staticmethod
     def _get_session_identifier(session) -> str:
@@ -493,14 +523,25 @@ class AudioService:
         except Exception:
             return False
 
-    @staticmethod
-    def _assign_protocol_ids(items: List[AudioItem], key_getter):
-        """Map stable Windows identifiers into unique non-zero 7-bit IDs."""
-        used = set()
-        for item in items:
-            key = str(key_getter(item) or item.name)
-            candidate = (zlib.crc32(key.encode("utf-8", errors="replace")) % 127) + 1
-            while candidate in used:
-                candidate = 1 if candidate == 127 else candidate + 1
-            item.id = candidate
-            used.add(candidate)
+    def _assign_protocol_ids(self, items: List[AudioItem], key_getter):
+        """Map stable Windows identifiers into persistent, unique non-zero 7-bit IDs."""
+        with self._lock:
+            current_keys = {str(key_getter(item) or item.name) for item in items}
+            if len(self._stable_id_map) > 120:
+                self._stable_id_map = {k: v for k, v in self._stable_id_map.items() if k in current_keys}
+
+            used_ids = set(self._stable_id_map.values())
+            for item in items:
+                key = str(key_getter(item) or item.name)
+                if key in self._stable_id_map:
+                    item.id = self._stable_id_map[key]
+                else:
+                    candidate = (zlib.crc32(key.encode("utf-8", errors="replace")) % 127) + 1
+                    start = candidate
+                    while candidate in used_ids:
+                        candidate = 1 if candidate == 127 else candidate + 1
+                        if candidate == start:
+                            break
+                    self._stable_id_map[key] = candidate
+                    used_ids.add(candidate)
+                    item.id = candidate

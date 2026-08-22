@@ -60,6 +60,9 @@ static const uint8_t PIXELS_BRIGHTNESS = 96;
 
 // --- Screen Drawing
 static const uint16_t DISPLAY_WIDTH = 320;
-static const uint16_t DISPLAY_HEIGHT = 240;
-
 static const uint32_t DEVICE_RESET_AFTER_INACTIVTY = 5000;
+
+extern PcStatsData g_PcStats;
+extern bool g_PcStatsValid;
+extern MediaInfoData g_MediaInfo;
+extern bool g_MediaInfoValid;

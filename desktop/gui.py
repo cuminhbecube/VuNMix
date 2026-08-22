@@ -10,6 +10,7 @@ Provides:
 import logging
 import math
 import os
+import queue
 import sys
 import threading
 import tkinter as tk
@@ -31,6 +32,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+
 def set_run_on_startup(enable: bool):
     """Enable or disable Windows startup via the registry."""
     try:
@@ -47,6 +49,8 @@ def set_run_on_startup(enable: bool):
             # Running as a Python script
             exe_path = os.path.abspath(sys.argv[0])
             pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+            if not os.path.exists(pythonw):
+                pythonw = sys.executable
             cmd = f'"{pythonw}" "{exe_path}"'
             
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
@@ -67,8 +71,8 @@ def set_run_on_startup(enable: bool):
 
 
 def create_tray_icon(connected: bool) -> Image.Image:
-    """Generate a 64x64 tray icon."""
-    target_color = (255, 60, 60) if connected else (150, 150, 150)
+    """Generate a 64x64 tray icon (Red when connected, Grey when disconnected)."""
+    target_color = (255, 60, 60) if connected else (130, 130, 130)
     
     try:
         img = Image.open(resource_path(os.path.join("assets", "logo.png"))).convert("RGBA")
@@ -98,13 +102,22 @@ class SettingsDialog:
         self.on_save = on_save
         self.on_close = on_close
         self._window: Optional[tk.Tk] = None
+        self._window_thread: Optional[threading.Thread] = None
+        self._window_commands = queue.Queue()
         self._drag_x = 0
         self._drag_y = 0
 
     def show(self):
-        """Show settings dialog (runs in its own thread)."""
-        thread = threading.Thread(target=self._create_window, daemon=True)
-        thread.start()
+        """Show the persistent settings window on its owning Tk thread."""
+        if self._window_thread and self._window_thread.is_alive():
+            self._window_commands.put("show")
+            return
+        self._window_thread = threading.Thread(
+            target=self._create_window,
+            daemon=True,
+            name="SettingsTk",
+        )
+        self._window_thread.start()
 
     def _create_window(self):
         ctk.set_appearance_mode("dark")
@@ -291,7 +304,22 @@ class SettingsDialog:
         save_btn.pack(fill='x', padx=12, pady=(6, 12))
 
         self._update_status_loop()
+        self._process_window_commands()
         self._window.mainloop()
+
+    def _process_window_commands(self):
+        """Marshal show/hide requests onto the Tk-owning thread."""
+        try:
+            while True:
+                command = self._window_commands.get_nowait()
+                if command == "show" and self._window:
+                    self._window.deiconify()
+                    self._window.lift()
+                    self._window.focus_force()
+        except queue.Empty:
+            pass
+        if self._window and self._window.winfo_exists():
+            self._window.after(100, self._process_window_commands)
 
     def _start_drag(self, event):
         self._drag_x = event.x
@@ -304,7 +332,9 @@ class SettingsDialog:
 
     def _on_window_close(self):
         if self._window:
-            self._window.destroy()
+            # Keep one Tcl interpreter alive. Recreating Tk roots on new
+            # threads is unstable after repeated/long-lived tray sessions.
+            self._window.withdraw()
         if self.on_close:
             self.on_close()
 
@@ -474,7 +504,6 @@ class SettingsDialog:
             new_port = self._com_var.get().strip()
             
             self.config.com_port = new_port
-
             self.config.run_on_startup = self._startup_var.get()
             self.config.favorite_apps = sorted(set(self.config.favorite_apps))
             sleep_minutes = max(0, int(self._sleep_var.get()))
@@ -518,18 +547,31 @@ class TrayApp:
         self.controller = controller
         self._icon = None
         self._settings_open = False
+        self._settings_dialog = None
 
     def run(self):
         """Start the tray application (blocking)."""
         import pystray
         from pystray import MenuItem, Menu
 
-        icon_image = create_tray_icon(False)
+        is_conn = bool(self.controller._device_connected)
+        icon_image = create_tray_icon(is_conn)
+        status_text = f"VuNMix - {'Connected' if is_conn else 'Disconnected'}"
+
+        def make_preset_action(p_name):
+            return lambda icon, item: self.controller.preset_service.apply_preset(p_name)
+
+        preset_items = [
+            MenuItem(name, make_preset_action(name))
+            for name in self.controller.preset_service.get_preset_names()
+        ]
 
         menu = Menu(
             MenuItem('VuNMix', None, enabled=False),
             Menu.SEPARATOR,
             MenuItem(lambda item: f"Status: {'Connected' if self.controller._device_connected else 'Disconnected'}", None, enabled=False),
+            Menu.SEPARATOR,
+            MenuItem('🎵 Audio Presets', Menu(*preset_items)),
             Menu.SEPARATOR,
             MenuItem('Settings', self._on_settings, default=True),
             MenuItem('Reconnect', self._on_reconnect),
@@ -537,33 +579,40 @@ class TrayApp:
             MenuItem('Exit', self._on_exit),
         )
 
-        self._icon = pystray.Icon('VuNMix', icon_image, 'VuNMix - Disconnected', menu)
+        self._icon = pystray.Icon('VuNMix', icon_image, status_text, menu)
 
         # Wire connection status updates
         self.controller.on_connection_changed = self._on_connection_status
 
+        # If already connected before icon.run() was reached
+        if self.controller._device_connected:
+            self._on_connection_status(True)
+
         self._icon.run()
 
     def _on_connection_status(self, connected: bool):
-        """Refresh the visible tray identity after a serial state change.
-
-        The menu's status label is dynamic, so it is rebuilt by Windows when
-        opened. Avoid ``update_menu()`` from SerialRead; only refresh the
-        icon and tooltip here.
-        """
+        """Update pystray tray icon, tooltip title, and menu dynamically."""
         log.info("Tray connection state changed: %s", "connected" if connected else "disconnected")
-        if self._icon:
-            self._icon.icon = create_tray_icon(connected)
-            self._icon.title = f"VuNMix - {'Connected' if connected else 'Disconnected'}"
+        if self._icon is not None:
+            try:
+                self._icon.icon = create_tray_icon(connected)
+                self._icon.title = f"VuNMix - {'Connected' if connected else 'Disconnected'}"
+                self._icon.update_menu()
+            except Exception as e:
+                log.warning("Failed to update tray icon state: %s", e)
 
     def _on_settings(self, icon, item):
         if self._settings_open:
             return
         self._settings_open = True
-        dialog = SettingsDialog(self.config, self.controller,
-                                on_save=self._on_settings_saved,
-                                on_close=self._on_settings_closed)
-        dialog.show()
+        if self._settings_dialog is None:
+            self._settings_dialog = SettingsDialog(
+                self.config,
+                self.controller,
+                on_save=self._on_settings_saved,
+                on_close=self._on_settings_closed,
+            )
+        self._settings_dialog.show()
 
     def _on_settings_closed(self):
         self._settings_open = False

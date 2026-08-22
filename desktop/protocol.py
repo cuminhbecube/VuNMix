@@ -36,6 +36,9 @@ class Command(IntEnum):
     METER_LEVEL        = 17
     APP_ICON_META      = 18
     APP_ICON_CHUNK     = 19
+    PC_STATS           = 20
+    MEDIA_INFO         = 21
+    MEDIA_CONTROL      = 22
 
 
 class SessionIndex(IntEnum):
@@ -440,6 +443,104 @@ class ModeStates:
         return cls(states=list(data[:6]))
 
 
+@dataclass
+class PcStatsData:
+    """
+    13 bytes packed:
+    cpuUsage (1B), cpuTemp (1B), gpuUsage (1B), gpuTemp (1B), ramUsage (1B),
+    ramUsedMB (2B), ramTotalMB (2B), netDownKBps (2B), netUpKBps (2B)
+    """
+    cpu_usage: int = 0
+    cpu_temp: int = 0
+    gpu_usage: int = 0
+    gpu_temp: int = 0
+    ram_usage: int = 0
+    ram_used_mb: int = 0
+    ram_total_mb: int = 0
+    net_down_kbps: int = 0
+    net_up_kbps: int = 0
+
+    def pack(self) -> bytes:
+        return struct.pack(
+            '<BBBBBH H H H',
+            _clamp_int(self.cpu_usage, 0, 100),
+            _clamp_int(self.cpu_temp, 0, 255),
+            _clamp_int(self.gpu_usage, 0, 100),
+            _clamp_int(self.gpu_temp, 0, 255),
+            _clamp_int(self.ram_usage, 0, 100),
+            _clamp_int(self.ram_used_mb, 0, 65535),
+            _clamp_int(self.ram_total_mb, 0, 65535),
+            _clamp_int(self.net_down_kbps, 0, 65535),
+            _clamp_int(self.net_up_kbps, 0, 65535),
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'PcStatsData':
+        cpu_u, cpu_t, gpu_u, gpu_t, ram_u, ram_used, ram_tot, net_d, net_u = struct.unpack('<BBBBBH H H H', data[:13])
+        return cls(
+            cpu_usage=cpu_u,
+            cpu_temp=cpu_t,
+            gpu_usage=gpu_u,
+            gpu_temp=gpu_t,
+            ram_usage=ram_u,
+            ram_used_mb=ram_used,
+            ram_total_mb=ram_tot,
+            net_down_kbps=net_d,
+            net_up_kbps=net_u,
+        )
+
+
+@dataclass
+class MediaInfoData:
+    """
+    61 bytes packed:
+    isPlaying (1B), positionSec (2B), durationSec (2B), title (32B), artist (24B)
+    """
+    is_playing: int = 0
+    position_sec: int = 0
+    duration_sec: int = 0
+    title: str = ""
+    artist: str = ""
+
+    def pack(self) -> bytes:
+        title_b = _truncate_utf8(self.title, 31).ljust(32, b'\x00')
+        artist_b = _truncate_utf8(self.artist, 23).ljust(24, b'\x00')
+        return struct.pack(
+            '<BHH32s24s',
+            1 if self.is_playing else 0,
+            _clamp_int(self.position_sec, 0, 65535),
+            _clamp_int(self.duration_sec, 0, 65535),
+            title_b,
+            artist_b,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'MediaInfoData':
+        is_playing, pos, dur, title_b, artist_b = struct.unpack('<BHH32s24s', data[:61])
+        title = title_b.split(b'\x00', 1)[0].decode('utf-8', errors='replace')
+        artist = artist_b.split(b'\x00', 1)[0].decode('utf-8', errors='replace')
+        return cls(
+            is_playing=is_playing,
+            position_sec=pos,
+            duration_sec=dur,
+            title=title,
+            artist=artist,
+        )
+
+
+@dataclass
+class MediaControlData:
+    """1 byte: action (1=PlayPause, 2=Next, 3=Prev, 4=Stop)"""
+    action: int = 0
+
+    def pack(self) -> bytes:
+        return struct.pack('<B', _clamp_int(self.action, 0, 255))
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'MediaControlData':
+        return cls(action=data[0] if data else 0)
+
+
 # ─── Message Helpers ───────────────────────────────────────────────────────
 
 # Map commands to their payload sizes (for reading from HW)
@@ -462,6 +563,9 @@ COMMAND_PAYLOAD_SIZE = {
     Command.METER_LEVEL:        2,
     Command.APP_ICON_META:      5,
     Command.APP_ICON_CHUNK:     63,
+    Command.PC_STATS:           13,
+    Command.MEDIA_INFO:         61,
+    Command.MEDIA_CONTROL:      1,
 }
 
 # Commands that represent session data (index = cmd - CURRENT_SESSION)

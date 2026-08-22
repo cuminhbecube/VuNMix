@@ -1,5 +1,6 @@
 #include "Input.h"
 #include "Config.h"
+#include "Communications.h"
 #include <Keypad.h>
 #include <Wire.h>
 //#if ARDUINO_USB_MODE
@@ -36,6 +37,8 @@ namespace Input {
     static uint16_t s_touchLastY = 0;
     static uint32_t s_touchDownAt = 0;
     static uint32_t s_lastTapAt = 0;
+    static uint32_t s_lastHwGestureAt = 0;
+    static uint8_t s_consecutiveI2cErrors = 0;
 
     volatile int8_t g_EncoderSteps = 0;
     volatile ButtonEvent g_ButtonEvent = none;
@@ -64,6 +67,22 @@ namespace Input {
         s_touchInterruptPending = true;
     }
 
+    static void RecoverI2cBus()
+    {
+        Wire.end();
+        pinMode(PIN_TOUCH_SCL, OUTPUT);
+        pinMode(PIN_TOUCH_SDA, INPUT_PULLUP);
+        for (int i = 0; i < 9; i++)
+        {
+            digitalWrite(PIN_TOUCH_SCL, LOW);
+            delayMicroseconds(5);
+            digitalWrite(PIN_TOUCH_SCL, HIGH);
+            delayMicroseconds(5);
+        }
+        Wire.begin(PIN_TOUCH_SDA, PIN_TOUCH_SCL);
+        Wire.setClock(400000);
+    }
+
     static bool WriteTouchRegister(uint8_t reg, uint8_t value)
     {
         Wire.beginTransmission(CST816S_ADDRESS);
@@ -77,7 +96,14 @@ namespace Input {
         Wire.beginTransmission(CST816S_ADDRESS);
         Wire.write(reg);
         if (Wire.endTransmission(false) != 0)
+        {
+            if (++s_consecutiveI2cErrors >= 5)
+            {
+                RecoverI2cBus();
+                s_consecutiveI2cErrors = 0;
+            }
             return false;
+        }
 
         size_t received = Wire.requestFrom(
             (int)CST816S_ADDRESS,
@@ -87,9 +113,15 @@ namespace Input {
         if (received != length)
         {
             while (Wire.available()) Wire.read();
+            if (++s_consecutiveI2cErrors >= 5)
+            {
+                RecoverI2cBus();
+                s_consecutiveI2cErrors = 0;
+            }
             return false;
         }
 
+        s_consecutiveI2cErrors = 0;
         for (size_t i = 0; i < length; ++i)
             data[i] = (uint8_t)Wire.read();
         return true;
@@ -206,6 +238,10 @@ namespace Input {
         int16_t adx = abs(dx);
         int16_t ady = abs(dy);
 
+        // If a hardware gesture was recently decoded, suppress software delta gestures to avoid duplicate events
+        if ((uint32_t)(now - s_lastHwGestureAt) < 300U)
+            return;
+
         if (duration <= 800U && (adx > 50 || ady > 50))
         {
             if (adx >= ady)
@@ -304,15 +340,10 @@ namespace Input {
                         if (k == 'P') g_ButtonEvent = doubleTap;
                         if (k == '-') g_EncoderSteps = g_EncoderSteps - 1;
                         if (k == '+') g_EncoderSteps = g_EncoderSteps + 1;
-// #if ARDUINO_USB_MODE
-//                         if (k == ' ') ConsumerControl.press(CONSUMER_CONTROL_PLAY_PAUSE);
-// #endif
+                        if (k == ' ') Communications::SendMediaControl(1); // 1 = Play/Pause
                     }
                     else if (state == RELEASED) {
                         holdingKey = 0;
-// #if ARDUINO_USB_MODE
-//                         if (k == ' ') ConsumerControl.release();
-// #endif
                     }
                     else if (state == HOLD) {
                         holdingKey = k;
@@ -358,6 +389,7 @@ namespace Input {
                     (gesture != s_lastGesture ||
                      (uint32_t)(now - s_lastGestureAt) >= 180U))
                 {
+                    s_lastHwGestureAt = now;
                     QueueTouchEvent(event);
                     s_lastGesture = gesture;
                 }

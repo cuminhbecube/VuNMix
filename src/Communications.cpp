@@ -207,6 +207,22 @@ namespace Communications
             memcpy(&chunk, payload, sizeof(AppIconChunk));
             Display::ReceiveAppIconChunk(&chunk);
         }
+        else if (command == Command::PC_STATS)
+        {
+            if (payloadLength != sizeof(PcStatsData)) return Command::ERROR;
+            PcStatsData stats;
+            memcpy(&stats, payload, sizeof(PcStatsData));
+            g_PcStats = stats;
+            g_PcStatsValid = true;
+        }
+        else if (command == Command::MEDIA_INFO)
+        {
+            if (payloadLength != sizeof(MediaInfoData)) return Command::ERROR;
+            MediaInfoData media;
+            memcpy(&media, payload, sizeof(MediaInfoData));
+            g_MediaInfo = media;
+            g_MediaInfoValid = true;
+        }
         else if (command == Command::DEBUG)
         {
             if (payloadLength != 0) return Command::ERROR;
@@ -368,6 +384,12 @@ namespace Communications
             WriteImmediate(command);
             s_lastTxTime = g_Now;
         }
+    }
+
+    void SendMediaControl(uint8_t action)
+    {
+        MediaControlData ctrl(action);
+        SendFrame(Command::MEDIA_CONTROL, &ctrl, sizeof(MediaControlData));
     }
 
     uint32_t ReceivedFrames(void) { return s_receivedFrames; }

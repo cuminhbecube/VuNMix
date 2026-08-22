@@ -17,7 +17,7 @@ ArchitecturesInstallIn64BitMode=x64
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "dist_release\VuNMix\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\VuNMix\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\VuNMix"; Filename: "{app}\VuNMix.exe"; IconFilename: "{app}\VuNMix.exe"

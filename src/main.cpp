@@ -21,6 +21,10 @@ SessionInfo g_SessionInfo;
 SessionData g_Sessions[SessionIndex::INDEX_MAX];
 ModeStates g_ModeStates;
 MeterData g_MeterData;
+PcStatsData g_PcStats;
+bool g_PcStatsValid = false;
+MediaInfoData g_MediaInfo;
+bool g_MediaInfoValid = false;
 bool g_DisplayDirty;
 bool g_DisplayAsleep;
 bool g_PcAsleep = false;
@@ -71,6 +75,7 @@ void LightingRunningLights();
 void LightingGradient();
 void LightingSparkle();
 void LightingAurora();
+void LightingAudioVU(uint8_t levelL, uint8_t levelR);
 void LightingVolume(SessionData *item, Color *c1, Color *c2);
 Color LerpColor(Color *c1, Color *c2, uint8_t coeff);
 
@@ -366,14 +371,6 @@ bool ProcessEncoderRotation()
             ComputeVolumeChange(SessionIndex::INDEX_CURRENT, encoderSteps, deltaTime);
         } else {
             ComputeVolumeChange(SessionIndex::INDEX_ALTERNATE, encoderSteps, deltaTime);
-            if (g_Sessions[SessionIndex::INDEX_ALTERNATE].data.id != g_Sessions[SessionIndex::INDEX_CURRENT].data.id) {
-                uint8_t prev = g_Sessions[SessionIndex::INDEX_CURRENT].data.volume;
-                g_Sessions[SessionIndex::INDEX_CURRENT].data.volume = 100 - g_Sessions[SessionIndex::INDEX_ALTERNATE].data.volume;
-                if (prev != g_Sessions[SessionIndex::INDEX_CURRENT].data.volume)
-                    Communications::Write(Command::VOLUME_CURR_CHANGE);
-            } else {
-                g_Sessions[SessionIndex::INDEX_CURRENT].data.volume = g_Sessions[SessionIndex::INDEX_ALTERNATE].data.volume;
-            }
         }
     }
     else
@@ -536,15 +533,6 @@ bool ProcessTouch()
 
     if (previous != g_Sessions[index].data.volume)
         Communications::Write((Command)((int8_t)Command::VOLUME_CURR_CHANGE + index));
-
-    if (index == SessionIndex::INDEX_ALTERNATE &&
-        g_Sessions[SessionIndex::INDEX_ALTERNATE].data.id !=
-            g_Sessions[SessionIndex::INDEX_CURRENT].data.id)
-    {
-        g_Sessions[SessionIndex::INDEX_CURRENT].data.volume =
-            100 - g_Sessions[SessionIndex::INDEX_ALTERNATE].data.volume;
-        Communications::Write(Command::VOLUME_CURR_CHANGE);
-    }
 
     return true;
 }
@@ -767,11 +755,22 @@ void UpdateLighting()
         isLedStandby = true;
     }
 
-    if (isLedStandby) LightingStandby();
-    else if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH) LightingColorWave();
-    else if (g_SessionInfo.mode == DisplayMode::MODE_GAME)
-        LightingVolume(&g_Sessions[SessionIndex::INDEX_CURRENT], &g_Settings.mixChannelAColor, &g_Settings.mixChannelBColor);
-    else LightingVolume(&g_Sessions[SessionIndex::INDEX_CURRENT], &g_Settings.volumeMinColor, &g_Settings.volumeMaxColor);
+    if (isLedStandby) {
+        LightingStandby();
+    } else if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH) {
+        LightingColorWave();
+    } else {
+        bool isRecentVolume = (g_Now - g_LastVolumeActivity) < 1800;
+        bool hasAudio = (g_MeterData.current > 0 || g_MeterData.alternate > 0);
+
+        if (!isRecentVolume && hasAudio) {
+            LightingAudioVU(g_MeterData.current, g_MeterData.alternate);
+        } else if (g_SessionInfo.mode == DisplayMode::MODE_GAME) {
+            LightingVolume(&g_Sessions[SessionIndex::INDEX_CURRENT], &g_Settings.mixChannelAColor, &g_Settings.mixChannelBColor);
+        } else {
+            LightingVolume(&g_Sessions[SessionIndex::INDEX_CURRENT], &g_Settings.volumeMinColor, &g_Settings.volumeMaxColor);
+        }
+    }
     g_Pixels.show();
 }
 
@@ -1168,4 +1167,47 @@ Color LerpColor(Color *c1, Color *c2, uint8_t coeff)
     uint8_t g = c1->g + ((int)(c2->g - c1->g) * coeff) / 255;
     uint8_t b = c1->b + ((int)(c2->b - c1->b) * coeff) / 255;
     return {r, g, b};
+}
+
+// ─── Audio-Reactive VU Meter with Peak Hold & Decay ──────────────────────
+void LightingAudioVU(uint8_t levelL, uint8_t levelR)
+{
+    static uint8_t s_peakLevel = 0;
+    static uint8_t s_decayCounter = 0;
+
+    uint8_t maxLevel = max(levelL, levelR);
+
+    // Peak hold & smooth gravity decay
+    if (maxLevel >= s_peakLevel) {
+        s_peakLevel = maxLevel;
+    } else if ((s_decayCounter & 1) == 0 && s_peakLevel > 0) {
+        s_peakLevel--;
+    }
+    s_decayCounter++;
+
+    // Number of active LEDs (0 to 10)
+    uint8_t litCount = (maxLevel * PIXELS_COUNT + 50) / 100;
+    uint8_t peakLed = (s_peakLevel * (PIXELS_COUNT - 1) + 50) / 100;
+
+    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
+    {
+        if (i < litCount)
+        {
+            // Gradient: Green (0-5) -> Yellow/Orange (6-7) -> Red (8-9)
+            uint16_t hue16;
+            if (i < 6) hue16 = (uint16_t)(21845 - i * 2500); // Green to Yellow
+            else hue16 = (uint16_t)(6800 - (i - 6) * 3400);  // Orange to Red
+            uint32_t color = g_Pixels.ColorHSV(hue16, 255, 255);
+            g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
+        }
+        else if (i == peakLed && s_peakLevel > 5)
+        {
+            // Peak indicator dot (bright Cyan/White)
+            g_Pixels.setPixelColor(i, 255, 255, 255);
+        }
+        else
+        {
+            g_Pixels.setPixelColor(i, 0, 0, 0);
+        }
+    }
 }

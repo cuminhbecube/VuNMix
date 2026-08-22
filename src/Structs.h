@@ -118,3 +118,41 @@ struct __attribute__((__packed__)) ModeStates
     // states{STATE_LOGO, STATE_EDIT, STATE_EDIT, STATE_NAVIGATE, STATE_SELECT_A, STATE_NAVIGATE}
 };
 static_assert(sizeof(ModeStates) == 6, "Invalid Expected Message Size");
+
+struct __attribute__((__packed__)) PcStatsData
+{
+    uint8_t cpuUsage;      // 0-100%
+    uint8_t cpuTemp;       // °C (or 0 if unavailable)
+    uint8_t gpuUsage;      // 0-100%
+    uint8_t gpuTemp;       // °C (or 0 if unavailable)
+    uint8_t ramUsage;      // 0-100%
+    uint16_t ramUsedMB;    // MB
+    uint16_t ramTotalMB;   // MB
+    uint16_t netDownKBps;  // KB/s
+    uint16_t netUpKBps;    // KB/s
+
+    PcStatsData() : cpuUsage(0), cpuTemp(0), gpuUsage(0), gpuTemp(0), ramUsage(0),
+                    ramUsedMB(0), ramTotalMB(0), netDownKBps(0), netUpKBps(0) {}
+};
+static_assert(sizeof(PcStatsData) == 13, "Invalid Expected Message Size");
+
+struct __attribute__((__packed__)) MediaInfoData
+{
+    uint8_t isPlaying;     // 0=Paused/Stopped, 1=Playing
+    uint16_t positionSec;  // Position in seconds
+    uint16_t durationSec;  // Duration in seconds
+    char title[32];        // Track title (null-terminated)
+    char artist[24];       // Artist name (null-terminated)
+
+    MediaInfoData() : isPlaying(0), positionSec(0), durationSec(0), title{0}, artist{0} {}
+};
+static_assert(sizeof(MediaInfoData) == 61, "Invalid Expected Message Size");
+
+struct __attribute__((__packed__)) MediaControlData
+{
+    uint8_t action;        // 1=Play/Pause, 2=Next, 3=Prev, 4=Stop
+
+    MediaControlData() : action(0) {}
+    explicit MediaControlData(uint8_t act) : action(act) {}
+};
+static_assert(sizeof(MediaControlData) == 1, "Invalid Expected Message Size");

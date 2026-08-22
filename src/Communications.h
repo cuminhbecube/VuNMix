@@ -9,6 +9,7 @@ namespace Communications
     void Write(Command command);
     void WriteImmediate(Command command);
     void SendPending(void);
+    void SendMediaControl(uint8_t action);
     uint32_t ReceivedFrames(void);
     uint32_t TransmittedFrames(void);
     uint32_t CrcErrors(void);

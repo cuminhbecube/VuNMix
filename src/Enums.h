@@ -22,7 +22,10 @@ enum class Command : int8_t
     TIME_SYNC,
     METER_LEVEL,
     APP_ICON_META,
-    APP_ICON_CHUNK
+    APP_ICON_CHUNK,
+    PC_STATS,
+    MEDIA_INFO,
+    MEDIA_CONTROL
 };
 
 enum SessionIndex : uint8_t

@@ -23,12 +23,18 @@ import win32gui
 from protocol import (
     Command, DisplayMode, SessionIndex,
     SessionInfo, SessionData, VolumeData, MeterData, DeviceSettings, ModeStates,
+    PcStatsData, MediaInfoData, MediaControlData,
     SESSION_COMMANDS, VOLUME_COMMANDS, PROTOCOL_VERSION,
 )
 from config import AppConfig
 from serial_service import SerialService
 from audio_service import AudioService
 from app_icon import app_icon_rgb565
+from system_monitor import SystemMonitor
+from media_service import MediaService
+from preset_service import PresetService
+from weather_service import WeatherService
+from obs_service import ObsService
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +100,11 @@ class AppController:
         self.serial = SerialService(port=config.com_port)
         self.audio = AudioService()
         self.audio.set_favorite_apps(config.favorite_apps)
+        self.system_monitor = SystemMonitor()
+        self.media_service = MediaService()
+        self.preset_service = PresetService(self.audio)
+        self.weather_service = WeatherService()
+        self.obs_service = ObsService()
 
         # Firmware state mirrors
         self._session_info = SessionInfo()
@@ -138,10 +149,14 @@ class AppController:
         self._sync_thread.start()
         self._meter_thread = threading.Thread(target=self._meter_loop, daemon=True, name="AudioMeter")
         self._meter_thread.start()
+        self.weather_service.start()
+        self.obs_service.start()
 
     def stop(self):
         """Stop everything."""
         log.info("AppController stopping...")
+        self.weather_service.stop()
+        self.obs_service.stop()
         if self._power_monitor is not None:
             self._power_monitor.stop()
             self._power_monitor = None
@@ -267,7 +282,10 @@ class AppController:
             self._handshake_token += 1
             token = self._handshake_token
         time.sleep(0.2)
-        self.serial.send_test()
+        if not self.serial.send_test():
+            # send_command() has already disconnected the failed connection.
+            # Do not leave a watchdog behind for every failed reconnect.
+            return
 
         def handshake_watchdog():
             time.sleep(10.0)
@@ -394,6 +412,10 @@ class AppController:
             log.debug(f"HW→PC MODE_STATES: {self._mode_states.states}")
         elif cmd == Command.METER_LEVEL:
             self._meter_data = MeterData.unpack(payload)
+        elif cmd == Command.MEDIA_CONTROL:
+            ctrl = MediaControlData.unpack(payload)
+            log.debug(f"HW→PC MEDIA_CONTROL: action={ctrl.action}")
+            self.media_service.execute_control(ctrl.action)
 
     def _handle_session_info_from_hw(self, info: SessionInfo):
         """Hardware changed mode or navigated — send appropriate sessions."""
@@ -606,6 +628,7 @@ class AppController:
         last_heartbeat = time.monotonic()
         last_full_refresh = time.monotonic()
         last_time_sync = time.monotonic()
+        last_telemetry_sync = time.monotonic()
 
         while self._running:
             time.sleep(interval)
@@ -625,6 +648,17 @@ class AppController:
                 dt = datetime.now()
                 self.serial.send_time_sync(dt.hour, dt.minute, dt.second)
                 last_time_sync = now
+
+            # Send PC telemetry & media info every 1.0s
+            if now - last_telemetry_sync >= 1.0:
+                try:
+                    stats = self.system_monitor.get_pc_stats()
+                    self.serial.send_pc_stats(stats)
+                    media = self.media_service.get_current_media_info()
+                    self.serial.send_media_info(media)
+                except Exception as e:
+                    log.warning("Failed to push telemetry: %s", e)
+                last_telemetry_sync = now
 
             if self._session_info.mode in (DisplayMode.MODE_SPLASH, DisplayMode.MODE_HEALTH):
                 continue
@@ -744,12 +778,17 @@ class AppController:
                         alternate_meter = None
 
                 try:
-                    target_current = self._peak_to_level(
-                        self.audio.read_peak_meter(current_meter)
-                    )
-                    target_alternate = self._peak_to_level(
-                        self.audio.read_peak_meter(alternate_meter)
-                    )
+                    if mode == DisplayMode.MODE_GAME:
+                        target_current = self._peak_to_level(
+                            self.audio.read_peak_meter(current_meter)
+                        )
+                        target_alternate = self._peak_to_level(
+                            self.audio.read_peak_meter(alternate_meter)
+                        )
+                    else:
+                        peak_l, peak_r = self.audio.read_stereo_peak_meter(current_meter)
+                        target_current = self._peak_to_level(peak_l)
+                        target_alternate = self._peak_to_level(peak_r)
                 except Exception:
                     self.audio.close_peak_meter(current_meter)
                     self.audio.close_peak_meter(alternate_meter)

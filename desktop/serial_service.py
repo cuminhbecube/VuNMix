@@ -15,7 +15,7 @@ import serial
 from protocol import (
     Command, COMMAND_PAYLOAD_SIZE,
     SessionInfo, SessionData, VolumeData, MeterData, DeviceSettings, ModeStates,
-    AppIconMeta, AppIconChunk,
+    AppIconMeta, AppIconChunk, PcStatsData, MediaInfoData, MediaControlData,
     SESSION_COMMANDS, VOLUME_COMMANDS,
     FrameParser, encode_frame,
 )
@@ -178,6 +178,12 @@ class SerialService:
                     return False
                 time.sleep(0.006)
         return True
+
+    def send_pc_stats(self, stats: PcStatsData) -> bool:
+        return self.send_command(Command.PC_STATS, stats.pack())
+
+    def send_media_info(self, info: MediaInfoData) -> bool:
+        return self.send_command(Command.MEDIA_INFO, info.pack())
 
     def _read_loop(self):
         """Background thread: parse framed messages from hardware."""

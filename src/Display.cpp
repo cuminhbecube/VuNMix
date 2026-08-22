@@ -116,7 +116,6 @@ namespace Display {
     static lv_obj_t* s_meterCurrent = nullptr;
     static lv_obj_t* s_meterAlternate = nullptr;
     static lv_obj_t* s_appIconImg = nullptr;
-    static lv_obj_t* s_modeIconLabel = nullptr;
     static uint8_t s_meterCurrentValue = 0;
     static uint8_t s_meterAlternateValue = 0;
     static lv_color_t s_appIconCanvasBuf[16 * 16];
@@ -137,6 +136,21 @@ namespace Display {
     static lv_obj_t* s_faderB      = nullptr;
     static lv_obj_t* s_faderNameA  = nullptr;
     static lv_obj_t* s_faderNameB  = nullptr;
+
+    // PC Stats / Dashboard widgets
+    static lv_obj_t* s_cpuArc      = nullptr;
+    static lv_obj_t* s_cpuVal      = nullptr;
+    static lv_obj_t* s_cpuSub      = nullptr;
+    static lv_obj_t* s_gpuArc      = nullptr;
+    static lv_obj_t* s_gpuVal      = nullptr;
+    static lv_obj_t* s_gpuSub      = nullptr;
+    static lv_obj_t* s_ramArc      = nullptr;
+    static lv_obj_t* s_ramVal      = nullptr;
+    static lv_obj_t* s_ramSub      = nullptr;
+    static lv_obj_t* s_netDownLbl  = nullptr;
+    static lv_obj_t* s_netUpLbl    = nullptr;
+    static lv_obj_t* s_sysLinkLbl  = nullptr;
+    static lv_obj_t* s_sysHeapLbl  = nullptr;
 
     // Splash specific
     static lv_obj_t* s_splashDots  = nullptr;
@@ -168,19 +182,17 @@ namespace Display {
     }
 
     static void UpdateAppIcon(uint8_t id, DisplayMode mode) {
-        if (!s_appIconImg || mode != MODE_APPLICATION)
+        if (!s_appIconImg || !s_headerIcon || mode != MODE_APPLICATION)
             return;
 
         AppIconCacheEntry* icon = FindAppIcon(id);
         if (!icon || icon->received < APP_ICON_BYTES) {
             lv_obj_add_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
-            if (s_modeIconLabel)
-                lv_obj_clear_flag(s_modeIconLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_headerIcon, LV_OBJ_FLAG_HIDDEN);
             return;
         }
 
-        if (s_modeIconLabel)
-            lv_obj_add_flag(s_modeIconLabel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_headerIcon, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
 
         for (uint16_t i = 0; i < APP_ICON_SIZE * APP_ICON_SIZE; ++i) {
@@ -345,6 +357,10 @@ namespace Display {
             lv_obj_set_style_text_font(s_headerIcon, &lv_font_montserrat_14, LV_PART_MAIN);
             lv_obj_align(s_headerIcon, LV_ALIGN_LEFT_MID, 0, 0);
 
+            s_appIconImg = lv_img_create(s_header);
+            lv_obj_align(s_appIconImg, LV_ALIGN_LEFT_MID, 0, 0);
+            lv_obj_add_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
+
             // Header title
             s_headerTitle = lv_label_create(s_header);
             lv_obj_set_style_text_font(s_headerTitle, &lv_font_montserrat_12, LV_PART_MAIN);
@@ -428,12 +444,16 @@ namespace Display {
         // Header
         lv_obj_set_style_text_color(s_headerIcon, accent, LV_PART_MAIN);
         lv_label_set_text(s_headerIcon, GetModeIcon(mode));
+        lv_obj_clear_flag(s_headerIcon, LV_OBJ_FLAG_HIDDEN);
+        if (s_appIconImg) lv_obj_add_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_color(s_headerTitle, accent, LV_PART_MAIN);
         lv_label_set_text(s_headerTitle, GetModeString(mode));
 
         if (mode == MODE_GAME) {
             lv_obj_clear_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_meterCurrent, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_size(s_meterCurrent, 76, 3);
+            lv_obj_set_size(s_meterAlternate, 76, 3);
             lv_obj_align(s_meterAlternate, LV_ALIGN_RIGHT_MID, -24, -4);
             lv_obj_align(s_meterCurrent, LV_ALIGN_RIGHT_MID, -24, 4);
             lv_obj_set_style_bg_color(s_meterAlternate, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
@@ -444,10 +464,16 @@ namespace Display {
             lv_obj_add_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_meterCurrent, LV_OBJ_FLAG_HIDDEN);
         } else {
+            // Stereo L / R Dual Meter
             lv_obj_clear_flag(s_meterCurrent, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_size(s_meterCurrent, 76, 4);
-            lv_obj_align(s_meterCurrent, LV_ALIGN_RIGHT_MID, -24, 0);
+            lv_obj_clear_flag(s_meterAlternate, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_size(s_meterCurrent, 76, 3);
+            lv_obj_set_size(s_meterAlternate, 76, 3);
+            lv_obj_align(s_meterAlternate, LV_ALIGN_RIGHT_MID, -24, -4);
+            lv_obj_align(s_meterCurrent, LV_ALIGN_RIGHT_MID, -24, 4);
+            lv_obj_set_style_bg_color(s_meterAlternate, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(s_meterCurrent, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(s_meterAlternate, accent, LV_PART_INDICATOR);
             lv_obj_set_style_bg_color(s_meterCurrent, accent, LV_PART_INDICATOR);
         }
         lv_bar_set_value(s_meterCurrent, s_meterCurrentValue, LV_ANIM_OFF);
@@ -503,11 +529,27 @@ namespace Display {
             s_faderNameA = nullptr;
             s_faderNameB = nullptr;
             for (int i = 0; i < 8; ++i) s_healthRows[i] = nullptr;
+            s_cpuArc = nullptr;
+            s_cpuVal = nullptr;
+            s_cpuSub = nullptr;
+            s_gpuArc = nullptr;
+            s_gpuVal = nullptr;
+            s_gpuSub = nullptr;
+            s_ramArc = nullptr;
+            s_ramVal = nullptr;
+            s_ramSub = nullptr;
+            s_netDownLbl = nullptr;
+            s_netUpLbl = nullptr;
+            s_sysLinkLbl = nullptr;
+            s_sysHeapLbl = nullptr;
         }
     }
 
     // Full screen reset (for splash or first boot)
     static void FullReset() {
+        if (s_splashDots) {
+            lv_anim_del(s_splashDots, nullptr);
+        }
         lv_obj_clean(lv_scr_act());
         lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(COL_BG), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, LV_PART_MAIN);
@@ -519,7 +561,6 @@ namespace Display {
         s_meterCurrent = nullptr;
         s_meterAlternate = nullptr;
         s_appIconImg = nullptr;
-        s_modeIconLabel = nullptr;
         s_navbar = nullptr;
         for (int i = 0; i < NAV_MODE_COUNT; i++) s_navBtns[i] = nullptr;
         s_glowStrip = nullptr;
@@ -538,6 +579,19 @@ namespace Display {
         s_touchEventLabel = nullptr;
         s_touchRawLabel = nullptr;
         for (int i = 0; i < 8; ++i) s_healthRows[i] = nullptr;
+        s_cpuArc = nullptr;
+        s_cpuVal = nullptr;
+        s_cpuSub = nullptr;
+        s_gpuArc = nullptr;
+        s_gpuVal = nullptr;
+        s_gpuSub = nullptr;
+        s_ramArc = nullptr;
+        s_ramVal = nullptr;
+        s_ramSub = nullptr;
+        s_netDownLbl = nullptr;
+        s_netUpLbl = nullptr;
+        s_sysLinkLbl = nullptr;
+        s_sysHeapLbl = nullptr;
         s_clockHM = nullptr;
         s_clockColon = nullptr;
         s_clockSec = nullptr;
@@ -579,8 +633,17 @@ namespace Display {
             return;
 
         AppIconCacheEntry* icon = FindAppIcon(chunk->id);
-        if (!icon)
-            return;
+        if (!icon) {
+            if (chunk->index == 0) {
+                icon = &s_appIcons[s_appIconWriteSlot];
+                s_appIconWriteSlot = (s_appIconWriteSlot + 1) % APP_ICON_CACHE_SIZE;
+                icon->id = chunk->id;
+                icon->received = 0;
+                memset(icon->data, 0, sizeof(icon->data));
+            } else {
+                return;
+            }
+        }
 
         uint16_t offset = (uint16_t)chunk->index * 60U;
         if (offset >= APP_ICON_BYTES)
@@ -815,8 +878,63 @@ namespace Display {
     }
 
     // =========================================================
-    // DEVICE HEALTH / DEBUG SCREEN
+    // DEVICE HEALTH / DEBUG SCREEN & PC TELEMETRY GAUGE DASHBOARD
     // =========================================================
+    static lv_obj_t* CreateCyberGauge(lv_obj_t* parent, int16_t x, int16_t y, int16_t w, int16_t h,
+                                      const char* title, uint32_t colorHex,
+                                      lv_obj_t*& outArc, lv_obj_t*& outValLabel, lv_obj_t*& outSubLabel)
+    {
+        lv_obj_t* card = CreateGlassPanel(parent, w, h);
+        lv_obj_set_pos(card, x, y);
+        lv_obj_set_style_border_color(card, lv_color_hex(colorHex), LV_PART_MAIN);
+        lv_obj_set_style_border_width(card, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_opa(card, LV_OPA_50, LV_PART_MAIN);
+
+        // Title at top
+        lv_obj_t* tLbl = lv_label_create(card);
+        lv_obj_set_style_text_font(tLbl, &lv_font_montserrat_12, LV_PART_MAIN);
+        lv_obj_set_style_text_color(tLbl, lv_color_hex(colorHex), LV_PART_MAIN);
+        lv_label_set_text(tLbl, title);
+        lv_obj_align(tLbl, LV_ALIGN_TOP_MID, 0, 4);
+
+        // Radial Arc Gauge
+        outArc = lv_arc_create(card);
+        lv_obj_set_size(outArc, 60, 60);
+        lv_obj_align(outArc, LV_ALIGN_CENTER, 0, 4);
+        lv_arc_set_bg_angles(outArc, 135, 45);
+        lv_arc_set_range(outArc, 0, 100);
+
+        lv_obj_set_style_arc_color(outArc, lv_color_hex(COL_SURFACE_HIGH), LV_PART_MAIN);
+        lv_obj_set_style_arc_width(outArc, 6, LV_PART_MAIN);
+        lv_obj_set_style_arc_rounded(outArc, true, LV_PART_MAIN);
+
+        lv_obj_set_style_arc_color(outArc, lv_color_hex(colorHex), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_width(outArc, 6, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_rounded(outArc, true, LV_PART_INDICATOR);
+        lv_obj_set_style_shadow_color(outArc, lv_color_hex(colorHex), LV_PART_INDICATOR);
+        lv_obj_set_style_shadow_width(outArc, 12, LV_PART_INDICATOR);
+        lv_obj_set_style_shadow_opa(outArc, LV_OPA_50, LV_PART_INDICATOR);
+
+        lv_obj_set_style_bg_opa(outArc, LV_OPA_TRANSP, LV_PART_KNOB);
+        lv_obj_clear_flag(outArc, LV_OBJ_FLAG_CLICKABLE);
+
+        // Value inside Arc
+        outValLabel = lv_label_create(outArc);
+        lv_obj_set_style_text_font(outValLabel, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(outValLabel, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_label_set_text(outValLabel, "0%");
+        lv_obj_align(outValLabel, LV_ALIGN_CENTER, 0, 0);
+
+        // Subtitle below Arc
+        outSubLabel = lv_label_create(card);
+        lv_obj_set_style_text_font(outSubLabel, &lv_font_montserrat_10, LV_PART_MAIN);
+        lv_obj_set_style_text_color(outSubLabel, lv_color_hex(COL_ON_SURFACE_V), LV_PART_MAIN);
+        lv_label_set_text(outSubLabel, "");
+        lv_obj_align(outSubLabel, LV_ALIGN_BOTTOM_MID, 0, -4);
+
+        return card;
+    }
+
     void HealthScreen(
         bool pcConnected,
         uint32_t uptimeSeconds,
@@ -838,10 +956,6 @@ namespace Display {
         bool touchReady,
         uint32_t touchSamples
     ) {
-        // Splash, info, keypad test and clock are full-screen layouts. They do
-        // not own the persistent shell, so clear them before building Health;
-        // otherwise their LVGL objects remain attached to the active screen
-        // and Health creates a second UI tree on top of them.
         if (!s_shellBuilt || s_currentScreen == ScreenType::SPLASH ||
             s_currentScreen == ScreenType::KEY_TEST || s_currentScreen == ScreenType::INFO ||
             s_currentScreen == ScreenType::CLOCK) {
@@ -852,64 +966,137 @@ namespace Display {
         ClearContent(ScreenType::HEALTH);
         ShowShell(true);
 
-        if (!s_healthRows[0]) {
-            lv_obj_t* panel = CreateGlassPanel(s_contentArea, SW - 12, CONTENT_H - 6);
-            lv_obj_align(panel, LV_ALIGN_CENTER, 0, 0);
+        // Build graphical 3-Gauge HUD + Dual Bottom Cards if not created
+        if (!s_cpuArc) {
+            // 1. CPU Gauge Card (Left: X=0, W=100)
+            CreateCyberGauge(s_contentArea, 0, 6, 100, 98,
+                             "CPU", COL_CYAN,
+                             s_cpuArc, s_cpuVal, s_cpuSub);
 
-            s_titleLabel = lv_label_create(panel);
-            lv_label_set_text(s_titleLabel, "HEALTH / DEBUG");
-            lv_obj_set_style_text_font(s_titleLabel, &lv_font_montserrat_14, LV_PART_MAIN);
-            lv_obj_set_style_text_color(s_titleLabel, lv_color_hex(COL_BLUE), LV_PART_MAIN);
-            lv_obj_align(s_titleLabel, LV_ALIGN_TOP_MID, 0, 6);
+            // 2. GPU Gauge Card (Center: X=103, W=100)
+            CreateCyberGauge(s_contentArea, 103, 6, 100, 98,
+                             "GPU", COL_ORANGE,
+                             s_gpuArc, s_gpuVal, s_gpuSub);
 
-            for (uint8_t i = 0; i < 8; ++i) {
-                s_healthRows[i] = lv_label_create(panel);
-                lv_obj_set_style_text_font(s_healthRows[i], &lv_font_montserrat_10, LV_PART_MAIN);
-                lv_obj_set_style_text_color(s_healthRows[i], lv_color_hex(COL_ON_SURFACE), LV_PART_MAIN);
-                lv_obj_set_width(s_healthRows[i], 138);
-                lv_label_set_long_mode(s_healthRows[i], LV_LABEL_LONG_CLIP);
-                int16_t x = (i % 2 == 0) ? 12 : 158;
-                int16_t y = 31 + (i / 2) * 30;
-                lv_obj_align(s_healthRows[i], LV_ALIGN_TOP_LEFT, x, y);
-            }
+            // 3. RAM Gauge Card (Right: X=207, W=100)
+            CreateCyberGauge(s_contentArea, 207, 6, 100, 98,
+                             "RAM", COL_PURPLE,
+                             s_ramArc, s_ramVal, s_ramSub);
+
+            // 4. Bottom Left: Network Card (X=0, W=152, H=58)
+            lv_obj_t* netCard = CreateGlassPanel(s_contentArea, 152, 58);
+            lv_obj_set_pos(netCard, 0, 108);
+            lv_obj_set_style_border_color(netCard, lv_color_hex(COL_GREEN), LV_PART_MAIN);
+            lv_obj_set_style_border_width(netCard, 1, LV_PART_MAIN);
+            lv_obj_set_style_border_opa(netCard, LV_OPA_30, LV_PART_MAIN);
+
+            s_netDownLbl = lv_label_create(netCard);
+            lv_obj_set_style_text_font(s_netDownLbl, &lv_font_montserrat_12, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_netDownLbl, lv_color_hex(COL_GREEN), LV_PART_MAIN);
+            lv_obj_align(s_netDownLbl, LV_ALIGN_TOP_LEFT, 8, 6);
+
+            s_netUpLbl = lv_label_create(netCard);
+            lv_obj_set_style_text_font(s_netUpLbl, &lv_font_montserrat_12, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_netUpLbl, lv_color_hex(COL_CYAN), LV_PART_MAIN);
+            lv_obj_align(s_netUpLbl, LV_ALIGN_BOTTOM_LEFT, 8, -6);
+
+            // 5. Bottom Right: System Card (X=155, W=152, H=58)
+            lv_obj_t* sysCard = CreateGlassPanel(s_contentArea, 152, 58);
+            lv_obj_set_pos(sysCard, 155, 108);
+            lv_obj_set_style_border_color(sysCard, lv_color_hex(COL_BLUE), LV_PART_MAIN);
+            lv_obj_set_style_border_width(sysCard, 1, LV_PART_MAIN);
+            lv_obj_set_style_border_opa(sysCard, LV_OPA_30, LV_PART_MAIN);
+
+            s_sysLinkLbl = lv_label_create(sysCard);
+            lv_obj_set_style_text_font(s_sysLinkLbl, &lv_font_montserrat_12, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_sysLinkLbl, lv_color_hex(COL_GREEN), LV_PART_MAIN);
+            lv_obj_align(s_sysLinkLbl, LV_ALIGN_TOP_LEFT, 8, 6);
+
+            s_sysHeapLbl = lv_label_create(sysCard);
+            lv_obj_set_style_text_font(s_sysHeapLbl, &lv_font_montserrat_10, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_sysHeapLbl, lv_color_hex(COL_ON_SURFACE_V), LV_PART_MAIN);
+            lv_obj_align(s_sysHeapLbl, LV_ALIGN_BOTTOM_LEFT, 8, -6);
         }
 
-        char value[64];
-        snprintf(value, sizeof(value), "%s %lums", pcConnected ? "OK" : "WAIT", (unsigned long)serialAgeMs);
-        SetHealthRow(0, "PC", value, pcConnected ? COL_GREEN : 0xFF3333);
+        char buf[64];
+        if (g_PcStatsValid) {
+            // Update CPU gauge
+            lv_arc_set_value(s_cpuArc, g_PcStats.cpuUsage);
+            snprintf(buf, sizeof(buf), "%u%%", g_PcStats.cpuUsage);
+            lv_label_set_text(s_cpuVal, buf);
+            lv_label_set_text(s_cpuSub, "LOAD");
 
-        snprintf(value, sizeof(value), "%02luh %02lum %02lus",
-                 (unsigned long)(uptimeSeconds / 3600UL),
-                 (unsigned long)((uptimeSeconds / 60UL) % 60UL),
-                 (unsigned long)(uptimeSeconds % 60UL));
-        SetHealthRow(1, "Up", value, COL_ON_SURFACE);
+            // Update GPU gauge
+            lv_arc_set_value(s_gpuArc, g_PcStats.gpuUsage);
+            snprintf(buf, sizeof(buf), "%u%%", g_PcStats.gpuUsage);
+            lv_label_set_text(s_gpuVal, buf);
+            if (g_PcStats.gpuTemp > 0)
+                snprintf(buf, sizeof(buf), "%u°C", g_PcStats.gpuTemp);
+            else
+                snprintf(buf, sizeof(buf), "GPU LOAD");
+            lv_label_set_text(s_gpuSub, buf);
 
-        snprintf(value, sizeof(value), "%lu/%luK",
-                 (unsigned long)(freeHeap / 1024UL),
-                 (unsigned long)(minFreeHeap / 1024UL));
-        SetHealthRow(2, "Heap", value, freeHeap > 80000 ? COL_GREEN : COL_ORANGE);
+            // Update RAM gauge
+            lv_arc_set_value(s_ramArc, g_PcStats.ramUsage);
+            snprintf(buf, sizeof(buf), "%u%%", g_PcStats.ramUsage);
+            lv_label_set_text(s_ramVal, buf);
+            snprintf(buf, sizeof(buf), "%u/%uG",
+                     (g_PcStats.ramUsedMB + 512) / 1024,
+                     (g_PcStats.ramTotalMB + 512) / 1024);
+            lv_label_set_text(s_ramSub, buf);
 
-        snprintf(value, sizeof(value), "%luK", (unsigned long)(maxAllocHeap / 1024UL));
-        SetHealthRow(3, "Blk", value, COL_ON_SURFACE);
+            // Update Network Download
+            if (g_PcStats.netDownKBps >= 1024)
+                snprintf(buf, sizeof(buf), LV_SYMBOL_DOWN " %.1f MB/s", g_PcStats.netDownKBps / 1024.0);
+            else
+                snprintf(buf, sizeof(buf), LV_SYMBOL_DOWN " %u KB/s", g_PcStats.netDownKBps);
+            lv_label_set_text(s_netDownLbl, buf);
 
-        snprintf(value, sizeof(value), "%lu/%lu", (unsigned long)rxFrames, (unsigned long)txFrames);
-        SetHealthRow(4, "RX/TX", value, COL_ON_SURFACE);
+            // Update Network Upload
+            if (g_PcStats.netUpKBps >= 1024)
+                snprintf(buf, sizeof(buf), LV_SYMBOL_UP " %.1f MB/s", g_PcStats.netUpKBps / 1024.0);
+            else
+                snprintf(buf, sizeof(buf), LV_SYMBOL_UP " %u KB/s", g_PcStats.netUpKBps);
+            lv_label_set_text(s_netUpLbl, buf);
 
-        snprintf(value, sizeof(value), "%lu/%lu %s",
-                 (unsigned long)crcErrors,
-                 (unsigned long)protocolErrors,
-                 CommandName(lastCommand));
-        SetHealthRow(5, "Err", value, (crcErrors || protocolErrors) ? COL_ORANGE : COL_GREEN);
+            // Update PC Link status
+            snprintf(buf, sizeof(buf), "%s LINK %lums",
+                     pcConnected ? LV_SYMBOL_OK : LV_SYMBOL_WARNING,
+                     (unsigned long)serialAgeMs);
+            lv_obj_set_style_text_color(s_sysLinkLbl, pcConnected ? lv_color_hex(COL_GREEN) : lv_color_hex(0xFF3333), LV_PART_MAIN);
+            lv_label_set_text(s_sysLinkLbl, buf);
 
-        snprintf(value, sizeof(value), "M%u I%u %u/%u/%u",
-                 currentMode, currentIndex, outputCount, inputCount, appCount);
-        SetHealthRow(6, "State", value, COL_ON_SURFACE);
+            // Update ESP Heap & Frame count
+            snprintf(buf, sizeof(buf), "Heap:%luK | %lu",
+                     (unsigned long)(freeHeap / 1024UL),
+                     (unsigned long)rxFrames);
+            lv_label_set_text(s_sysHeapLbl, buf);
+        } else {
+            // Standby when PC stats not yet received
+            lv_arc_set_value(s_cpuArc, 0);
+            lv_label_set_text(s_cpuVal, "--");
+            lv_label_set_text(s_cpuSub, "WAIT");
 
-        snprintf(value, sizeof(value), "%s %lu %s",
-                 touchReady ? "OK" : "NO",
-                 (unsigned long)touchSamples,
-                 CommandName(lastErrorCommand));
-        SetHealthRow(7, "Touch", value, touchReady ? COL_GREEN : 0xFF3333);
+            lv_arc_set_value(s_gpuArc, 0);
+            lv_label_set_text(s_gpuVal, "--");
+            lv_label_set_text(s_gpuSub, "WAIT");
+
+            lv_arc_set_value(s_ramArc, 0);
+            lv_label_set_text(s_ramVal, "--");
+            lv_label_set_text(s_ramSub, "WAIT");
+
+            lv_label_set_text(s_netDownLbl, LV_SYMBOL_DOWN " -- KB/s");
+            lv_label_set_text(s_netUpLbl, LV_SYMBOL_UP " -- KB/s");
+
+            snprintf(buf, sizeof(buf), "%s PC WAIT", pcConnected ? LV_SYMBOL_OK : LV_SYMBOL_WARNING);
+            lv_obj_set_style_text_color(s_sysLinkLbl, pcConnected ? lv_color_hex(COL_ORANGE) : lv_color_hex(0xFF3333), LV_PART_MAIN);
+            lv_label_set_text(s_sysLinkLbl, buf);
+
+            snprintf(buf, sizeof(buf), "Heap:%luK | %lu",
+                     (unsigned long)(freeHeap / 1024UL),
+                     (unsigned long)rxFrames);
+            lv_label_set_text(s_sysHeapLbl, buf);
+        }
     }
 
     // =========================================================
@@ -960,6 +1147,13 @@ namespace Display {
             lv_obj_set_style_text_font(s_clockSec, &lv_font_dseg_90_bpp1, LV_PART_MAIN);
             lv_obj_set_style_text_color(s_clockSec, lv_color_hex(COL_CYAN), LV_PART_MAIN);
             lv_obj_align(s_clockSec, LV_ALIGN_CENTER, 85, 0);
+
+            // --- Sub-brand / Status label ---
+            s_clockBrand = lv_label_create(lv_scr_act());
+            lv_obj_set_style_text_font(s_clockBrand, &lv_font_montserrat_12, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_clockBrand, lv_color_hex(COL_ON_SURFACE_V), LV_PART_MAIN);
+            lv_label_set_text(s_clockBrand, "VuNMix Studio");
+            lv_obj_align(s_clockBrand, LV_ALIGN_BOTTOM_MID, 0, -8);
         }
 
         // --- Update time text ---
@@ -1069,17 +1263,11 @@ namespace Display {
             lv_obj_set_style_border_width(iconBg, 0, LV_PART_MAIN);
             lv_obj_clear_flag(iconBg, LV_OBJ_FLAG_SCROLLABLE);
 
-            s_modeIconLabel = lv_label_create(iconBg);
-            lv_obj_set_style_text_font(s_modeIconLabel, &lv_font_montserrat_12, LV_PART_MAIN);
-            lv_obj_set_style_text_color(s_modeIconLabel, accent, LV_PART_MAIN);
-            lv_label_set_text(s_modeIconLabel, GetModeIcon(mode));
-            lv_obj_center(s_modeIconLabel);
-
-            if (mode == MODE_APPLICATION) {
-                s_appIconImg = lv_img_create(iconBg);
-                lv_obj_center(s_appIconImg);
-                lv_obj_add_flag(s_appIconImg, LV_OBJ_FLAG_HIDDEN);
-            }
+            lv_obj_t* cardIconLbl = lv_label_create(iconBg);
+            lv_obj_set_style_text_font(cardIconLbl, &lv_font_montserrat_12, LV_PART_MAIN);
+            lv_obj_set_style_text_color(cardIconLbl, accent, LV_PART_MAIN);
+            lv_label_set_text(cardIconLbl, GetModeIcon(mode));
+            lv_obj_center(cardIconLbl);
 
             // Device name
             s_titleLabel = lv_label_create(card);
@@ -1232,9 +1420,21 @@ namespace Display {
         if (strcmp(lv_label_get_text(s_titleLabel), name.c_str()) != 0)
             lv_label_set_text(s_titleLabel, name.c_str());
 
-        // Default badge
-        if (session->data.isDefault) {
+        // Default badge or Media Info
+        if (mode == MODE_APPLICATION && g_MediaInfoValid && g_MediaInfo.title[0] != '\0') {
+            char mediaTxt[64];
+            const char* icon = g_MediaInfo.isPlaying ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE;
+            if (g_MediaInfo.artist[0] != '\0') {
+                snprintf(mediaTxt, sizeof(mediaTxt), "%s %s - %s", icon, g_MediaInfo.artist, g_MediaInfo.title);
+            } else {
+                snprintf(mediaTxt, sizeof(mediaTxt), "%s %s", icon, g_MediaInfo.title);
+            }
+            lv_obj_set_style_text_color(s_subLabel, lv_color_hex(COL_GREEN), LV_PART_MAIN);
+            lv_label_set_long_mode(s_subLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
+            lv_label_set_text(s_subLabel, mediaTxt);
+        } else if (session->data.isDefault) {
             lv_obj_set_style_text_color(s_subLabel, accent, LV_PART_MAIN);
+            lv_label_set_long_mode(s_subLabel, LV_LABEL_LONG_DOT);
             lv_label_set_text(s_subLabel, LV_SYMBOL_OK " DEFAULT");
         } else {
             lv_label_set_text(s_subLabel, "");
