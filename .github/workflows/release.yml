@@ -228,13 +228,28 @@ jobs:
 
           Get-Item $installer | Format-List FullName,Length
 
+      - name: Stage Windows release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "desktop\release" | Out-Null
+
+          Copy-Item `
+            "desktop\dist_packages\VuNMix-Windows-Portable-$env:VERSION.zip" `
+            "desktop\release\VuNMix-Windows-Portable-$env:VERSION.zip" `
+            -Force
+
+          Copy-Item `
+            "desktop\dist_installer\VuNMix-Windows-Setup-$env:VERSION.exe" `
+            "desktop\release\VuNMix-Windows-Setup-$env:VERSION.exe" `
+            -Force
+
+          Get-ChildItem "desktop\release"
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-${{ needs.prepare.outputs.version }}
-          path: |
-            desktop/dist_packages/VuNMix-Windows-Portable-${{ needs.prepare.outputs.version }}.zip
-            desktop/dist_installer/VuNMix-Windows-Setup-${{ needs.prepare.outputs.version }}.exe
+          path: desktop/release/*
           if-no-files-found: error
           retention-days: 14
 
@@ -258,6 +273,19 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
+
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+
+          test -f "VuNMix-Firmware-${VERSION}.bin"
+          test -f "VuNMix-Firmware-Full-${VERSION}.zip"
+          test -f "VuNMix-Windows-Portable-${VERSION}.zip"
+          test -f "VuNMix-Windows-Setup-${VERSION}.exe"
+
+          ls -lah
 
       - name: Generate SHA-256 checksums
         shell: bash
