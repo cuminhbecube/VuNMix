@@ -46,7 +46,10 @@ env.Append(
         ("VUNMIX_VERSION", _cpp_string(VERSION)),
         ("VUNMIX_GIT_SHA", _cpp_string(GIT_SHA)),
         ("VUNMIX_BUILD_DATE", _cpp_string(BUILD_DATE)),
-    ]
+    ],
+    # ESP32/Arduino builds use --gc-sections. Root the metadata symbol so the
+    # linker retains the otherwise unreferenced diagnostic record.
+    LINKFLAGS=["-Wl,--undefined=VUNMIX_BUILD_METADATA"],
 )
 
 
