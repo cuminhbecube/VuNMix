@@ -49,7 +49,6 @@ class ConnectionSettingsDialog(SettingsDialog):
             state="disabled" if self.controller.firmware_updating else "normal",
         )
 
-        # Follow the active COM number when Windows renumbers the same board.
         active_port = getattr(serial_service, "port", "")
         if active_port and hasattr(self, "_com_var"):
             self._com_var.set(active_port)
@@ -63,7 +62,7 @@ class ConnectionSettingsDialog(SettingsDialog):
 
 
 class ConnectionTrayApp(TrayApp):
-    """Tray app with versioned labels and connection-aware settings."""
+    """Tray app with versioned labels, diagnostics and connection state."""
 
     def run(self):
         import pystray
@@ -97,15 +96,18 @@ class ConnectionTrayApp(TrayApp):
                 enabled=False,
             ),
             Menu.SEPARATOR,
-            MenuItem('🎵 Audio Presets', Menu(*preset_items)),
+            MenuItem("🎵 Audio Presets", Menu(*preset_items)),
             Menu.SEPARATOR,
-            MenuItem('Settings', self._on_settings, default=True),
-            MenuItem('Reconnect', self._on_reconnect),
+            MenuItem("Settings", self._on_settings, default=True),
+            MenuItem("Reconnect", self._on_reconnect),
             Menu.SEPARATOR,
-            MenuItem('Exit', self._on_exit),
+            MenuItem("Copy diagnostics", self._on_copy_diagnostics),
+            MenuItem("Open log folder", self._on_open_log_folder),
+            Menu.SEPARATOR,
+            MenuItem("Exit", self._on_exit),
         )
 
-        self._icon = pystray.Icon('VuNMix', icon_image, status_text, menu)
+        self._icon = pystray.Icon("VuNMix", icon_image, status_text, menu)
         self.controller.on_connection_changed = self._on_connection_status
 
         if self.controller._device_connected:
@@ -128,6 +130,27 @@ class ConnectionTrayApp(TrayApp):
                 self._icon.update_menu()
             except Exception as exc:
                 log.warning("Failed to update tray icon state: %s", exc)
+
+    def _on_copy_diagnostics(self, icon, item):
+        try:
+            import win32clipboard
+
+            report = self.controller.diagnostic_report()
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardText(report, win32clipboard.CF_UNICODETEXT)
+            finally:
+                win32clipboard.CloseClipboard()
+            log.info("Diagnostic report copied to clipboard")
+        except Exception:
+            log.exception("Failed to copy diagnostic report")
+
+    def _on_open_log_folder(self, icon, item):
+        try:
+            self.controller.open_log_folder()
+        except Exception:
+            log.exception("Failed to open VuNMix log folder")
 
     def _on_settings(self, icon, item):
         if self._settings_open:
