@@ -101,6 +101,13 @@ class RecordingSerial:
         self.mode_states.append(states)
 
 
+def _init_selection_state(controller):
+    """Mirror selection primitives created by AppController.__init__."""
+    controller._state_lock = threading.RLock()
+    controller._selection_epoch = 0
+    controller._selection_transitioning = False
+
+
 class PreferredSessionTests(unittest.TestCase):
     def test_incompatible_firmware_is_update_only(self):
         controller = AppController.__new__(AppController)
@@ -154,6 +161,7 @@ class PreferredSessionTests(unittest.TestCase):
 
     def test_mode_change_uses_cache_without_blocking_audio_refresh(self):
         controller = AppController.__new__(AppController)
+        _init_selection_state(controller)
         controller.audio = CachedAudio([
             Item(name="First", id=1),
             Item(is_default=True, name="Default input", volume=74, id=2),
@@ -163,6 +171,7 @@ class PreferredSessionTests(unittest.TestCase):
         controller._sessions = [
             SessionData() for _ in range(SessionIndex.INDEX_MAX)
         ]
+        controller._sent_icon_ids = set()
 
         info = SessionInfo(
             mode=DisplayMode.MODE_INPUT,
@@ -182,6 +191,7 @@ class PreferredSessionTests(unittest.TestCase):
 
     def test_health_mode_does_not_push_audio_sessions(self):
         controller = AppController.__new__(AppController)
+        _init_selection_state(controller)
         controller.audio = CachedAudio([Item(name="Speaker", id=1)])
         controller.serial = RecordingSerial()
         controller._session_info = SessionInfo(mode=DisplayMode.MODE_GAME, current=2)
@@ -189,6 +199,7 @@ class PreferredSessionTests(unittest.TestCase):
         controller._sessions = [
             SessionData() for _ in range(SessionIndex.INDEX_MAX)
         ]
+        controller._sent_icon_ids = set()
 
         controller._handle_session_info_from_hw(
             SessionInfo(mode=DisplayMode.MODE_HEALTH, current=3, sessions=[2, 3, 4])
