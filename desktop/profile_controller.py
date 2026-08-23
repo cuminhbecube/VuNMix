@@ -52,7 +52,7 @@ class ProfileDebouncer:
 
 
 class ProfileAppController(DiagnosticAppController):
-    """Adds persistent profiles, hardware selection and context auto-switch."""
+    """Adds persistent profiles, explicit hardware selection and context auto-switch."""
 
     def __init__(self, config):
         super().__init__(config)
@@ -90,6 +90,10 @@ class ProfileAppController(DiagnosticAppController):
     def auto_profile_switching(self) -> bool:
         return self.profile_service.auto_switch_enabled
 
+    @property
+    def hardware_mode_profile_switching(self) -> bool:
+        return self.profile_service.hardware_mode_switch_enabled
+
     def set_auto_profile_switching(self, enabled: bool) -> None:
         self.profile_service.set_auto_switch_enabled(enabled)
         # Clear pending trigger so reenabling always observes a fresh stable
@@ -100,6 +104,18 @@ class ProfileAppController(DiagnosticAppController):
     def toggle_auto_profile_switching(self) -> bool:
         enabled = not self.auto_profile_switching
         self.set_auto_profile_switching(enabled)
+        return enabled
+
+    def set_hardware_mode_profile_switching(self, enabled: bool) -> None:
+        self.profile_service.set_hardware_mode_switch_enabled(enabled)
+        log.info(
+            "Hardware-tab audio profile switching: %s",
+            "on" if enabled else "off",
+        )
+
+    def toggle_hardware_mode_profile_switching(self) -> bool:
+        enabled = not self.hardware_mode_profile_switching
+        self.set_hardware_mode_profile_switching(enabled)
         return enabled
 
     def apply_profile(self, name: str, *, source: str = "manual") -> bool:
@@ -129,6 +145,9 @@ class ProfileAppController(DiagnosticAppController):
             info = SessionInfo.unpack(payload)
             super()._on_hw_message(cmd, payload)
             if int(info.mode) != previous_mode:
+                # APP/GAME are navigation tabs. profile_for_hardware_mode()
+                # returns None unless the separate safety gate was explicitly
+                # enabled by the user.
                 profile = self.profile_service.profile_for_hardware_mode(int(info.mode))
                 if profile and profile != self.active_profile:
                     self.apply_profile(profile, source="hardware-mode")
