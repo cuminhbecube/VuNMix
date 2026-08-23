@@ -8,6 +8,8 @@ import time
 from contextlib import contextmanager
 from typing import Callable, Optional
 
+from device_discovery import load_device_identity, resolve_port_name
+
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +103,20 @@ def _run_esptool(esptool_main, args) -> None:
             raise RuntimeError(f"esptool stopped with code {exc.code}") from exc
 
 
+def _resolve_flash_port(preferred_port: str) -> str:
+    """Resolve the device's current COM port before entering bootloader."""
+    identity = load_device_identity()
+    resolved = resolve_port_name(preferred_port, identity=identity)
+    if not resolved:
+        raise RuntimeError(
+            "VuNMix USB device was not found. Reconnect the device or select "
+            "its current COM port before updating firmware."
+        )
+    if resolved != preferred_port:
+        log.info("VuNMix COM changed: %s -> %s", preferred_port, resolved)
+    return resolved
+
+
 def flash_firmware(
     port: str,
     path: str,
@@ -108,22 +124,24 @@ def flash_firmware(
 ) -> None:
     """Flash one ESP32-S3 application image at APP_OFFSET.
 
-    The normal path uses esptool's fast RAM flasher stub. If a packaged build
-    somehow does not contain the stub data, retry through the ESP32-S3 ROM
-    bootloader with --no-stub instead of aborting the firmware update.
+    The current COM port is re-resolved from the remembered USB identity before
+    esptool starts. The normal path uses esptool's fast RAM flasher stub. If a
+    packaged build somehow does not contain the stub data, retry through the
+    ESP32-S3 ROM bootloader with --no-stub instead of aborting the update.
     """
     firmware = validate_firmware(path)
+    flash_port = _resolve_flash_port(port)
 
     from esptool import main as esptool_main
 
     if progress:
-        progress(0.0, "Writing firmware image...")
+        progress(0.0, f"Writing firmware image on {flash_port}...")
 
     args = [
         "--chip",
         "esp32s3",
         "--port",
-        port,
+        flash_port,
         "--baud",
         "115200",
         "--before",
