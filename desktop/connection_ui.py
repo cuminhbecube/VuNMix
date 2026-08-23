@@ -67,7 +67,7 @@ class ConnectionSettingsDialog(SettingsDialog):
 
 
 class ConnectionTrayApp(TrayApp):
-    """Tray app with connection, profiles, media, diagnostics and OBS controls."""
+    """Tray app with profiles, routing, media, diagnostics and OBS controls."""
 
     def run(self):
         import pystray
@@ -118,6 +118,38 @@ class ConnectionTrayApp(TrayApp):
                 enabled=lambda item: hasattr(self.controller, "cycle_profile"),
             ),
         ])
+
+        automation_menu = Menu(
+            MenuItem(
+                lambda item: self._routing_status_label(),
+                None,
+                enabled=False,
+            ),
+            MenuItem(
+                "Application routing",
+                self._on_toggle_routing,
+                checked=lambda item: bool(getattr(self.controller, "routing_enabled", False)),
+                enabled=lambda item: bool(getattr(self.controller, "routing_supported", False)),
+            ),
+            Menu.SEPARATOR,
+            MenuItem(
+                lambda item: self._ducking_status_label(),
+                None,
+                enabled=False,
+            ),
+            MenuItem(
+                "Audio ducking",
+                self._on_toggle_ducking,
+                checked=lambda item: bool(getattr(self.controller, "ducking_enabled", False)),
+                enabled=lambda item: hasattr(self.controller, "toggle_ducking"),
+            ),
+            Menu.SEPARATOR,
+            MenuItem(
+                "Open automation rules",
+                self._on_open_audio_automation,
+                enabled=lambda item: hasattr(self.controller, "open_audio_automation_config"),
+            ),
+        )
 
         media_menu = Menu(
             MenuItem(lambda item: self._media_track_label(), None, enabled=False),
@@ -204,6 +236,7 @@ class ConnectionTrayApp(TrayApp):
             ),
             Menu.SEPARATOR,
             MenuItem("🎵 Audio Profiles", Menu(*profile_items)),
+            MenuItem("🎚 Audio Automation", automation_menu),
             MenuItem("⏯ Media", media_menu),
             MenuItem("🎥 OBS Studio", obs_menu),
             Menu.SEPARATOR,
@@ -224,6 +257,36 @@ class ConnectionTrayApp(TrayApp):
             self._on_connection_status(True)
 
         self._icon.run()
+
+    def _routing_status_label(self):
+        status = getattr(self.controller, "routing_status", None)
+        return status() if status else "Routing unavailable"
+
+    def _ducking_status_label(self):
+        status = getattr(self.controller, "ducking_status", None)
+        return status() if status else "Ducking unavailable"
+
+    def _on_toggle_routing(self, icon, item):
+        try:
+            self.controller.toggle_routing()
+            if self._icon is not None:
+                self._icon.update_menu()
+        except Exception:
+            log.exception("Failed to toggle application routing")
+
+    def _on_toggle_ducking(self, icon, item):
+        try:
+            self.controller.toggle_ducking()
+            if self._icon is not None:
+                self._icon.update_menu()
+        except Exception:
+            log.exception("Failed to toggle audio ducking")
+
+    def _on_open_audio_automation(self, icon, item):
+        try:
+            self.controller.open_audio_automation_config()
+        except Exception:
+            log.exception("Failed to open audio automation rules")
 
     @staticmethod
     def _format_time(seconds: int) -> str:
