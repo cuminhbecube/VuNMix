@@ -3,7 +3,6 @@ import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
-from unittest import mock
 
 
 DESKTOP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -74,6 +73,17 @@ class AudioProfileTests(unittest.TestCase):
             self.assertIn("game", saved["triggers"]["focused_apps"])
             self.assertTrue(reloaded.delete_profile("Custom"))
             self.assertIsNone(reloaded.get_profile("Custom"))
+            after_delete = self._service(directory)
+            self.assertIsNone(after_delete.get_profile("Custom"))
+
+    def test_default_profile_deletion_persists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = self._service(directory)
+            self.assertIn("Gaming", service.profile_names())
+            self.assertTrue(service.delete_profile("Gaming"))
+            self.assertNotIn("Gaming", service.profile_names())
+            reloaded = self._service(directory)
+            self.assertNotIn("Gaming", reloaded.profile_names())
 
     def test_capture_and_apply_restores_volume_and_mute(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -114,10 +124,6 @@ class AudioProfileTests(unittest.TestCase):
                 "Focus",
                 {"triggers": {"focused_apps": ["editor"]}},
             )
-            service.save_profile(
-                "OBS",
-                {"triggers": {"obs_streaming": True}},
-            )
 
             self.assertEqual(
                 service.match_context(running_apps=["tool.exe"]),
@@ -136,7 +142,7 @@ class AudioProfileTests(unittest.TestCase):
                     running_apps=["tool.exe"],
                     obs_streaming=True,
                 ),
-                "OBS",
+                "Streaming",
             )
 
     def test_auto_switch_can_be_disabled_and_hardware_mode_is_mapped(self):
@@ -160,7 +166,7 @@ class AudioProfileTests(unittest.TestCase):
         debouncer.mark_applied("Work", 1.6)
         self.assertIsNone(debouncer.observe("Work", 10.0))
         self.assertIsNone(debouncer.observe("Gaming", 2.0))
-        self.assertIsNone(debouncer.observe("Gaming", 3.1))  # min switch interval
+        self.assertIsNone(debouncer.observe("Gaming", 3.1))
         self.assertEqual(debouncer.observe("Gaming", 4.7), "Gaming")
 
 
