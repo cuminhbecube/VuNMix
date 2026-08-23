@@ -27,19 +27,22 @@ class FirmwareUpdaterTests(unittest.TestCase):
     def test_rejects_non_bin_and_invalid_images(self):
         with tempfile.TemporaryDirectory() as directory:
             text = pathlib.Path(directory) / "firmware.txt"
-            text.write_bytes(b"\\xE9" + b"\\0" * 4095)
+            text.write_bytes(b"\xE9" + b"\0" * 4095)
+
             with self.assertRaises(FirmwareValidationError):
                 validate_firmware(str(text))
 
             invalid = pathlib.Path(directory) / "firmware.bin"
-            invalid.write_bytes(b"\\0" * 4096)
+            invalid.write_bytes(b"\0" * 4096)
+
             with self.assertRaises(FirmwareValidationError):
                 validate_firmware(str(invalid))
 
     def test_flash_writes_image_in_one_esptool_transaction(self):
         with tempfile.TemporaryDirectory() as directory:
             firmware = pathlib.Path(directory) / "firmware.bin"
-            firmware.write_bytes(b"\\xE9" * (0x40000 * 2 + 17))
+            firmware.write_bytes(b"\xE9" * (0x40000 * 2 + 17))
+
             calls = []
             progress = []
 
@@ -48,7 +51,10 @@ class FirmwareUpdaterTests(unittest.TestCase):
                     "firmware_updater.validate_firmware",
                     return_value=firmware,
                 ),
-                mock.patch("esptool.main", side_effect=lambda args: calls.append(args)),
+                mock.patch(
+                    "esptool.main",
+                    side_effect=lambda args: calls.append(list(args)),
+                ),
                 mock.patch("firmware_updater.time.sleep"),
             ):
                 flash_firmware(
@@ -58,6 +64,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(calls), 1)
+            self.assertNotIn("--no-stub", calls[0])
             self.assertIn("0x10000", calls[0])
             self.assertIn(str(firmware), calls[0])
             self.assertEqual(progress[-1][0], 1.0)
@@ -65,7 +72,8 @@ class FirmwareUpdaterTests(unittest.TestCase):
     def test_flash_supports_windowed_pyinstaller_without_stdio(self):
         with tempfile.TemporaryDirectory() as directory:
             firmware = pathlib.Path(directory) / "firmware.bin"
-            firmware.write_bytes(b"\\xE9" * 8192)
+            firmware.write_bytes(b"\xE9" * 8192)
+
             observed = {}
 
             def fake_esptool_main(_args):
@@ -89,7 +97,10 @@ class FirmwareUpdaterTests(unittest.TestCase):
                         "firmware_updater.validate_firmware",
                         return_value=firmware,
                     ),
-                    mock.patch("esptool.main", side_effect=fake_esptool_main),
+                    mock.patch(
+                        "esptool.main",
+                        side_effect=fake_esptool_main,
+                    ),
                     mock.patch("firmware_updater.time.sleep"),
                 ):
                     flash_firmware("COM_TEST", str(firmware))
@@ -97,13 +108,51 @@ class FirmwareUpdaterTests(unittest.TestCase):
                 self.assertIsNotNone(observed["stdin"])
                 self.assertIsNotNone(observed["stdout"])
                 self.assertIsNotNone(observed["stderr"])
+
                 self.assertIsNone(sys.stdin)
                 self.assertIsNone(sys.stdout)
                 self.assertIsNone(sys.stderr)
+
             finally:
                 sys.stdin = original_stdin
                 sys.stdout = original_stdout
                 sys.stderr = original_stderr
+
+    def test_missing_stub_retries_with_no_stub(self):
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = pathlib.Path(directory) / "firmware.bin"
+            firmware.write_bytes(b"\xE9" * 8192)
+
+            calls = []
+
+            def fake_esptool_main(args):
+                calls.append(list(args))
+
+                if len(calls) == 1:
+                    raise RuntimeError(
+                        "Flasher stub data is missing for ESP32-S3."
+                    )
+
+            with (
+                mock.patch(
+                    "firmware_updater.validate_firmware",
+                    return_value=firmware,
+                ),
+                mock.patch(
+                    "esptool.main",
+                    side_effect=fake_esptool_main,
+                ),
+                mock.patch("firmware_updater.time.sleep"),
+            ):
+                flash_firmware("COM_TEST", str(firmware))
+
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("--no-stub", calls[0])
+            self.assertIn("--no-stub", calls[1])
+            self.assertLess(
+                calls[1].index("--no-stub"),
+                calls[1].index("write_flash"),
+            )
 
 
 if __name__ == "__main__":
