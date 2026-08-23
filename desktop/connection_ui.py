@@ -8,6 +8,11 @@ import logging
 
 from build_info import APP_VERSION
 from gui import SettingsDialog, TrayApp, create_tray_icon
+from media_service import (
+    MEDIA_ACTION_NEXT,
+    MEDIA_ACTION_PLAY_PAUSE,
+    MEDIA_ACTION_PREVIOUS,
+)
 
 
 log = logging.getLogger(__name__)
@@ -62,7 +67,7 @@ class ConnectionSettingsDialog(SettingsDialog):
 
 
 class ConnectionTrayApp(TrayApp):
-    """Tray app with connection, profiles, diagnostics and OBS controls."""
+    """Tray app with connection, profiles, media, diagnostics and OBS controls."""
 
     def run(self):
         import pystray
@@ -113,6 +118,23 @@ class ConnectionTrayApp(TrayApp):
                 enabled=lambda item: hasattr(self.controller, "cycle_profile"),
             ),
         ])
+
+        media_menu = Menu(
+            MenuItem(lambda item: self._media_track_label(), None, enabled=False),
+            MenuItem(lambda item: self._media_timeline_label(), None, enabled=False),
+            Menu.SEPARATOR,
+            MenuItem("Previous", self._on_media_previous),
+            MenuItem(
+                lambda item: (
+                    "Pause" if self.controller.media_service.cached_snapshot().info.is_playing
+                    else "Play"
+                ),
+                self._on_media_play_pause,
+            ),
+            MenuItem("Next", self._on_media_next),
+            Menu.SEPARATOR,
+            MenuItem(lambda item: self._media_artwork_label(), None, enabled=False),
+        )
 
         obs = self.controller.obs_service
         obs_menu = Menu(
@@ -182,6 +204,7 @@ class ConnectionTrayApp(TrayApp):
             ),
             Menu.SEPARATOR,
             MenuItem("🎵 Audio Profiles", Menu(*profile_items)),
+            MenuItem("⏯ Media", media_menu),
             MenuItem("🎥 OBS Studio", obs_menu),
             Menu.SEPARATOR,
             MenuItem("Settings", self._on_settings, default=True),
@@ -201,6 +224,73 @@ class ConnectionTrayApp(TrayApp):
             self._on_connection_status(True)
 
         self._icon.run()
+
+    @staticmethod
+    def _format_time(seconds: int) -> str:
+        seconds = max(0, int(seconds or 0))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+
+    def _media_track_label(self):
+        snapshot = self.controller.media_service.cached_snapshot()
+        info = snapshot.info
+        if not info.title and not info.artist:
+            return "Now playing: unavailable"
+        if info.artist and info.title:
+            return f"{info.artist} — {info.title}"
+        return info.title or info.artist
+
+    def _media_timeline_label(self):
+        info = self.controller.media_service.cached_snapshot().info
+        if not info.duration_sec:
+            return "Timeline: --:--"
+        state = "▶" if info.is_playing else "⏸"
+        return (
+            f"{state} {self._format_time(info.position_sec)} / "
+            f"{self._format_time(info.duration_sec)}"
+        )
+
+    def _media_artwork_label(self):
+        status = getattr(self.controller, "media_artwork_status", None)
+        return status() if status else "artwork: disabled"
+
+    def _run_media_action(self, label, action):
+        def worker():
+            try:
+                handled = self.controller.media_service.execute_control(action)
+                if handled:
+                    self.controller.media_service.get_current_snapshot(force=True)
+                    log.info("Media action completed: %s", label)
+                else:
+                    log.warning("Media action was not handled: %s", label)
+            except Exception:
+                log.exception("Media action failed: %s", label)
+            finally:
+                if self._icon is not None:
+                    try:
+                        self._icon.update_menu()
+                    except Exception:
+                        pass
+
+        import threading
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name=f"MediaTray-{label}",
+        ).start()
+
+    def _on_media_previous(self, icon, item):
+        self._run_media_action("previous", MEDIA_ACTION_PREVIOUS)
+
+    def _on_media_play_pause(self, icon, item):
+        self._run_media_action("play-pause", MEDIA_ACTION_PLAY_PAUSE)
+
+    def _on_media_next(self, icon, item):
+        self._run_media_action("next", MEDIA_ACTION_NEXT)
 
     def _on_toggle_auto_profiles(self, icon, item):
         try:

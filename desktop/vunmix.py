@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_info import APP_VERSION, BUILD_DATE, GIT_SHA, PROTOCOL_VERSION, build_summary
 from config import AppConfig
-from profile_controller import ProfileAppController
+from media_controller import MediaAppController
 from diagnostics import MAIN_LOG_FILE, configure_logging
 from connection_ui import ConnectionTrayApp
 
@@ -76,7 +76,7 @@ def main():
     log.info("COM Port preference: %s", config.com_port)
     log.info("Sync Interval: %sms", config.update_interval_ms)
 
-    controller = ProfileAppController(config)
+    controller = MediaAppController(config)
     controller.start()
 
     tray = ConnectionTrayApp(config, controller)
