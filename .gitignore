@@ -11,6 +11,7 @@ maxmix-software/
 desktop/build*/
 desktop/dist*/
 desktop/setup_output/
+desktop/release/
 desktop/__pycache__/
 desktop/**/__pycache__/
 desktop/*.pyc
