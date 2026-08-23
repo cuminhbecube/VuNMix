@@ -14,11 +14,9 @@ from protocol import DisplayMode
 
 log = logging.getLogger("vunmix.media_controller")
 
-# App audio-session IDs are 7-bit. 0xFF is therefore safe as a transport-only
-# artwork cache ID when the current SMTC source cannot be matched to an audio
-# session. If it can be matched, the album cover deliberately replaces that
-# app's 16x16 process icon while the track is active.
-MEDIA_ARTWORK_FALLBACK_ID = 0xFF
+# Album art reuses the existing APP_ICON transport and therefore only targets
+# an actual 7-bit application-session ID. Unknown SMTC sources are skipped;
+# metadata/timeline/control continue to work without artwork in that case.
 ARTWORK_SEND_MIN_INTERVAL = 1.5
 
 
@@ -65,13 +63,17 @@ class MediaAppController(ProfileAppController):
         snapshot = self.media_service.cached_snapshot()
         if not snapshot.artwork_rgb565:
             return "artwork: none"
-        target = self._last_artwork_target or MEDIA_ARTWORK_FALLBACK_ID
-        return f"artwork: 16x16 RGB565, target={target}, sends={self._artwork_send_count}"
+        if not self._last_artwork_target:
+            return "artwork: cached, source not mapped"
+        return (
+            f"artwork: 16x16 RGB565, target={self._last_artwork_target}, "
+            f"sends={self._artwork_send_count}"
+        )
 
     def _match_media_app_id(self, source_app: str) -> int:
         source = _normalise_source(source_app)
         if not source:
-            return MEDIA_ARTWORK_FALLBACK_ID
+            return 0
 
         items = self.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
         best_id = 0
@@ -88,13 +90,14 @@ class MediaAppController(ProfileAppController):
                 score = 80
             elif item_name in process_path and item_name in source:
                 score = 60
-            if score > best_score and int(getattr(item, "id", 0) or 0) > 0:
+            item_id = int(getattr(item, "id", 0) or 0)
+            if score > best_score and 0 < item_id <= 127:
                 best_score = score
-                best_id = int(item.id)
-        return best_id or MEDIA_ARTWORK_FALLBACK_ID
+                best_id = item_id
+        return best_id
 
     def _restore_process_icon(self, app_id: int) -> None:
-        if app_id <= 0 or app_id == MEDIA_ARTWORK_FALLBACK_ID:
+        if app_id <= 0:
             return
         try:
             items = self.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
@@ -116,6 +119,9 @@ class MediaAppController(ProfileAppController):
             return False
 
         target = self._match_media_app_id(snapshot.source_app)
+        if target <= 0:
+            return False
+
         pair_unchanged = (
             snapshot.artwork_key == self._last_artwork_key
             and target == self._last_artwork_target
@@ -127,12 +133,12 @@ class MediaAppController(ProfileAppController):
         if not force and now - self._last_artwork_send_at < ARTWORK_SEND_MIN_INTERVAL:
             return False
 
-        if self._last_artwork_target not in (0, target, MEDIA_ARTWORK_FALLBACK_ID):
+        if self._last_artwork_target not in (0, target):
             self._restore_process_icon(self._last_artwork_target)
 
-        # SerialService.send_app_icon already limits chunks to 60 bytes and
-        # serializes the complete metadata+chunk transaction. 512 bytes means
-        # only nine chunk frames per new cover.
+        # SerialService.send_app_icon limits chunks to 60 bytes and serializes
+        # the complete metadata+chunk transaction. 512 bytes means nine chunk
+        # frames, and only a new artwork digest/target reaches this path.
         if not self.serial.send_app_icon(target, snapshot.artwork_rgb565, width=16, height=16):
             return False
 
@@ -140,10 +146,9 @@ class MediaAppController(ProfileAppController):
         self._last_artwork_target = target
         self._last_artwork_send_at = now
         self._artwork_send_count += 1
-        if target != MEDIA_ARTWORK_FALLBACK_ID:
-            # Prevent the normal app-icon sender from overwriting the fresh
-            # album cover on the next periodic session refresh.
-            self._sent_icon_ids.add(target)
+        # Prevent the normal app-icon sender from overwriting the fresh album
+        # cover on the next periodic session refresh.
+        self._sent_icon_ids.add(target)
         log.info(
             "Sent media artwork target=%d source=%s bytes=%d key=%s",
             target,
