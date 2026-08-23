@@ -1,3 +1,4 @@
+import json
 import pathlib
 import sys
 import tempfile
@@ -145,13 +146,82 @@ class AudioProfileTests(unittest.TestCase):
                 "Streaming",
             )
 
-    def test_auto_switch_can_be_disabled_and_hardware_mode_is_mapped(self):
+    def test_default_profiles_do_not_bind_app_or_game_tabs(self):
         with tempfile.TemporaryDirectory() as directory:
             service = self._service(directory)
+            self.assertFalse(service.hardware_mode_switch_enabled)
+            self.assertEqual(
+                service.get_profile("Gaming")["triggers"]["hardware_modes"],
+                [],
+            )
+            self.assertEqual(
+                service.get_profile("Work")["triggers"]["hardware_modes"],
+                [],
+            )
+            self.assertIsNone(service.profile_for_hardware_mode(DisplayMode.MODE_GAME))
+            self.assertIsNone(
+                service.profile_for_hardware_mode(DisplayMode.MODE_APPLICATION)
+            )
+
+    def test_hardware_mode_profile_mapping_requires_explicit_opt_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = self._service(directory)
+            service.save_profile(
+                "GameTab",
+                {
+                    "output": {"volume": 73, "muted": False},
+                    "triggers": {"hardware_modes": [DisplayMode.MODE_GAME]},
+                },
+            )
+
+            self.assertIsNone(service.profile_for_hardware_mode(DisplayMode.MODE_GAME))
+            service.set_hardware_mode_switch_enabled(True)
             self.assertEqual(
                 service.profile_for_hardware_mode(DisplayMode.MODE_GAME),
-                "Gaming",
+                "GameTab",
             )
+
+            reloaded = self._service(directory)
+            self.assertTrue(reloaded.hardware_mode_switch_enabled)
+            self.assertEqual(
+                reloaded.profile_for_hardware_mode(DisplayMode.MODE_GAME),
+                "GameTab",
+            )
+
+    def test_legacy_v1_hardware_mapping_is_inert_after_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "profiles.json"
+            payload = {
+                "version": 1,
+                "auto_switch_enabled": True,
+                "active_profile": "",
+                "profiles": {
+                    "LegacyGaming": {
+                        "output": {"volume": 80, "muted": False},
+                        "mic": {"volume": 85, "muted": False},
+                        "apps": {},
+                        "triggers": {
+                            "focused_apps": [],
+                            "running_apps": [],
+                            "obs_streaming": False,
+                            "hardware_modes": [int(DisplayMode.MODE_GAME)],
+                        },
+                    }
+                },
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            service = self._service(directory)
+            self.assertFalse(service.hardware_mode_switch_enabled)
+            self.assertEqual(
+                service.get_profile("LegacyGaming")["triggers"]["hardware_modes"],
+                [int(DisplayMode.MODE_GAME)],
+            )
+            self.assertIsNone(service.profile_for_hardware_mode(DisplayMode.MODE_GAME))
+
+    def test_context_auto_switch_can_be_disabled_independently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = self._service(directory)
             service.set_auto_switch_enabled(False)
             self.assertIsNone(
                 service.match_context(focused_app="steam.exe", obs_streaming=True)
