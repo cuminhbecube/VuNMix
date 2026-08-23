@@ -10,8 +10,22 @@
 //********************************************************
 // *** DEFINES
 //********************************************************
+#ifndef VUNMIX_VERSION
+    #define VUNMIX_VERSION "dev"
+#endif
+
+#ifndef VUNMIX_GIT_SHA
+    #define VUNMIX_GIT_SHA "unknown"
+#endif
+
+#ifndef VUNMIX_BUILD_DATE
+    #define VUNMIX_BUILD_DATE "development"
+#endif
+
+// Keep the legacy VERSION name used by the TEST handshake, but source it from
+// the injected build metadata instead of a hard-coded release string.
 #ifndef VERSION
-    #define VERSION "v0.4-VU"
+    #define VERSION VUNMIX_VERSION
 #endif
 
 // Increment only for an incompatible USB-CDC protocol change. The desktop
