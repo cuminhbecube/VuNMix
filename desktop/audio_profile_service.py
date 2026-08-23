@@ -24,7 +24,7 @@ def _mix(volume: int, muted: bool = False) -> Dict[str, Any]:
 
 
 # Built-in profiles are examples/manual presets. Hardware tabs are navigation,
-# not automation triggers, so the defaults must never mutate Windows audio just
+# not automation triggers, so defaults must never mutate Windows audio simply
 # because the user browsed to APP or GAME.
 DEFAULT_PROFILES: Dict[str, Dict[str, Any]] = {
     "Gaming": {
@@ -128,17 +128,17 @@ class AudioProfileService:
         self._lock = threading.RLock()
         self.profiles: Dict[str, Dict[str, Any]] = {}
         self.active_profile: str = ""
-        self.auto_switch_enabled = True
-        # Separate safety gate: changing a hardware display tab is read-only by
-        # default. Existing v1 files do not contain this key, so they migrate to
-        # OFF automatically even if they still contain legacy hardware_modes.
+        # Any automation capable of changing Output/master volume is opt-in.
+        # Manual tray/profile selection remains available regardless of these
+        # gates. This prevents a new install from silently changing audio.
+        self.auto_switch_enabled = False
         self.hardware_mode_switch_enabled = False
         self.load()
 
     def load(self) -> None:
         with self._lock:
             profiles = copy.deepcopy(DEFAULT_PROFILES)
-            auto_enabled = True
+            auto_enabled = False
             hardware_mode_enabled = False
             active = ""
             try:
@@ -155,13 +155,28 @@ class AudioProfileService:
                             for name, data in saved.items()
                             if str(name).strip() and isinstance(data, dict)
                         }
-                    auto_enabled = bool(payload.get("auto_switch_enabled", True))
-                    # v1 did not have this gate. Missing == False is deliberate
-                    # so an upgrade cannot keep changing master volume on tab
-                    # navigation without an explicit new opt-in.
-                    hardware_mode_enabled = bool(
-                        payload.get("hardware_mode_switch_enabled", False)
-                    )
+
+                    try:
+                        stored_version = int(payload.get("version", 1))
+                    except (TypeError, ValueError):
+                        stored_version = 1
+
+                    # Safety migration: v1 enabled automatic profile switching
+                    # by default and also bound APP/GAME hardware modes. Because
+                    # profiles can change master volume, old automatic consent
+                    # is not carried into the safer v2 behavior. The user can
+                    # explicitly re-enable Automatic switching from the tray.
+                    if stored_version >= PROFILE_VERSION:
+                        auto_enabled = bool(
+                            payload.get("auto_switch_enabled", False)
+                        )
+                        hardware_mode_enabled = bool(
+                            payload.get("hardware_mode_switch_enabled", False)
+                        )
+                    else:
+                        auto_enabled = False
+                        hardware_mode_enabled = False
+
                     active = str(payload.get("active_profile", "") or "")
             except FileNotFoundError:
                 pass
