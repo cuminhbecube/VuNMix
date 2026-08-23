@@ -1,6 +1,6 @@
 """USB/serial discovery helpers for VuNMix ESP32-S3 devices.
 
-A COM number is only a temporary Windows address.  This module remembers a
+A COM number is only a temporary Windows address. This module remembers a
 stable USB identity and resolves the current COM port whenever the device
 re-enumerates after reset, firmware update, sleep, or reconnect.
 """
@@ -78,9 +78,8 @@ class DeviceIdentity:
 
     @property
     def is_useful(self) -> bool:
-        # VID/PID alone is useful only for finding a unique VuNMix.  A serial
-        # number or USB topology location lets us distinguish two identical
-        # boards and survive COM renumbering.
+        # VID/PID alone can still identify a single attached board. Serial or
+        # USB topology location is stronger and distinguishes identical boards.
         return any(
             (
                 self.serial_number,
@@ -148,7 +147,8 @@ def select_device_port(
       1. Persisted USB identity (serial/location/VID+PID).
       2. Explicit preferred COM when it is a known VuNMix USB device.
       3. A single known ESP32-S3 VuNMix candidate.
-      4. Explicit preferred COM as a manual fallback.
+      4. Explicit preferred COM as a manual fallback, but only when no
+         persisted identity exists.
 
     If two equally plausible ESP32-S3 devices are present and there is no
     identity/preference to disambiguate them, return None rather than opening
@@ -156,6 +156,7 @@ def select_device_port(
     """
     ports = list(ports)
     preferred = (preferred_port or "").strip().lower()
+    had_identity = identity is not None
 
     if identity is not None:
         scored = [(_identity_score(port, identity), port) for port in ports]
@@ -182,8 +183,10 @@ def select_device_port(
         return None
 
     # Preserve explicit/manual COM support for USB-UART adapters and older
-    # hardware. The protocol TEST handshake still validates that it is VuNMix.
-    if preferred:
+    # hardware only before a stable identity has been learned. If an identity
+    # exists but does not match, opening the old COM could target an unrelated
+    # device that inherited the number after Windows re-enumeration.
+    if preferred and not had_identity:
         for port in ports:
             if str(getattr(port, "device", "")).lower() == preferred:
                 return port
