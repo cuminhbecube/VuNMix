@@ -25,13 +25,38 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("def _on_hw_message", source)
         self.assertNotIn("class PowerMonitor", source)
 
-    def test_display_cpp_is_thin_composition_root(self):
-        source = (REPO_DIR / "src" / "Display.cpp").read_text(encoding="utf-8")
-        implementation = REPO_DIR / "src" / "ui" / "DisplayScreens.inc"
-        self.assertLess(len(source.splitlines()), 20)
-        self.assertIn('ui/DisplayScreens.inc', source)
-        self.assertTrue(implementation.exists())
-        self.assertGreater(implementation.stat().st_size, 50_000)
+    def test_display_cpp_and_ui_assembler_are_thin(self):
+        display_cpp = (REPO_DIR / "src" / "Display.cpp").read_text(encoding="utf-8")
+        wrapper_path = REPO_DIR / "src" / "ui" / "DisplayScreens.inc"
+        wrapper = wrapper_path.read_text(encoding="utf-8")
+        self.assertLess(len(display_cpp.splitlines()), 20)
+        self.assertIn('ui/DisplayScreens.inc', display_cpp)
+        self.assertLess(len(wrapper.splitlines()), 30)
+
+        module_names = [
+            "DisplayCoreState.inc",
+            "DisplayThemeShell.inc",
+            "DisplayShellLifecycle.inc",
+            "DisplayStandalone.inc",
+            "DisplayHealth.inc",
+            "DisplayClockSelect.inc",
+            "DisplayMixerMedia.inc",
+            "DisplayGameLifecycle.inc",
+        ]
+        module_dir = REPO_DIR / "src" / "ui" / "modules"
+        module_paths = [module_dir / name for name in module_names]
+
+        for name, path in zip(module_names, module_paths):
+            self.assertIn(f'modules/{name}', wrapper)
+            self.assertTrue(path.exists(), name)
+            # Prevent a future change from simply growing another 1,600-line
+            # display monolith under a different filename.
+            self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 240)
+
+        self.assertGreater(sum(path.stat().st_size for path in module_paths), 50_000)
+
+        include_positions = [wrapper.index(f'modules/{name}') for name in module_names]
+        self.assertEqual(include_positions, sorted(include_positions))
 
     def test_protocol_v1_wire_ids_are_unchanged(self):
         self.assertEqual(PROTOCOL_VERSION, 1)

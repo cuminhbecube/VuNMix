@@ -27,28 +27,35 @@ more responsibilities back to `app_controller.py`.
 
 ## Firmware display layers
 
-`src/Display.cpp` is now a tiny display composition root. The current LVGL
-implementation lives under `src/ui/DisplayScreens.inc` and is textually included
-into the same translation unit.
+`src/Display.cpp` is a tiny display composition root. It includes
+`src/ui/DisplayScreens.inc`, which is itself only an ordered assembler for
+focused UI modules under `src/ui/modules`:
 
-The include-based split is deliberate for v0.7: the legacy display code has a
-large amount of file-local LVGL widget/cache state. Moving that state across C++
-translation units in the same release would change initialization/lifetime
-semantics and create unnecessary UI regression risk. Keeping one translation
-unit preserves behavior while moving the screen implementation out of the
-public display entry point.
+- `DisplayCoreState.inc` — TFT/LVGL initialization, design tokens and shared
+  widget/cache state;
+- `DisplayThemeShell.inc` — theme helpers, mode icons/colors, glass-panel helper
+  and persistent navigation shell construction;
+- `DisplayShellLifecycle.inc` — shell updates/reset, meter update and app-icon
+  receive/cache lifecycle;
+- `DisplayStandalone.inc` — splash, input-test and version/info screens;
+- `DisplayHealth.inc` — PC/device telemetry dashboard;
+- `DisplayClockSelect.inc` — standby clock and output/input/app selection screen;
+- `DisplayMixerMedia.inc` — volume edit, application media metadata and game
+  selection/mixer construction;
+- `DisplayGameLifecycle.inc` — game fader completion plus display timer/sleep
+  lifecycle.
 
-The implementation is organized conceptually into these screen families:
+The modules are textually included in a fixed order into **one C++ translation
+unit**. This is deliberate for v0.7: the legacy display implementation has a
+large amount of file-local LVGL widget/cache state. Crossing translation-unit
+boundaries at the same time as the structural split would change static
+initialization/lifetime semantics and increase UI regression risk. The ordered
+module split gives each screen family a clear maintenance boundary while
+preserving the exact runtime ownership model.
 
-- shell/theme — colors, nav shell, shared glass-panel helpers;
-- standalone — splash, input-test, info and clock screens;
-- mixer — output/input/application/game selection and editing;
-- health — PC/device telemetry dashboard;
-- media/app visuals — app-icon cache and media metadata presentation hooks.
-
-A later UI-only change can split those regions into independent translation
-units behind an explicit `DisplayContext`; protocol and desktop code do not need
-to change for that work.
+If a later UI-only change introduces an explicit `DisplayContext`, these modules
+can become independent `.cpp` files without requiring protocol or desktop
+changes.
 
 ## Protocol compatibility boundary
 
@@ -61,6 +68,6 @@ Protocol v1 remains the compatibility boundary for v0.7:
 - packed payload sizes are unchanged.
 
 `desktop/tests/test_architecture_boundaries.py` locks the controller/display
-size boundaries and the protocol-v1 command map so future refactors cannot
-silently collapse the architecture back into monolithic files or renumber the
-wire protocol.
+size boundaries, requires the ordered firmware UI module list, prevents any one
+module from regrowing into a new 1,600-line monolith, and locks the protocol-v1
+command map.
