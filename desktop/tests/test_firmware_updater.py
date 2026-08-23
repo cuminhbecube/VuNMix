@@ -52,6 +52,10 @@ class FirmwareUpdaterTests(unittest.TestCase):
                     return_value=firmware,
                 ),
                 mock.patch(
+                    "firmware_updater._resolve_flash_port",
+                    return_value="COM_TEST",
+                ),
+                mock.patch(
                     "esptool.main",
                     side_effect=lambda args: calls.append(list(args)),
                 ),
@@ -68,6 +72,34 @@ class FirmwareUpdaterTests(unittest.TestCase):
             self.assertIn("0x10000", calls[0])
             self.assertIn(str(firmware), calls[0])
             self.assertEqual(progress[-1][0], 1.0)
+
+    def test_flash_uses_resolved_com_after_device_renumber(self):
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = pathlib.Path(directory) / "firmware.bin"
+            firmware.write_bytes(b"\xE9" * 8192)
+            calls = []
+
+            with (
+                mock.patch(
+                    "firmware_updater.validate_firmware",
+                    return_value=firmware,
+                ),
+                mock.patch(
+                    "firmware_updater._resolve_flash_port",
+                    return_value="COM19",
+                ) as resolver,
+                mock.patch(
+                    "esptool.main",
+                    side_effect=lambda args: calls.append(list(args)),
+                ),
+                mock.patch("firmware_updater.time.sleep"),
+            ):
+                flash_firmware("COM14", str(firmware))
+
+            resolver.assert_called_once_with("COM14")
+            self.assertEqual(len(calls), 1)
+            port_index = calls[0].index("--port") + 1
+            self.assertEqual(calls[0][port_index], "COM19")
 
     def test_flash_supports_windowed_pyinstaller_without_stdio(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -96,6 +128,10 @@ class FirmwareUpdaterTests(unittest.TestCase):
                     mock.patch(
                         "firmware_updater.validate_firmware",
                         return_value=firmware,
+                    ),
+                    mock.patch(
+                        "firmware_updater._resolve_flash_port",
+                        return_value="COM_TEST",
                     ),
                     mock.patch(
                         "esptool.main",
@@ -137,6 +173,10 @@ class FirmwareUpdaterTests(unittest.TestCase):
                 mock.patch(
                     "firmware_updater.validate_firmware",
                     return_value=firmware,
+                ),
+                mock.patch(
+                    "firmware_updater._resolve_flash_port",
+                    return_value="COM_TEST",
                 ),
                 mock.patch(
                     "esptool.main",
