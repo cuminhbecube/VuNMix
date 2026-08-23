@@ -9,7 +9,14 @@ from datetime import datetime
 
 import comtypes
 
-from protocol import Command, DisplayMode, MeterData, SessionIndex
+from protocol import (
+    Command,
+    DisplayMode,
+    MeterData,
+    SessionData,
+    SessionIndex,
+    VolumeData,
+)
 
 
 log = logging.getLogger(__name__)
@@ -17,6 +24,68 @@ log = logging.getLogger(__name__)
 
 class SyncWorkersMixin:
     """Background workers that keep Windows audio and hardware state aligned."""
+
+    def _sync_current_volume_once(self) -> bool:
+        """Push one Windows volume change only for a stable selected identity.
+
+        SESSION_INFO and CURRENT_SESSION are delivered as separate protocol
+        frames and are updated by SerialRead while this worker runs in parallel.
+        Capture an epoch+identity, resolve by identity (not numeric index), then
+        revalidate after the Windows read before changing cache or USB state.
+        """
+        with self._state_lock:
+            if self._selection_transitioning:
+                return False
+            mode = self._session_info.mode
+            if mode in (DisplayMode.MODE_SPLASH, DisplayMode.MODE_HEALTH):
+                return False
+            epoch = self._selection_epoch
+            selected = self._sessions[SessionIndex.INDEX_CURRENT]
+            expected_id = int(selected.data.id)
+            expected_name = selected.name
+
+        if expected_id <= 0 or not expected_name:
+            return False
+
+        items = self.audio.get_sessions_for_mode(mode)
+        expected = SessionData(
+            name=expected_name,
+            data=VolumeData(id=expected_id),
+        )
+        read_idx = self._find_audio_item_index(items, expected)
+        if read_idx is None:
+            return False
+
+        vol = self.audio.read_current_volume(mode, read_idx)
+        if vol is None or int(vol.id) != expected_id:
+            log.debug(
+                "Skipped periodic volume sync after identity mismatch: mode=%s expected=%s got=%s",
+                mode,
+                expected_id,
+                getattr(vol, "id", None),
+            )
+            return False
+
+        with self._state_lock:
+            current = self._sessions[SessionIndex.INDEX_CURRENT]
+            if (
+                self._selection_transitioning
+                or self._selection_epoch != epoch
+                or self._session_info.mode != mode
+                or int(current.data.id) != expected_id
+                or current.name != expected_name
+            ):
+                log.debug("Skipped periodic volume sync across selection transition")
+                return False
+
+            if vol.volume == current.data.volume and vol.is_muted == current.data.is_muted:
+                return False
+
+            self._sessions[SessionIndex.INDEX_CURRENT].data = vol
+            # Keep the state lock through send_volume so SerialRead cannot
+            # commit a new selection locally between revalidation and transmit.
+            self.serial.send_volume(Command.VOLUME_CURR_CHANGE, vol)
+            return True
 
     def _sync_loop(self):
         """Periodically refresh audio sessions and sync volume to hardware."""
@@ -53,7 +122,9 @@ class SyncWorkersMixin:
                     log.warning("Failed to push telemetry: %s", exc)
                 last_telemetry_sync = now
 
-            if self._session_info.mode in (
+            with self._state_lock:
+                current_mode = self._session_info.mode
+            if current_mode in (
                 DisplayMode.MODE_SPLASH,
                 DisplayMode.MODE_HEALTH,
             ):
@@ -97,14 +168,7 @@ class SyncWorkersMixin:
                     self._push_updated_state()
                     continue
 
-                mode = self._session_info.mode
-                idx = self._session_info.current
-                vol = self.audio.read_current_volume(mode, idx)
-                if vol and self._sessions[SessionIndex.INDEX_CURRENT].data:
-                    old = self._sessions[SessionIndex.INDEX_CURRENT].data
-                    if vol.volume != old.volume or vol.is_muted != old.is_muted:
-                        self._sessions[SessionIndex.INDEX_CURRENT].data = vol
-                        self.serial.send_volume(Command.VOLUME_CURR_CHANGE, vol)
+                self._sync_current_volume_once()
             except Exception as exc:
                 log.debug("Sync error: %s", exc)
             finally:

@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import threading
 import unittest
 
 
@@ -103,6 +104,9 @@ class ControllerHarness(HardwareStateMixin):
         self._mode_states = ModeStates()
         self._meter_data = MeterData()
         self._sent_icon_ids = set()
+        self._state_lock = threading.RLock()
+        self._selection_epoch = 0
+        self._selection_transitioning = False
 
 
 class VolumeIdentityGuardTests(unittest.TestCase):
@@ -115,8 +119,6 @@ class VolumeIdentityGuardTests(unittest.TestCase):
             output.to_session_data(),
         )
 
-        # Reproduce the race: SESSION_INFO has already moved the controller to
-        # Output and refreshed CURRENT_SESSION, then an old app frame arrives.
         stale_app_volume = VolumeData(id=77, volume=83, is_muted=False)
         controller._on_hw_message(
             Command.VOLUME_CURR_CHANGE,
@@ -198,6 +200,27 @@ class VolumeIdentityGuardTests(unittest.TestCase):
 
         self.assertEqual(audio.volume_calls, [])
         self.assertEqual(audio.default_calls, [])
+
+    def test_matching_volume_is_dropped_while_selection_is_transitioning(self):
+        output = FakeAudioItem(11, "Speakers", 24, is_default=True)
+        audio = FakeAudio({DisplayMode.MODE_OUTPUT: [output]})
+        controller = ControllerHarness(
+            audio,
+            DisplayMode.MODE_OUTPUT,
+            output.to_session_data(),
+        )
+        controller._selection_transitioning = True
+
+        controller._on_hw_message(
+            Command.VOLUME_CURR_CHANGE,
+            VolumeData(id=11, volume=99).pack(),
+        )
+
+        self.assertEqual(audio.volume_calls, [])
+        self.assertEqual(
+            controller._sessions[SessionIndex.INDEX_CURRENT].data.volume,
+            24,
+        )
 
 
 if __name__ == "__main__":

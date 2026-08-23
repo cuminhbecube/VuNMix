@@ -57,6 +57,14 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._sent_icon_ids = set()
         self._connection_lock = threading.RLock()
 
+        # SESSION_INFO and CURRENT_SESSION are one logical selection. SerialRead
+        # and AudioSync run on different threads, so protect that pair and use
+        # an epoch to reject a volume read that crossed a mode/navigation
+        # transition. This is separate from the serial connection lock.
+        self._state_lock = threading.RLock()
+        self._selection_epoch = 0
+        self._selection_transitioning = False
+
         # Worker/lifecycle state.
         self._sync_thread: Optional[threading.Thread] = None
         self._meter_thread: Optional[threading.Thread] = None

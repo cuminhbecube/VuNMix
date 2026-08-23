@@ -16,12 +16,16 @@ from protocol import DisplayMode
 
 log = logging.getLogger("vunmix.profiles")
 PROFILE_FILE = os.path.join(CONFIG_DIR, "profiles.json")
+PROFILE_VERSION = 2
 
 
 def _mix(volume: int, muted: bool = False) -> Dict[str, Any]:
     return {"volume": max(0, min(100, int(volume))), "muted": bool(muted)}
 
 
+# Built-in profiles are examples/manual presets. Hardware tabs are navigation,
+# not automation triggers, so defaults must never mutate Windows audio simply
+# because the user browsed to APP or GAME.
 DEFAULT_PROFILES: Dict[str, Dict[str, Any]] = {
     "Gaming": {
         "output": _mix(80),
@@ -34,7 +38,7 @@ DEFAULT_PROFILES: Dict[str, Dict[str, Any]] = {
             "focused_apps": ["steam", "game"],
             "running_apps": [],
             "obs_streaming": False,
-            "hardware_modes": [int(DisplayMode.MODE_GAME)],
+            "hardware_modes": [],
         },
     },
     "Work": {
@@ -49,7 +53,7 @@ DEFAULT_PROFILES: Dict[str, Dict[str, Any]] = {
             "focused_apps": ["code", "devenv"],
             "running_apps": [],
             "obs_streaming": False,
-            "hardware_modes": [int(DisplayMode.MODE_APPLICATION)],
+            "hardware_modes": [],
         },
     },
     "Streaming": {
@@ -124,30 +128,55 @@ class AudioProfileService:
         self._lock = threading.RLock()
         self.profiles: Dict[str, Dict[str, Any]] = {}
         self.active_profile: str = ""
-        self.auto_switch_enabled = True
+        # Any automation capable of changing Output/master volume is opt-in.
+        # Manual tray/profile selection remains available regardless of these
+        # gates. This prevents a new install from silently changing audio.
+        self.auto_switch_enabled = False
+        self.hardware_mode_switch_enabled = False
         self.load()
 
     def load(self) -> None:
         with self._lock:
             profiles = copy.deepcopy(DEFAULT_PROFILES)
-            auto_enabled = True
+            auto_enabled = False
+            hardware_mode_enabled = False
             active = ""
             try:
                 with open(self.path, "r", encoding="utf-8") as handle:
                     payload = json.load(handle)
                 if isinstance(payload, dict):
                     saved = payload.get("profiles")
-                    # Once a v1 profile file exists it is the complete source
-                    # of truth. Do not merge defaults back in, otherwise a
-                    # profile deliberately deleted by the user reappears after
-                    # every restart.
+                    # Once a profile file exists it is the complete source of
+                    # truth. Do not merge defaults back in, otherwise a profile
+                    # deliberately deleted by the user reappears after restart.
                     if isinstance(saved, dict):
                         profiles = {
                             str(name).strip(): normalize_profile(data)
                             for name, data in saved.items()
                             if str(name).strip() and isinstance(data, dict)
                         }
-                    auto_enabled = bool(payload.get("auto_switch_enabled", True))
+
+                    try:
+                        stored_version = int(payload.get("version", 1))
+                    except (TypeError, ValueError):
+                        stored_version = 1
+
+                    # Safety migration: v1 enabled automatic profile switching
+                    # by default and also bound APP/GAME hardware modes. Because
+                    # profiles can change master volume, old automatic consent
+                    # is not carried into the safer v2 behavior. The user can
+                    # explicitly re-enable Automatic switching from the tray.
+                    if stored_version >= PROFILE_VERSION:
+                        auto_enabled = bool(
+                            payload.get("auto_switch_enabled", False)
+                        )
+                        hardware_mode_enabled = bool(
+                            payload.get("hardware_mode_switch_enabled", False)
+                        )
+                    else:
+                        auto_enabled = False
+                        hardware_mode_enabled = False
+
                     active = str(payload.get("active_profile", "") or "")
             except FileNotFoundError:
                 pass
@@ -158,6 +187,7 @@ class AudioProfileService:
                 name: normalize_profile(data) for name, data in profiles.items()
             }
             self.auto_switch_enabled = auto_enabled
+            self.hardware_mode_switch_enabled = hardware_mode_enabled
             self.active_profile = active if active in self.profiles else ""
 
     def save(self) -> None:
@@ -165,8 +195,9 @@ class AudioProfileService:
             directory = os.path.dirname(os.path.abspath(self.path))
             os.makedirs(directory, exist_ok=True)
             payload = {
-                "version": 1,
+                "version": PROFILE_VERSION,
                 "auto_switch_enabled": self.auto_switch_enabled,
+                "hardware_mode_switch_enabled": self.hardware_mode_switch_enabled,
                 "active_profile": self.active_profile,
                 "profiles": self.profiles,
             }
@@ -228,6 +259,11 @@ class AudioProfileService:
     def set_auto_switch_enabled(self, enabled: bool) -> None:
         with self._lock:
             self.auto_switch_enabled = bool(enabled)
+            self.save()
+
+    def set_hardware_mode_switch_enabled(self, enabled: bool) -> None:
+        with self._lock:
+            self.hardware_mode_switch_enabled = bool(enabled)
             self.save()
 
     @staticmethod
@@ -326,6 +362,10 @@ class AudioProfileService:
         return name if self.apply_profile(name, source=source) else None
 
     def profile_for_hardware_mode(self, mode: int) -> Optional[str]:
+        # This is intentionally a separate opt-in from context auto-switching.
+        # Browsing APP/GAME must never change Output volume by default.
+        if not self.hardware_mode_switch_enabled:
+            return None
         with self._lock:
             for name, profile in self.profiles.items():
                 if int(mode) in profile.get("triggers", {}).get("hardware_modes", []):
