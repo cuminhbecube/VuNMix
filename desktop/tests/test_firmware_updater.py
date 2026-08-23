@@ -17,6 +17,7 @@ except ModuleNotFoundError:
     sys.modules["esptool"] = esptool_stub
 
 from firmware_updater import (
+    FirmwareUpdateError,
     FirmwareValidationError,
     flash_firmware,
     validate_firmware,
@@ -38,7 +39,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
             with self.assertRaises(FirmwareValidationError):
                 validate_firmware(str(invalid))
 
-    def test_flash_writes_image_in_one_esptool_transaction(self):
+    def test_flash_writes_image_in_one_esptool_transaction_and_creates_log(self):
         with tempfile.TemporaryDirectory() as directory:
             firmware = pathlib.Path(directory) / "firmware.bin"
             firmware.write_bytes(b"\xE9" * (0x40000 * 2 + 17))
@@ -47,6 +48,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
             progress = []
 
             with (
+                mock.patch("diagnostics.UPDATE_LOG_DIR", directory),
                 mock.patch(
                     "firmware_updater.validate_firmware",
                     return_value=firmware,
@@ -61,7 +63,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
                 ),
                 mock.patch("firmware_updater.time.sleep"),
             ):
-                flash_firmware(
+                result = flash_firmware(
                     "COM_TEST",
                     str(firmware),
                     progress=lambda value, text: progress.append((value, text)),
@@ -71,7 +73,14 @@ class FirmwareUpdaterTests(unittest.TestCase):
             self.assertNotIn("--no-stub", calls[0])
             self.assertIn("0x10000", calls[0])
             self.assertIn(str(firmware), calls[0])
-            self.assertEqual(progress[-1][0], 1.0)
+            self.assertEqual(progress[0][0], 0.02)
+            self.assertEqual(progress[-1][0], 0.86)
+            self.assertTrue(pathlib.Path(result.log_path).is_file())
+            log_text = pathlib.Path(result.log_path).read_text(encoding="utf-8")
+            self.assertIn('"phase": "start"', log_text)
+            self.assertIn('"phase": "write_complete"', log_text)
+            self.assertIn("COM_TEST", log_text)
+            self.assertIn(str(firmware), log_text)
 
     def test_flash_uses_resolved_com_after_device_renumber(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,6 +89,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
             calls = []
 
             with (
+                mock.patch("diagnostics.UPDATE_LOG_DIR", directory),
                 mock.patch(
                     "firmware_updater.validate_firmware",
                     return_value=firmware,
@@ -94,9 +104,10 @@ class FirmwareUpdaterTests(unittest.TestCase):
                 ),
                 mock.patch("firmware_updater.time.sleep"),
             ):
-                flash_firmware("COM14", str(firmware))
+                result = flash_firmware("COM14", str(firmware))
 
             resolver.assert_called_once_with("COM14")
+            self.assertEqual(result.port, "COM19")
             self.assertEqual(len(calls), 1)
             port_index = calls[0].index("--port") + 1
             self.assertEqual(calls[0][port_index], "COM19")
@@ -125,6 +136,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
                 sys.stderr = None
 
                 with (
+                    mock.patch("diagnostics.UPDATE_LOG_DIR", directory),
                     mock.patch(
                         "firmware_updater.validate_firmware",
                         return_value=firmware,
@@ -163,13 +175,11 @@ class FirmwareUpdaterTests(unittest.TestCase):
 
             def fake_esptool_main(args):
                 calls.append(list(args))
-
                 if len(calls) == 1:
-                    raise RuntimeError(
-                        "Flasher stub data is missing for ESP32-S3."
-                    )
+                    raise RuntimeError("Flasher stub data is missing for ESP32-S3.")
 
             with (
+                mock.patch("diagnostics.UPDATE_LOG_DIR", directory),
                 mock.patch(
                     "firmware_updater.validate_firmware",
                     return_value=firmware,
@@ -184,15 +194,43 @@ class FirmwareUpdaterTests(unittest.TestCase):
                 ),
                 mock.patch("firmware_updater.time.sleep"),
             ):
-                flash_firmware("COM_TEST", str(firmware))
+                result = flash_firmware("COM_TEST", str(firmware))
 
+            self.assertTrue(result.used_rom_fallback)
             self.assertEqual(len(calls), 2)
             self.assertNotIn("--no-stub", calls[0])
             self.assertIn("--no-stub", calls[1])
-            self.assertLess(
-                calls[1].index("--no-stub"),
-                calls[1].index("write_flash"),
-            )
+            self.assertLess(calls[1].index("--no-stub"), calls[1].index("write_flash"))
+
+    def test_bootloader_timeout_is_classified_without_raw_popup_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = pathlib.Path(directory) / "firmware.bin"
+            firmware.write_bytes(b"\xE9" * 8192)
+
+            with (
+                mock.patch("diagnostics.UPDATE_LOG_DIR", directory),
+                mock.patch("firmware_updater.validate_firmware", return_value=firmware),
+                mock.patch("firmware_updater._resolve_flash_port", return_value="COM9"),
+                mock.patch(
+                    "esptool.main",
+                    side_effect=RuntimeError("Failed to connect: timed out waiting for packet header"),
+                ),
+            ):
+                with self.assertRaises(FirmwareUpdateError) as caught:
+                    flash_firmware("COM9", str(firmware))
+
+            self.assertEqual(caught.exception.code, "BOOTLOADER_TIMEOUT")
+            self.assertIn("bootloader", caught.exception.user_message.lower())
+            self.assertTrue(caught.exception.log_path)
+
+    def test_invalid_image_is_classified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            firmware = pathlib.Path(directory) / "bad.bin"
+            firmware.write_bytes(b"\0" * 8192)
+            with mock.patch("diagnostics.UPDATE_LOG_DIR", directory):
+                with self.assertRaises(FirmwareUpdateError) as caught:
+                    flash_firmware("COM9", str(firmware))
+            self.assertEqual(caught.exception.code, "IMAGE_INVALID")
 
 
 if __name__ == "__main__":
