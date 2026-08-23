@@ -44,13 +44,18 @@ class HardwareStateMixin:
             idx = int(cmd) - int(Command.VOLUME_CURR_CHANGE)
             vol = VolumeData.unpack(payload)
             log.debug(
-                "HW→PC %s: vol=%s, muted=%s",
+                "HW→PC %s: id=%s vol=%s muted=%s",
                 cmd.name,
+                vol.id,
                 vol.volume,
                 vol.is_muted,
             )
-            self._sessions[idx].data = vol
-            self._apply_volume_to_windows(idx, vol)
+            # A VolumeData frame is an intent for one concrete protocol
+            # session.  Never overwrite the cached identity before validating
+            # it: a delayed frame from the previous display mode must not be
+            # reinterpreted as a master/input-device volume command.
+            if self._apply_volume_to_windows(idx, vol):
+                self._sessions[idx].data = vol
 
         elif cmd == Command.MODE_STATES:
             self._mode_states = ModeStates.unpack(payload)
@@ -81,37 +86,92 @@ class HardwareStateMixin:
         self._session_info = info
         self._push_sessions_for_mode(info.mode, info.current)
 
-    def _apply_volume_to_windows(self, session_idx: int, vol: VolumeData):
-        """Apply a volume change from the hardware knob to Windows."""
+    def _resolve_volume_target(
+        self,
+        session_idx: int,
+        vol: VolumeData,
+    ):
+        """Resolve a hardware volume intent only when its session ID is current.
+
+        Protocol v1 already carries a non-zero, globally unique 7-bit session
+        ID in VolumeData.  Mode transitions can race queued USB frames, so the
+        numeric CURRENT slot alone is not a safe Windows-audio target.
+        """
         mode = self._session_info.mode
         if mode == DisplayMode.MODE_HEALTH:
-            return
-        items = self.audio.get_sessions_for_mode(mode)
+            return None
 
+        items = self.audio.get_sessions_for_mode(mode)
         if session_idx == SessionIndex.INDEX_CURRENT:
-            win_idx = self._session_info.current
+            expected = self._sessions[SessionIndex.INDEX_CURRENT]
         elif session_idx == SessionIndex.INDEX_ALTERNATE:
             if mode != DisplayMode.MODE_GAME:
-                return
-            win_idx = self._find_audio_item_index(
-                items,
-                self._sessions[SessionIndex.INDEX_ALTERNATE],
-            )
+                return None
+            expected = self._sessions[SessionIndex.INDEX_ALTERNATE]
         else:
-            return
+            return None
 
-        if win_idx is not None and 0 <= win_idx < len(items):
-            self.audio.set_volume(mode, win_idx, vol.volume, vol.is_muted)
-            log.info(
-                "Applied vol=%s%% muted=%s to %s",
-                vol.volume,
-                vol.is_muted,
-                items[win_idx].name,
+        expected_id = int(expected.data.id)
+        if not expected.name or expected_id <= 0 or int(vol.id) != expected_id:
+            log.warning(
+                "Dropped stale volume frame: mode=%s slot=%s frame_id=%s expected_id=%s expected=%s",
+                mode,
+                session_idx,
+                vol.id,
+                expected_id,
+                expected.name or "<none>",
             )
+            return None
 
-            if vol.is_default and not items[win_idx].is_default:
-                self.audio.set_default_device(mode, win_idx)
-                self._handle_session_info_from_hw(self._session_info)
+        win_idx = self._find_audio_item_index(items, expected)
+        if win_idx is None or not (0 <= win_idx < len(items)):
+            log.warning(
+                "Dropped volume frame for missing audio target: mode=%s id=%s name=%s",
+                mode,
+                vol.id,
+                expected.name,
+            )
+            return None
+
+        # _find_audio_item_index has an ID-only fallback for benign rename
+        # recovery.  A mutating command must be stricter: require the concrete
+        # item currently occupying the target to match both cached name and ID.
+        target_snapshot = items[win_idx].to_session_data()
+        if (
+            int(target_snapshot.data.id) != int(vol.id)
+            or target_snapshot.name != expected.name
+        ):
+            log.warning(
+                "Dropped volume frame after target changed: mode=%s id=%s cached=%s current=%s",
+                mode,
+                vol.id,
+                expected.name,
+                target_snapshot.name,
+            )
+            return None
+
+        return mode, items, win_idx
+
+    def _apply_volume_to_windows(self, session_idx: int, vol: VolumeData) -> bool:
+        """Apply a validated volume change from the hardware knob to Windows."""
+        resolved = self._resolve_volume_target(session_idx, vol)
+        if resolved is None:
+            return False
+
+        mode, items, win_idx = resolved
+        self.audio.set_volume(mode, win_idx, vol.volume, vol.is_muted)
+        log.info(
+            "Applied vol=%s%% muted=%s to %s",
+            vol.volume,
+            vol.is_muted,
+            items[win_idx].name,
+        )
+
+        if vol.is_default and not items[win_idx].is_default:
+            self.audio.set_default_device(mode, win_idx)
+            self._handle_session_info_from_hw(self._session_info)
+
+        return True
 
     def _find_audio_item_index(self, items, session: SessionData) -> Optional[int]:
         """Find the Windows audio item represented by a firmware snapshot."""
