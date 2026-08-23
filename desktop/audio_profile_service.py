@@ -136,11 +136,17 @@ class AudioProfileService:
                 with open(self.path, "r", encoding="utf-8") as handle:
                     payload = json.load(handle)
                 if isinstance(payload, dict):
-                    saved = payload.get("profiles", {})
+                    saved = payload.get("profiles")
+                    # Once a v1 profile file exists it is the complete source
+                    # of truth. Do not merge defaults back in, otherwise a
+                    # profile deliberately deleted by the user reappears after
+                    # every restart.
                     if isinstance(saved, dict):
-                        for name, data in saved.items():
-                            if str(name).strip() and isinstance(data, dict):
-                                profiles[str(name).strip()] = normalize_profile(data)
+                        profiles = {
+                            str(name).strip(): normalize_profile(data)
+                            for name, data in saved.items()
+                            if str(name).strip() and isinstance(data, dict)
+                        }
                     auto_enabled = bool(payload.get("auto_switch_enabled", True))
                     active = str(payload.get("active_profile", "") or "")
             except FileNotFoundError:
