@@ -1,9 +1,23 @@
-"""Verify that a PyInstaller VuNMix build contains esptool ESP32-S3 stub data."""
+"""Verify critical PyInstaller package data for VuNMix."""
 
 from __future__ import annotations
 
+import json
+import os
 import pathlib
+import re
 import sys
+
+
+def _normalize_version(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("v") or value.startswith("ci-") or value.startswith("dev-"):
+        return value
+    if re.fullmatch(r"\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?", value):
+        return f"v{value}"
+    return value
 
 
 def _is_esptool_path(path: pathlib.Path) -> bool:
@@ -17,6 +31,52 @@ def _is_esp32s3_stub(path: pathlib.Path) -> bool:
         "stub_flasher" in text
         and ("esp32s3" in text or "32s3" in name)
         and path.is_file()
+    )
+
+
+def _verify_build_metadata(root: pathlib.Path, files: list[pathlib.Path]) -> None:
+    metadata_files = [path for path in files if path.name == "build-metadata.json"]
+    if len(metadata_files) != 1:
+        raise SystemExit(
+            "Packaged app must contain exactly one build-metadata.json; "
+            f"found {len(metadata_files)}."
+        )
+
+    try:
+        metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise SystemExit(f"Invalid packaged build metadata: {exc}") from exc
+
+    for key in ("version", "git_sha", "build_date", "protocol_version"):
+        if key not in metadata or metadata[key] in (None, ""):
+            raise SystemExit(f"Packaged build metadata is missing '{key}'.")
+
+    expected_version = _normalize_version(
+        os.environ.get("VUNMIX_VERSION") or os.environ.get("VERSION") or ""
+    )
+    if expected_version and metadata["version"] != expected_version:
+        raise SystemExit(
+            "Packaged desktop version mismatch: "
+            f"expected {expected_version}, got {metadata['version']}"
+        )
+
+    expected_sha = (
+        os.environ.get("VUNMIX_GIT_SHA")
+        or os.environ.get("GITHUB_SHA")
+        or ""
+    ).strip()
+    if expected_sha and metadata["git_sha"] != expected_sha:
+        raise SystemExit(
+            "Packaged desktop git SHA mismatch: "
+            f"expected {expected_sha}, got {metadata['git_sha']}"
+        )
+
+    print(
+        "VuNMix build metadata: "
+        f"version={metadata['version']} "
+        f"protocol={metadata['protocol_version']} "
+        f"git={metadata['git_sha']} "
+        f"built={metadata['build_date']}"
     )
 
 
@@ -47,6 +107,8 @@ def verify(package_root: pathlib.Path) -> None:
             "Stub-related packaged files:\n"
             f"{detail}"
         )
+
+    _verify_build_metadata(root, files)
 
     print(f"Packaged esptool files: {len(esptool_files)}")
     print("ESP32-S3 flasher-stub files:")

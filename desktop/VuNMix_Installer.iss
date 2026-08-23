@@ -1,7 +1,12 @@
+#define BuildVersion GetEnv("VERSION")
+#if BuildVersion == ""
+  #define BuildVersion "dev"
+#endif
+
 [Setup]
 AppId={{5C16C978-B70E-40F1-B733-1492DA3DCA28}
 AppName=VuNMix
-AppVersion=0.3
+AppVersion={#BuildVersion}
 AppPublisher=VuNL
 DefaultDirName={autopf}\VuNMix
 DefaultGroupName=VuNMix
