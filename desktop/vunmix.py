@@ -8,17 +8,19 @@ Controls Windows audio sessions and communicates with the ESP32-S3 via USB seria
 Usage:
     python vunmix.py              # Normal mode (system tray)
     python vunmix.py --debug      # Debug mode (verbose logging to console)
+    python vunmix.py --version    # Print embedded build metadata
 """
 
-import logging
-import sys
-import os
 import faulthandler
+import logging
+import os
+import sys
 import threading
 
 # Add the desktop directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from build_info import APP_VERSION, BUILD_DATE, GIT_SHA, PROTOCOL_VERSION, build_summary
 from config import AppConfig, CONFIG_DIR
 from app_controller import AppController
 from connection_ui import ConnectionTrayApp
@@ -65,13 +67,21 @@ def setup_logging(debug: bool = False):
 
 
 def main():
+    if '--version' in sys.argv:
+        print(build_summary())
+        return
+
     debug = '--debug' in sys.argv
     setup_logging(debug)
 
     log = logging.getLogger('vunmix')
-    log.info("╔══════════════════════════════════════╗")
-    log.info("║         VuNMix Desktop v0.3          ║")
-    log.info("╚══════════════════════════════════════╝")
+    log.info("VuNMix Desktop %s", APP_VERSION)
+    log.info(
+        "Build metadata: protocol=%d git=%s built=%s",
+        PROTOCOL_VERSION,
+        GIT_SHA,
+        BUILD_DATE,
+    )
 
     # Load config
     config = AppConfig.load()
