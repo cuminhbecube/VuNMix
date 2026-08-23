@@ -27,6 +27,17 @@ log = logging.getLogger(__name__)
 class HardwareStateMixin:
     """Translate protocol messages into Windows audio state and vice versa."""
 
+    def _begin_selection_transition(self):
+        """Mark mode/current-session state as temporarily inconsistent."""
+        with self._state_lock:
+            self._selection_transitioning = True
+            self._selection_epoch += 1
+
+    def _end_selection_transition(self):
+        with self._state_lock:
+            self._selection_epoch += 1
+            self._selection_transitioning = False
+
     def _on_hw_message(self, cmd: Command, payload: bytes):
         """Process a message received from hardware."""
         if cmd == Command.SESSION_INFO:
@@ -38,7 +49,10 @@ class HardwareStateMixin:
             idx = int(cmd) - int(Command.CURRENT_SESSION)
             session = SessionData.unpack(payload)
             log.debug("HW→PC %s: name=%s", cmd.name, session.name)
-            self._sessions[idx] = session
+            with self._state_lock:
+                self._sessions[idx] = session
+                if idx == SessionIndex.INDEX_CURRENT:
+                    self._selection_epoch += 1
 
         elif cmd in VOLUME_COMMANDS:
             idx = int(cmd) - int(Command.VOLUME_CURR_CHANGE)
@@ -51,11 +65,12 @@ class HardwareStateMixin:
                 vol.is_muted,
             )
             # A VolumeData frame is an intent for one concrete protocol
-            # session.  Never overwrite the cached identity before validating
-            # it: a delayed frame from the previous display mode must not be
+            # session. Never overwrite the cached identity before validating
+            # it: a delayed frame from another display mode must not be
             # reinterpreted as a master/input-device volume command.
             if self._apply_volume_to_windows(idx, vol):
-                self._sessions[idx].data = vol
+                with self._state_lock:
+                    self._sessions[idx].data = vol
 
         elif cmd == Command.MODE_STATES:
             self._mode_states = ModeStates.unpack(payload)
@@ -69,22 +84,29 @@ class HardwareStateMixin:
 
     def _handle_session_info_from_hw(self, info: SessionInfo):
         """Hardware changed mode or navigated — send appropriate sessions."""
-        mode_changed = info.mode != self._session_info.mode
+        self._begin_selection_transition()
+        try:
+            with self._state_lock:
+                mode_changed = info.mode != self._session_info.mode
 
-        # Device Health is rendered fully on firmware from local counters. Do
-        # not echo mode state from the serial callback during the transition.
-        if info.mode == DisplayMode.MODE_HEALTH:
-            info.current = 0
-            self._session_info = info
-            return
+            # Device Health is rendered fully on firmware from local counters.
+            # Do not echo mode state from the serial callback during transition.
+            if info.mode == DisplayMode.MODE_HEALTH:
+                info.current = 0
+                with self._state_lock:
+                    self._session_info = info
+                return
 
-        if mode_changed:
-            items = self.audio.get_sessions_for_mode(info.mode)
-            info.current = self._preferred_index(info.mode, items, info.current)
-            self.serial.send_session_info(info)
+            if mode_changed:
+                items = self.audio.get_sessions_for_mode(info.mode)
+                info.current = self._preferred_index(info.mode, items, info.current)
+                self.serial.send_session_info(info)
 
-        self._session_info = info
-        self._push_sessions_for_mode(info.mode, info.current)
+            with self._state_lock:
+                self._session_info = info
+            self._push_sessions_for_mode(info.mode, info.current)
+        finally:
+            self._end_selection_transition()
 
     def _resolve_volume_target(
         self,
@@ -94,61 +116,84 @@ class HardwareStateMixin:
         """Resolve a hardware volume intent only when its session ID is current.
 
         Protocol v1 already carries a non-zero, globally unique 7-bit session
-        ID in VolumeData.  Mode transitions can race queued USB frames, so the
+        ID in VolumeData. Mode transitions can race queued USB frames, so the
         numeric CURRENT slot alone is not a safe Windows-audio target.
         """
-        mode = self._session_info.mode
+        with self._state_lock:
+            if self._selection_transitioning:
+                log.debug("Dropped volume frame during selection transition")
+                return None
+            epoch = self._selection_epoch
+            mode = self._session_info.mode
+            if session_idx == SessionIndex.INDEX_CURRENT:
+                expected = self._sessions[SessionIndex.INDEX_CURRENT]
+            elif session_idx == SessionIndex.INDEX_ALTERNATE:
+                if mode != DisplayMode.MODE_GAME:
+                    return None
+                expected = self._sessions[SessionIndex.INDEX_ALTERNATE]
+            else:
+                return None
+            expected_id = int(expected.data.id)
+            expected_name = expected.name
+
         if mode == DisplayMode.MODE_HEALTH:
             return None
 
-        items = self.audio.get_sessions_for_mode(mode)
-        if session_idx == SessionIndex.INDEX_CURRENT:
-            expected = self._sessions[SessionIndex.INDEX_CURRENT]
-        elif session_idx == SessionIndex.INDEX_ALTERNATE:
-            if mode != DisplayMode.MODE_GAME:
-                return None
-            expected = self._sessions[SessionIndex.INDEX_ALTERNATE]
-        else:
-            return None
-
-        expected_id = int(expected.data.id)
-        if not expected.name or expected_id <= 0 or int(vol.id) != expected_id:
+        if not expected_name or expected_id <= 0 or int(vol.id) != expected_id:
             log.warning(
                 "Dropped stale volume frame: mode=%s slot=%s frame_id=%s expected_id=%s expected=%s",
                 mode,
                 session_idx,
                 vol.id,
                 expected_id,
-                expected.name or "<none>",
+                expected_name or "<none>",
             )
             return None
 
-        win_idx = self._find_audio_item_index(items, expected)
+        items = self.audio.get_sessions_for_mode(mode)
+        expected_snapshot = SessionData(
+            name=expected_name,
+            data=VolumeData(id=expected_id),
+        )
+        win_idx = self._find_audio_item_index(items, expected_snapshot)
         if win_idx is None or not (0 <= win_idx < len(items)):
             log.warning(
                 "Dropped volume frame for missing audio target: mode=%s id=%s name=%s",
                 mode,
                 vol.id,
-                expected.name,
+                expected_name,
             )
             return None
 
-        # _find_audio_item_index has an ID-only fallback for benign rename
-        # recovery.  A mutating command must be stricter: require the concrete
-        # item currently occupying the target to match both cached name and ID.
         target_snapshot = items[win_idx].to_session_data()
         if (
             int(target_snapshot.data.id) != int(vol.id)
-            or target_snapshot.name != expected.name
+            or target_snapshot.name != expected_name
         ):
             log.warning(
                 "Dropped volume frame after target changed: mode=%s id=%s cached=%s current=%s",
                 mode,
                 vol.id,
-                expected.name,
+                expected_name,
                 target_snapshot.name,
             )
             return None
+
+        # Revalidate after Windows enumeration. The mode/session could have
+        # changed while the COM/audio lookup was in progress.
+        with self._state_lock:
+            current = self._sessions[session_idx]
+            if (
+                self._selection_transitioning
+                or self._selection_epoch != epoch
+                or self._session_info.mode != mode
+                or int(current.data.id) != expected_id
+                or current.name != expected_name
+            ):
+                log.warning(
+                    "Dropped volume frame because selection changed during resolve"
+                )
+                return None
 
         return mode, items, win_idx
 
@@ -204,79 +249,93 @@ class HardwareStateMixin:
 
     def _push_full_state(self, mode: int):
         """Send complete state for a display mode to hardware."""
-        n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
-        n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
-        n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
-        if mode == DisplayMode.MODE_HEALTH:
-            self._session_info = SessionInfo(
-                mode=mode,
-                current=0,
-                sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
-            )
-            self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
-            self.serial.send_session_info(self._session_info)
-            self.serial.send_mode_states(self._mode_states)
-            return
-
-        items = self.audio.get_sessions_for_mode(mode)
-        current_idx = self._preferred_index(mode, items)
-
-        self._session_info = SessionInfo(
-            mode=mode,
-            current=current_idx,
-            sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
-        )
-        self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
-        self.serial.send_session_info(self._session_info)
-        self.serial.send_mode_states(self._mode_states)
-        self._push_sessions_for_mode(mode, current_idx)
-
-    def _push_updated_state(self):
-        """Re-push state after a refresh, preserving current item if possible."""
-        mode = self._session_info.mode
-        if mode == DisplayMode.MODE_HEALTH:
+        self._begin_selection_transition()
+        try:
             n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
             n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
             n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
-            self._session_info.current = 0
-            self._session_info.sessions = [
-                max(n_output, 1),
-                max(n_input, 1),
-                max(n_app, 1),
-            ]
+            if mode == DisplayMode.MODE_HEALTH:
+                with self._state_lock:
+                    self._session_info = SessionInfo(
+                        mode=mode,
+                        current=0,
+                        sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
+                    )
+                    self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
+                self.serial.send_session_info(self._session_info)
+                self.serial.send_mode_states(self._mode_states)
+                return
+
+            items = self.audio.get_sessions_for_mode(mode)
+            current_idx = self._preferred_index(mode, items)
+
+            with self._state_lock:
+                self._session_info = SessionInfo(
+                    mode=mode,
+                    current=current_idx,
+                    sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
+                )
+                self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
             self.serial.send_session_info(self._session_info)
             self.serial.send_mode_states(self._mode_states)
-            return
+            self._push_sessions_for_mode(mode, current_idx)
+        finally:
+            self._end_selection_transition()
 
-        items = self.audio.get_sessions_for_mode(mode)
-        n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
-        n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
-        n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
+    def _push_updated_state(self):
+        """Re-push state after a refresh, preserving current item if possible."""
+        self._begin_selection_transition()
+        try:
+            with self._state_lock:
+                mode = self._session_info.mode
+            if mode == DisplayMode.MODE_HEALTH:
+                n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
+                n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
+                n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
+                with self._state_lock:
+                    self._session_info.current = 0
+                    self._session_info.sessions = [
+                        max(n_output, 1),
+                        max(n_input, 1),
+                        max(n_app, 1),
+                    ]
+                self.serial.send_session_info(self._session_info)
+                self.serial.send_mode_states(self._mode_states)
+                return
 
-        current_idx = self._session_info.current
-        selected_snapshot = self._sessions[SessionIndex.INDEX_CURRENT]
-        matched_idx = (
-            self._find_audio_item_index(items, selected_snapshot)
-            if selected_snapshot.name
-            else None
-        )
-        if matched_idx is not None:
-            current_idx = matched_idx
-        elif items and current_idx >= len(items):
-            current_idx = len(items) - 1
-        elif not items:
-            current_idx = 0
+            items = self.audio.get_sessions_for_mode(mode)
+            n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
+            n_input = self.audio.get_session_count(DisplayMode.MODE_INPUT)
+            n_app = self.audio.get_session_count(DisplayMode.MODE_APPLICATION)
 
-        self._session_info.sessions = [
-            max(n_output, 1),
-            max(n_input, 1),
-            max(n_app, 1),
-        ]
-        self._session_info.current = current_idx
+            with self._state_lock:
+                current_idx = self._session_info.current
+                selected_snapshot = self._sessions[SessionIndex.INDEX_CURRENT]
+            matched_idx = (
+                self._find_audio_item_index(items, selected_snapshot)
+                if selected_snapshot.name
+                else None
+            )
+            if matched_idx is not None:
+                current_idx = matched_idx
+            elif items and current_idx >= len(items):
+                current_idx = len(items) - 1
+            elif not items:
+                current_idx = 0
 
-        self.serial.send_session_info(self._session_info)
-        self.serial.send_mode_states(self._mode_states)
-        self._push_sessions_for_mode(mode, current_idx)
+            with self._state_lock:
+                self._session_info.sessions = [
+                    max(n_output, 1),
+                    max(n_input, 1),
+                    max(n_app, 1),
+                ]
+                self._session_info.current = current_idx
+
+            self.serial.send_session_info(self._session_info)
+            self.serial.send_mode_states(self._mode_states)
+            self._push_sessions_for_mode(mode, current_idx)
+        finally:
+            self._end_selection_transition()
 
     def _push_sessions_for_mode(self, mode: int, current_idx: int):
         """Send current/previous/next sessions for a mode."""
@@ -285,27 +344,33 @@ class HardwareStateMixin:
 
         items = self.audio.get_sessions_for_mode(mode)
         if not items:
-            self.serial.send_session(Command.CURRENT_SESSION, SessionData(name="No sessions"))
+            empty = SessionData(name="No sessions")
+            with self._state_lock:
+                self._sessions[SessionIndex.INDEX_CURRENT] = empty
+            self.serial.send_session(Command.CURRENT_SESSION, empty)
             return
 
         count = len(items)
         current_idx %= count
 
         cur = items[current_idx].to_session_data()
-        self._sessions[SessionIndex.INDEX_CURRENT] = cur
+        with self._state_lock:
+            self._sessions[SessionIndex.INDEX_CURRENT] = cur
         self.serial.send_session(Command.CURRENT_SESSION, cur)
         self._send_app_icon_if_needed(mode, items[current_idx])
 
         if count > 1:
             prev_idx = (current_idx - 1) % count
             prev = items[prev_idx].to_session_data()
-            self._sessions[SessionIndex.INDEX_PREVIOUS] = prev
+            with self._state_lock:
+                self._sessions[SessionIndex.INDEX_PREVIOUS] = prev
             self.serial.send_session(Command.PREVIOUS_SESSION, prev)
             self._send_app_icon_if_needed(mode, items[prev_idx])
 
             next_idx = (current_idx + 1) % count
             nxt = items[next_idx].to_session_data()
-            self._sessions[SessionIndex.INDEX_NEXT] = nxt
+            with self._state_lock:
+                self._sessions[SessionIndex.INDEX_NEXT] = nxt
             self.serial.send_session(Command.NEXT_SESSION, nxt)
             self._send_app_icon_if_needed(mode, items[next_idx])
 
