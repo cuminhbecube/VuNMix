@@ -9,7 +9,7 @@ from unittest import mock
 DESKTOP_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DESKTOP_DIR))
 
-from media_controller import MEDIA_ARTWORK_FALLBACK_ID, MediaAppController
+from media_controller import MediaAppController
 from media_service import MEDIA_ARTWORK_BYTES, MediaSnapshot
 from protocol import AppIconChunk, Command, DisplayMode, MediaInfoData
 from serial_service import SerialService
@@ -90,8 +90,9 @@ class MediaControllerTests(unittest.TestCase):
     def test_artwork_targets_media_app_and_same_digest_is_not_resent(self):
         controller = self._controller(self._snapshot())
 
-        with mock.patch("media_controller.time.monotonic", side_effect=[10.0, 11.0]):
+        with mock.patch("media_controller.time.monotonic", side_effect=[10.0]):
             self.assertTrue(controller._send_artwork_once())
+            # Same digest+target exits before reading the clock again.
             self.assertFalse(controller._send_artwork_once())
 
         self.assertEqual(len(controller.serial.calls), 1)
@@ -118,12 +119,11 @@ class MediaControllerTests(unittest.TestCase):
         self.assertEqual(controller.serial.calls[-1][1], bytes([0x22]) * 512)
         self.assertEqual(controller.media_artwork_send_count, 2)
 
-    def test_unknown_source_uses_reserved_transport_id(self):
+    def test_unknown_source_does_not_consume_icon_namespace(self):
         controller = self._controller(self._snapshot(source="Unknown.Player.exe"))
-        with mock.patch("media_controller.time.monotonic", return_value=10.0):
-            self.assertTrue(controller._send_artwork_once())
-        self.assertEqual(controller.serial.calls[0][0], MEDIA_ARTWORK_FALLBACK_ID)
-        self.assertEqual(MEDIA_ARTWORK_FALLBACK_ID, 0xFF)
+        self.assertFalse(controller._send_artwork_once())
+        self.assertEqual(controller.serial.calls, [])
+        self.assertEqual(controller.media_artwork_send_count, 0)
 
     def test_serial_transport_splits_512_bytes_into_nine_bounded_chunks(self):
         service = object.__new__(SerialService)
@@ -138,16 +138,17 @@ class MediaControllerTests(unittest.TestCase):
         data = bytes(range(256)) * 2
 
         with mock.patch("serial_service.time.sleep"):
-            self.assertTrue(service.send_app_icon(0xFF, data, width=16, height=16))
+            self.assertTrue(service.send_app_icon(42, data, width=16, height=16))
 
         self.assertEqual(sent[0][0], Command.APP_ICON_META)
         chunks = [payload for command, payload in sent if command == Command.APP_ICON_CHUNK]
         self.assertEqual(len(chunks), 9)
+        lengths = [payload[2] for payload in chunks]
+        self.assertEqual(lengths[:-1], [60] * 8)
+        self.assertEqual(lengths[-1], 32)
+        self.assertTrue(all(length <= 60 for length in lengths))
         decoded = [AppIconChunk.unpack(payload) for payload in chunks]
-        self.assertEqual([chunk.length for chunk in decoded[:-1]], [60] * 8)
-        self.assertEqual(decoded[-1].length, 32)
-        self.assertTrue(all(chunk.length <= 60 for chunk in decoded))
-        rebuilt = b"".join(chunk.data[:chunk.length] for chunk in decoded)
+        rebuilt = b"".join(chunk.data for chunk in decoded)
         self.assertEqual(rebuilt, data)
 
 
