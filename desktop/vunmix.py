@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import AppConfig, CONFIG_DIR
 from app_controller import AppController
-from gui import TrayApp
+from connection_ui import ConnectionTrayApp
 
 
 def setup_logging(debug: bool = False):
@@ -75,7 +75,7 @@ def main():
 
     # Load config
     config = AppConfig.load()
-    log.info(f"COM Port: {config.com_port}")
+    log.info(f"COM Port preference: {config.com_port}")
     log.info(f"Sync Interval: {config.update_interval_ms}ms")
 
     # Create controller
@@ -83,7 +83,7 @@ def main():
     controller.start()
 
     # Run tray app (blocking)
-    tray = TrayApp(config, controller)
+    tray = ConnectionTrayApp(config, controller)
     try:
         tray.run()
     except KeyboardInterrupt:
