@@ -16,3 +16,5 @@ desktop/__pycache__/
 desktop/**/__pycache__/
 desktop/*.pyc
 desktop/*.log
+desktop/_build_metadata.py
+desktop/build-metadata.json
