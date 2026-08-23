@@ -117,6 +117,7 @@ class AudioProfileTests(unittest.TestCase):
     def test_context_priority_is_obs_then_focus_then_running_process(self):
         with tempfile.TemporaryDirectory() as directory:
             service = self._service(directory)
+            self.assertFalse(service.auto_switch_enabled)
             service.save_profile(
                 "Process",
                 {"triggers": {"running_apps": ["tool"]}},
@@ -125,6 +126,10 @@ class AudioProfileTests(unittest.TestCase):
                 "Focus",
                 {"triggers": {"focused_apps": ["editor"]}},
             )
+            # Context matching that can lead to automatic volume writes is
+            # unavailable until the user explicitly opts in.
+            self.assertIsNone(service.match_context(running_apps=["tool.exe"]))
+            service.set_auto_switch_enabled(True)
 
             self.assertEqual(
                 service.match_context(running_apps=["tool.exe"]),
@@ -149,6 +154,7 @@ class AudioProfileTests(unittest.TestCase):
     def test_default_profiles_do_not_bind_app_or_game_tabs(self):
         with tempfile.TemporaryDirectory() as directory:
             service = self._service(directory)
+            self.assertFalse(service.auto_switch_enabled)
             self.assertFalse(service.hardware_mode_switch_enabled)
             self.assertEqual(
                 service.get_profile("Gaming")["triggers"]["hardware_modes"],
@@ -188,7 +194,7 @@ class AudioProfileTests(unittest.TestCase):
                 "GameTab",
             )
 
-    def test_legacy_v1_hardware_mapping_is_inert_after_upgrade(self):
+    def test_legacy_v1_automatic_mappings_are_inert_after_upgrade(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "profiles.json"
             payload = {
@@ -201,7 +207,7 @@ class AudioProfileTests(unittest.TestCase):
                         "mic": {"volume": 85, "muted": False},
                         "apps": {},
                         "triggers": {
-                            "focused_apps": [],
+                            "focused_apps": ["game"],
                             "running_apps": [],
                             "obs_streaming": False,
                             "hardware_modes": [int(DisplayMode.MODE_GAME)],
@@ -212,19 +218,27 @@ class AudioProfileTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
 
             service = self._service(directory)
+            # Both old automatic paths require fresh explicit consent in v2.
+            self.assertFalse(service.auto_switch_enabled)
             self.assertFalse(service.hardware_mode_switch_enabled)
             self.assertEqual(
                 service.get_profile("LegacyGaming")["triggers"]["hardware_modes"],
                 [int(DisplayMode.MODE_GAME)],
             )
             self.assertIsNone(service.profile_for_hardware_mode(DisplayMode.MODE_GAME))
+            self.assertIsNone(service.match_context(focused_app="game.exe"))
 
-    def test_context_auto_switch_can_be_disabled_independently(self):
+    def test_context_auto_switch_opt_in_persists_independently(self):
         with tempfile.TemporaryDirectory() as directory:
             service = self._service(directory)
-            service.set_auto_switch_enabled(False)
+            self.assertFalse(service.auto_switch_enabled)
+            service.set_auto_switch_enabled(True)
+            reloaded = self._service(directory)
+            self.assertTrue(reloaded.auto_switch_enabled)
+            self.assertFalse(reloaded.hardware_mode_switch_enabled)
+            reloaded.set_auto_switch_enabled(False)
             self.assertIsNone(
-                service.match_context(focused_app="steam.exe", obs_streaming=True)
+                reloaded.match_context(focused_app="steam.exe", obs_streaming=True)
             )
 
     def test_debouncer_prevents_trigger_oscillation_and_repeat_apply(self):
