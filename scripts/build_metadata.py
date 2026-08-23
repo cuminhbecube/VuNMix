@@ -50,9 +50,9 @@ env.Append(
 )
 
 
-def _verify_firmware_metadata(source, target, build_env):
-    firmware = pathlib.Path(build_env.subst("$BUILD_DIR")) / (
-        build_env.subst("$PROGNAME") + ".bin"
+def _verify_firmware_metadata(target, source, env):
+    firmware = pathlib.Path(env.subst("$BUILD_DIR")) / (
+        env.subst("$PROGNAME") + ".bin"
     )
     if not firmware.is_file():
         raise RuntimeError(f"Firmware image missing for metadata verification: {firmware}")
