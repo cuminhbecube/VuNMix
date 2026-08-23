@@ -4,7 +4,13 @@ Kept separate from the legacy gui.py while the desktop UI is still monolithic.
 Issue #10 will eventually fold this back into the refactored views.
 """
 
-from gui import SettingsDialog, TrayApp
+import logging
+
+from build_info import APP_VERSION
+from gui import SettingsDialog, TrayApp, create_tray_icon
+
+
+log = logging.getLogger(__name__)
 
 
 class ConnectionSettingsDialog(SettingsDialog):
@@ -23,7 +29,9 @@ class ConnectionSettingsDialog(SettingsDialog):
             hover = "#c82333"
         else:
             status = (getattr(serial_service, "status", "") or "").lower()
-            if serial_service.is_connected or "verifying" in status:
+            if "protocol mismatch" in status:
+                text = "P mismatch"
+            elif serial_service.is_connected or "verifying" in status:
                 text = "Verify..."
             elif "connecting" in status:
                 text = "Connecting"
@@ -55,7 +63,71 @@ class ConnectionSettingsDialog(SettingsDialog):
 
 
 class ConnectionTrayApp(TrayApp):
-    """Tray app that uses the connection-aware settings dialog."""
+    """Tray app with versioned labels and connection-aware settings."""
+
+    def run(self):
+        import pystray
+        from pystray import Menu, MenuItem
+
+        is_conn = bool(self.controller._device_connected)
+        icon_image = create_tray_icon(is_conn)
+        status_text = (
+            f"VuNMix {APP_VERSION} - "
+            f"{'Connected' if is_conn else 'Disconnected'}"
+        )
+
+        def make_preset_action(p_name):
+            return lambda icon, item: self.controller.preset_service.apply_preset(p_name)
+
+        preset_items = [
+            MenuItem(name, make_preset_action(name))
+            for name in self.controller.preset_service.get_preset_names()
+        ]
+
+        menu = Menu(
+            MenuItem(f"VuNMix {APP_VERSION}", None, enabled=False),
+            Menu.SEPARATOR,
+            MenuItem(
+                lambda item: (
+                    "Status: Connected"
+                    if self.controller._device_connected
+                    else f"Status: {self.controller.serial.status}"
+                ),
+                None,
+                enabled=False,
+            ),
+            Menu.SEPARATOR,
+            MenuItem('🎵 Audio Presets', Menu(*preset_items)),
+            Menu.SEPARATOR,
+            MenuItem('Settings', self._on_settings, default=True),
+            MenuItem('Reconnect', self._on_reconnect),
+            Menu.SEPARATOR,
+            MenuItem('Exit', self._on_exit),
+        )
+
+        self._icon = pystray.Icon('VuNMix', icon_image, status_text, menu)
+        self.controller.on_connection_changed = self._on_connection_status
+
+        if self.controller._device_connected:
+            self._on_connection_status(True)
+
+        self._icon.run()
+
+    def _on_connection_status(self, connected: bool):
+        log.info(
+            "Tray connection state changed: %s",
+            "connected" if connected else "disconnected",
+        )
+        if self._icon is not None:
+            try:
+                self._icon.icon = create_tray_icon(connected)
+                self._icon.title = (
+                    f"VuNMix {APP_VERSION} - "
+                    f"{'Connected' if connected else 'Disconnected'}"
+                )
+                self._icon.update_menu()
+            except Exception as exc:
+                log.warning("Failed to update tray icon state: %s", exc)
 
     def _on_settings(self, icon, item):
         if self._settings_open:
