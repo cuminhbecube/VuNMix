@@ -62,7 +62,7 @@ class ConnectionSettingsDialog(SettingsDialog):
 
 
 class ConnectionTrayApp(TrayApp):
-    """Tray app with versioned labels, diagnostics, OBS and connection state."""
+    """Tray app with connection, profiles, diagnostics and OBS controls."""
 
     def run(self):
         import pystray
@@ -75,13 +75,44 @@ class ConnectionTrayApp(TrayApp):
             f"{'Connected' if is_conn else 'Disconnected'}"
         )
 
-        def make_preset_action(p_name):
-            return lambda icon, item: self.controller.preset_service.apply_preset(p_name)
+        def make_profile_action(profile_name):
+            def apply(icon, item):
+                apply_fn = getattr(self.controller, "apply_profile", None)
+                if apply_fn:
+                    apply_fn(profile_name, source="tray")
+                else:
+                    self.controller.preset_service.apply_preset(profile_name)
+                if self._icon is not None:
+                    self._icon.update_menu()
+            return apply
 
-        preset_items = [
-            MenuItem(name, make_preset_action(name))
+        profile_items = [
+            MenuItem(name, make_profile_action(name))
             for name in self.controller.preset_service.get_preset_names()
         ]
+        profile_items.extend([
+            Menu.SEPARATOR,
+            MenuItem(
+                lambda item: (
+                    f"Active: {getattr(self.controller, 'active_profile', '') or 'none'}"
+                ),
+                None,
+                enabled=False,
+            ),
+            MenuItem(
+                "Automatic switching",
+                self._on_toggle_auto_profiles,
+                checked=lambda item: bool(
+                    getattr(self.controller, "auto_profile_switching", False)
+                ),
+                enabled=lambda item: hasattr(self.controller, "toggle_auto_profile_switching"),
+            ),
+            MenuItem(
+                "Next profile",
+                self._on_cycle_profile,
+                enabled=lambda item: hasattr(self.controller, "cycle_profile"),
+            ),
+        ])
 
         obs = self.controller.obs_service
         obs_menu = Menu(
@@ -150,7 +181,7 @@ class ConnectionTrayApp(TrayApp):
                 enabled=False,
             ),
             Menu.SEPARATOR,
-            MenuItem("🎵 Audio Presets", Menu(*preset_items)),
+            MenuItem("🎵 Audio Profiles", Menu(*profile_items)),
             MenuItem("🎥 OBS Studio", obs_menu),
             Menu.SEPARATOR,
             MenuItem("Settings", self._on_settings, default=True),
@@ -170,6 +201,22 @@ class ConnectionTrayApp(TrayApp):
             self._on_connection_status(True)
 
         self._icon.run()
+
+    def _on_toggle_auto_profiles(self, icon, item):
+        try:
+            self.controller.toggle_auto_profile_switching()
+            if self._icon is not None:
+                self._icon.update_menu()
+        except Exception:
+            log.exception("Failed to toggle automatic profile switching")
+
+    def _on_cycle_profile(self, icon, item):
+        try:
+            self.controller.cycle_profile(source="tray")
+            if self._icon is not None:
+                self._icon.update_menu()
+        except Exception:
+            log.exception("Failed to cycle audio profile")
 
     def _on_connection_status(self, connected: bool):
         log.info(
