@@ -80,7 +80,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
             self.assertIn('"phase": "start"', log_text)
             self.assertIn('"phase": "write_complete"', log_text)
             self.assertIn("COM_TEST", log_text)
-            self.assertIn(str(firmware), log_text)
+            self.assertIn(firmware.name, log_text)
 
     def test_flash_uses_resolved_com_after_device_renumber(self):
         with tempfile.TemporaryDirectory() as directory:
