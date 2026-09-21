@@ -75,6 +75,8 @@ class ConnectionTrayApp(TrayApp):
             self.controller,
             on_save=self._on_settings_saved,
             on_close=self._on_settings_closed,
+            on_check_app_update=self._request_app_update_check,
+            on_install_app_update=self._start_app_update_install,
         )
 
     def run(self):
@@ -249,6 +251,7 @@ class ConnectionTrayApp(TrayApp):
             MenuItem("🎥 OBS Studio", obs_menu),
             Menu.SEPARATOR,
             MenuItem("Settings", self._on_settings, default=True),
+            MenuItem("Check app update", self._on_check_app_update),
             MenuItem("Reconnect", self._on_reconnect),
             Menu.SEPARATOR,
             MenuItem("Copy diagnostics", self._on_copy_diagnostics),
@@ -268,6 +271,7 @@ class ConnectionTrayApp(TrayApp):
             self._on_connection_status(True)
 
         self._icon.run_detached()
+        self._start_app_update_watcher()
         dialog.run_loop()
 
     def _routing_status_label(self):
