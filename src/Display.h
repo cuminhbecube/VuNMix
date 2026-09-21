@@ -46,4 +46,5 @@ namespace Display {
     void UpdateTimers(uint32_t deltaTime);
     void ResetTimers();
     void Sleep();
+    void Wake();
 }
