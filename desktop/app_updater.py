@@ -249,18 +249,30 @@ class AppUpdater:
 
     def launch_installer(self, installer_path: Path) -> None:
         command = self.installer_command(installer_path)
-        creationflags = 0
+
         if os.name == "nt":
-            creationflags = (
-                getattr(subprocess, "DETACHED_PROCESS", 0)
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            # Inno Setup updates Program Files and therefore needs elevation.
+            # ShellExecute with the "runas" verb triggers the normal Windows
+            # UAC consent dialog; CreateProcess/Popen may fail with error 740.
+            import ctypes
+
+            params = subprocess.list2cmdline(command[1:])
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                str(installer_path),
+                params,
+                None,
+                1,
             )
+            if int(result) <= 32:
+                raise UpdateError(
+                    f"Windows could not start the update installer (ShellExecute={result})."
+                )
+            return
+
         try:
-            subprocess.Popen(
-                command,
-                close_fds=True,
-                creationflags=creationflags,
-            )
+            subprocess.Popen(command, close_fds=True)
         except OSError as exc:
             raise UpdateError(f"Could not start update installer: {exc}") from exc
 
