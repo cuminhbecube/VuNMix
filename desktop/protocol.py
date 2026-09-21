@@ -76,6 +76,7 @@ class StandbyLedMode(IntEnum):
     SPARKLE        = 13
     AURORA         = 14
     LED_OFF        = 15
+    LED_TEST       = 16
 
 STANDBY_LED_NAMES = [
     "Color Wave",
@@ -94,6 +95,7 @@ STANDBY_LED_NAMES = [
     "Sparkle",
     "Aurora",
     "Off",
+    "LED Test 0-9",
 ]
 
 # Binary frame:
