@@ -71,6 +71,13 @@ static const uint8_t STATE_GAME_MAX = 3;
 // --- Lighting (WS2812 / NeoPixel)
 static const uint8_t PIXELS_COUNT = 10;      // 10 RGB LEDs on GPIO 45
 static const uint8_t PIXELS_BRIGHTNESS = 96;
+static const uint8_t LED_FRAME_INTERVAL_MS = 20; // 50 Hz render/smoothing loop
+
+// Logical LED order used by bars/meters/diagnostics. If a PCB revision wires
+// the strip in reverse or another order, change only this mapping.
+static constexpr uint8_t LED_LOGICAL_TO_PHYSICAL[PIXELS_COUNT] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+};
 
 // --- Screen Drawing
 static const uint16_t DISPLAY_WIDTH = 320;
