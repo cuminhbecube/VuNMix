@@ -557,7 +557,12 @@ class SettingsDialog:
             from protocol import Color, Command
 
             preview_settings = copy.deepcopy(self.config.device_settings)
-            setattr(preview_settings, key, Color.from_list(selected))
+            for color_key, color_values in self._led_color_values.items():
+                setattr(
+                    preview_settings,
+                    color_key,
+                    Color.from_list(color_values),
+                )
             self.controller.serial.send_command(
                 Command.SETTINGS,
                 preview_settings.pack(),
