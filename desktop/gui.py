@@ -21,6 +21,9 @@ import serial.tools.list_ports
 
 from PIL import Image, ImageDraw
 
+from build_info import APP_VERSION
+from app_updater import AppUpdater, UpdateInfo, version_tuple
+
 log = logging.getLogger(__name__)
 
 
@@ -96,11 +99,21 @@ def create_tray_icon(connected: bool) -> Image.Image:
 class SettingsDialog:
     """Simple tkinter settings dialog."""
 
-    def __init__(self, config, controller, on_save, on_close=None):
+    def __init__(
+        self,
+        config,
+        controller,
+        on_save,
+        on_close=None,
+        on_check_app_update=None,
+        on_install_app_update=None,
+    ):
         self.config = config
         self.controller = controller
         self.on_save = on_save
         self.on_close = on_close
+        self.on_check_app_update = on_check_app_update
+        self.on_install_app_update = on_install_app_update
         self._window: Optional[tk.Tk] = None
         self._ui_thread_id: Optional[int] = None
         self._window_commands = queue.Queue()
@@ -141,7 +154,7 @@ class SettingsDialog:
         self._window.overrideredirect(True)
         
         window_width = 320
-        window_height = 660
+        window_height = 700
         screen_width = self._window.winfo_screenwidth()
         screen_height = self._window.winfo_screenheight()
         x = screen_width - window_width - 15
@@ -277,9 +290,13 @@ class SettingsDialog:
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
         add_row(content, "Continuous Scroll", lambda r: ctk.CTkSwitch(r, text="", variable=self._scroll_var, switch_width=36, switch_height=18))
 
-        # Run on Startup (default on)
+        # Run on Startup
         self._startup_var = tk.BooleanVar(value=self.config.run_on_startup)
         add_row(content, "Run on Startup", lambda r: ctk.CTkSwitch(r, text="", variable=self._startup_var, switch_width=36, switch_height=18))
+
+        # Automatic desktop app release checks
+        self._auto_update_var = tk.BooleanVar(value=self.config.auto_update_enabled)
+        add_row(content, "Auto App Update", lambda r: ctk.CTkSwitch(r, text="", variable=self._auto_update_var, switch_width=36, switch_height=18))
 
         # Auto Sleep (default off)
         self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
@@ -311,6 +328,33 @@ class SettingsDialog:
             text_color="#a0a0a0",
             anchor="w",
         ).pack(fill='x', padx=8, pady=(0, 6))
+
+        # Desktop app update
+        update_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
+        update_frame.pack(fill='x', padx=12, pady=(5, 2))
+        update_top = ctk.CTkFrame(update_frame, fg_color="transparent")
+        update_top.pack(fill='x', padx=8, pady=(6, 2))
+        ctk.CTkLabel(
+            update_top,
+            text=f"Desktop App  {APP_VERSION}",
+            font=ctk.CTkFont(size=12),
+        ).pack(side='left')
+        self.btn_app_update = ctk.CTkButton(
+            update_top,
+            text="Check",
+            width=72,
+            height=24,
+            command=self._manual_check_app_update,
+        )
+        self.btn_app_update.pack(side='right')
+        self._app_update_status_var = tk.StringVar(value="Automatic release checks enabled")
+        ctk.CTkLabel(
+            update_frame,
+            textvariable=self._app_update_status_var,
+            font=ctk.CTkFont(size=10),
+            text_color="#a0a0a0",
+            anchor="w",
+        ).pack(fill='x', padx=8, pady=(0, 5))
 
         # Firmware update
         firmware_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
@@ -442,6 +486,52 @@ class SettingsDialog:
         # Worker threads must never call Tk methods directly.  Queue the
         # callback and let _process_window_commands execute it on MainThread.
         self._window_commands.put(("call", callback))
+
+    def _manual_check_app_update(self):
+        if not self.on_check_app_update:
+            return
+        if hasattr(self, "btn_app_update"):
+            self.btn_app_update.configure(state="disabled")
+        if hasattr(self, "_app_update_status_var"):
+            self._app_update_status_var.set("Checking GitHub release...")
+        self.on_check_app_update(True)
+
+    def set_app_update_checking(self, checking: bool):
+        if hasattr(self, "btn_app_update"):
+            self.btn_app_update.configure(
+                state="disabled" if checking else "normal"
+            )
+
+    def set_app_update_status(self, text: str):
+        if hasattr(self, "_app_update_status_var"):
+            self._app_update_status_var.set(text)
+        self.set_app_update_checking(False)
+
+    def prompt_app_update(self, info: UpdateInfo, automatic: bool = False):
+        self.set_app_update_status(f"New version available: {info.tag}")
+        title = "VuNMix Update Available"
+        message = (
+            f"Current version: {APP_VERSION}\n"
+            f"New version: {info.tag}\n\n"
+            "Download the official installer, verify SHA-256, and update now?"
+        )
+        if messagebox.askyesno(title, message, parent=self._window):
+            self.start_app_update(info)
+        elif automatic:
+            log.info("Automatic app update prompt dismissed for %s", info.tag)
+
+    def start_app_update(self, info: UpdateInfo):
+        if not self.on_install_app_update:
+            return
+        self.set_app_update_checking(True)
+        self._app_update_status_var.set(f"Preparing {info.tag}...")
+        self.on_install_app_update(info)
+
+    def set_app_update_progress(self, value: float, text: str):
+        # Keep the settings UI compact: the download percentage is shown in
+        # the status line while the updater performs checksum verification.
+        percent = max(0, min(100, int(round(float(value) * 100))))
+        self._app_update_status_var.set(f"{text} {percent}%")
 
     def _select_firmware(self):
         if not self.controller.can_update_firmware:
@@ -623,6 +713,7 @@ class SettingsDialog:
             
             self.config.com_port = new_port
             self.config.run_on_startup = self._startup_var.get()
+            self.config.auto_update_enabled = self._auto_update_var.get()
             self.config.favorite_apps = sorted(set(self.config.favorite_apps))
             sleep_minutes = max(0, int(self._sleep_var.get()))
             self.config.device_settings.sleep_after_seconds = min(
@@ -675,6 +766,11 @@ class TrayApp:
         self._icon = None
         self._settings_open = False
         self._settings_dialog = None
+        self._app_updater = AppUpdater(APP_VERSION)
+        self._update_check_lock = threading.Lock()
+        self._update_stop = threading.Event()
+        self._latest_app_update = None
+        self._notified_update_tag = None
 
     def _create_settings_dialog(self):
         return SettingsDialog(
@@ -682,6 +778,8 @@ class TrayApp:
             self.controller,
             on_save=self._on_settings_saved,
             on_close=self._on_settings_closed,
+            on_check_app_update=self._request_app_update_check,
+            on_install_app_update=self._start_app_update_install,
         )
 
     def _ensure_settings_dialog(self):
@@ -740,7 +838,114 @@ class TrayApp:
         # pystray documents run_detached() specifically for integration with
         # another library that owns the process main loop (Tk in our case).
         self._icon.run_detached()
+        self._start_app_update_watcher()
         dialog.run_loop()
+
+    def _start_app_update_watcher(self):
+        if not self.config.auto_update_enabled:
+            return
+        if version_tuple(APP_VERSION) is None:
+            log.info("Automatic app update disabled for non-release build %s", APP_VERSION)
+            return
+
+        def watcher():
+            # Let startup/serial discovery settle before the first network call.
+            if self._update_stop.wait(8.0):
+                return
+            while not self._update_stop.is_set():
+                self._check_app_update_worker(manual=False)
+                if self._update_stop.wait(6 * 60 * 60):
+                    return
+
+        threading.Thread(
+            target=watcher,
+            daemon=True,
+            name="AppUpdateWatch",
+        ).start()
+
+    def _request_app_update_check(self, manual: bool = True):
+        threading.Thread(
+            target=self._check_app_update_worker,
+            args=(manual,),
+            daemon=True,
+            name="AppUpdateCheck",
+        ).start()
+
+    def _check_app_update_worker(self, manual: bool):
+        if not self._update_check_lock.acquire(blocking=False):
+            if manual:
+                self._dispatch_ui(
+                    lambda: self._ensure_settings_dialog().set_app_update_status(
+                        "Update check already running."
+                    )
+                )
+            return
+        try:
+            info = self._app_updater.check_latest()
+            self._latest_app_update = info
+
+            if info is None:
+                if manual:
+                    self._dispatch_ui(
+                        lambda: self._ensure_settings_dialog().set_app_update_status(
+                            f"Up to date: {APP_VERSION}"
+                        )
+                    )
+                return
+
+            should_prompt = manual or self._notified_update_tag != info.tag
+            self._notified_update_tag = info.tag
+            if should_prompt:
+                self._dispatch_ui(
+                    lambda found=info, auto=not manual:
+                        self._ensure_settings_dialog().prompt_app_update(found, auto)
+                )
+        except Exception as exc:
+            log.warning("App update check failed: %s", exc)
+            if manual:
+                self._dispatch_ui(
+                    lambda error=str(exc):
+                        self._ensure_settings_dialog().set_app_update_status(
+                            f"Check failed: {error}"
+                        )
+                )
+        finally:
+            self._update_check_lock.release()
+
+    def _start_app_update_install(self, info: UpdateInfo):
+        def worker():
+            try:
+                def on_progress(value, text):
+                    self._dispatch_ui(
+                        lambda v=value, t=text:
+                            self._ensure_settings_dialog().set_app_update_progress(v, t)
+                    )
+
+                path = self._app_updater.download_and_install(
+                    info,
+                    progress=on_progress,
+                )
+                log.info("App update installer started: %s", path)
+                self._dispatch_ui(
+                    lambda:
+                        self._ensure_settings_dialog().set_app_update_status(
+                            f"Installer started for {info.tag}. VuNMix may restart."
+                        )
+                )
+            except Exception as exc:
+                log.exception("App update failed")
+                self._dispatch_ui(
+                    lambda error=str(exc):
+                        self._ensure_settings_dialog().set_app_update_status(
+                            f"Update failed: {error}"
+                        )
+                )
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="AppUpdateInstall",
+        ).start()
 
     def _on_connection_status(self, connected: bool):
         """Update tray state through the main-thread UI dispatcher."""
@@ -786,6 +991,7 @@ class TrayApp:
 
     def _on_exit(self, icon, item):
         log.info("Exit requested")
+        self._update_stop.set()
         if self._settings_dialog is not None:
             self._settings_dialog.request_shutdown()
         if self._icon is not None:
