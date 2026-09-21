@@ -16,6 +16,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('TAG="${GITHUB_REF_NAME#release/}"', workflow)
         self.assertIn("IS_RELEASE=\"true\"", workflow)
 
+    def test_rebuild_retargets_existing_release_tag(self):
+        workflow = (REPO_DIR / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"', workflow)
+        self.assertIn('-f sha="${GITHUB_SHA}"', workflow)
+        self.assertIn("-F force=true", workflow)
+        self.assertIn("--clobber", workflow)
+
     def test_release_assets_keep_expected_names(self):
         workflow = (REPO_DIR / ".github" / "workflows" / "release.yml").read_text(
             encoding="utf-8"
