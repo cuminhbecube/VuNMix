@@ -2,7 +2,9 @@ name: Build and Release VuNMix
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "release/v*"
     tags: ["v*"]
   pull_request:
     branches: [main]
@@ -42,6 +44,9 @@ jobs:
             IS_RELEASE="true"
           elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
+            IS_RELEASE="true"
+          elif [[ "${GITHUB_REF}" == refs/heads/release/v* ]]; then
+            TAG="${GITHUB_REF_NAME#release/}"
             IS_RELEASE="true"
           fi
 

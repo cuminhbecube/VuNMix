@@ -81,9 +81,17 @@ def main():
 
     tray = ConnectionTrayApp(config, controller)
     try:
+        log.info("Starting detached tray + MainThread Tk event loop")
         tray.run()
+        log.info("Tray/Tk event loop returned normally")
     except KeyboardInterrupt:
         log.info("Interrupted by user")
+    except BaseException:
+        # A Python-level main-loop failure must leave an explicit breadcrumb.
+        # Native Tcl/COM faults are still captured by faulthandler when Python
+        # gets an opportunity to dump them.
+        log.critical("Tray/Tk main loop crashed", exc_info=True)
+        raise
     finally:
         controller.stop()
         log.info("VuNMix stopped.")
