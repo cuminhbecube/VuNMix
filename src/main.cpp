@@ -799,6 +799,7 @@ static uint8_t s_meterAlternate = 0;
 static bool s_audioActive = false;
 static uint32_t s_audioSilenceSince = 0;
 static uint32_t s_lastLightingFrameAt = 0;
+static uint8_t s_lastStandbyEffect = 0xFF;
 
 static constexpr uint8_t LED_AUDIO_ENTER_LEVEL = 3;
 static constexpr uint8_t LED_AUDIO_EXIT_LEVEL = 1;
@@ -883,7 +884,13 @@ static void UpdateAudioActivity()
         return;
     }
 
-    if (!s_audioActive || rawPeak > LED_AUDIO_EXIT_LEVEL)
+    if (rawPeak > LED_AUDIO_EXIT_LEVEL)
+    {
+        s_audioSilenceSince = 0;
+        return;
+    }
+
+    if (!s_audioActive)
         return;
 
     if (s_audioSilenceSince == 0)
@@ -929,14 +936,22 @@ void UpdateLighting()
     UpdateAudioActivity();
 
     LightingRenderMode nextMode = SelectLightingMode();
-    if (nextMode != s_lightingRenderMode)
+    bool standbyEffectChanged =
+        nextMode == LightingRenderMode::STANDBY &&
+        s_lastStandbyEffect != g_Settings.standbyLedMode;
+
+    if (nextMode != s_lightingRenderMode || standbyEffectChanged)
     {
         // Effects such as meteor/twinkle use the previous pixel buffer as
-        // history. Clear it when changing semantic modes so stale volume bars
-        // never bleed into a standby animation.
+        // history. Clear it when changing semantic modes/effects so stale
+        // volume bars never bleed into a standby animation.
         g_Pixels.clear();
         s_lightingRenderMode = nextMode;
     }
+
+    s_lastStandbyEffect = nextMode == LightingRenderMode::STANDBY
+        ? g_Settings.standbyLedMode
+        : 0xFF;
 
     switch (s_lightingRenderMode)
     {
