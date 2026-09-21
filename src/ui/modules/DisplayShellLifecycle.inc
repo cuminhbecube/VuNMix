@@ -196,7 +196,8 @@
             if (chunk->index == 0) {
                 icon = &s_appIcons[s_appIconWriteSlot];
                 s_appIconWriteSlot = (s_appIconWriteSlot + 1) % APP_ICON_CACHE_SIZE;
-                icon->id = chunk->id;                icon->received = 0;
+                icon->id = chunk->id;
+                icon->received = 0;
                 memset(icon->data, 0, sizeof(icon->data));
             } else {
                 return;
