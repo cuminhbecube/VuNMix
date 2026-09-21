@@ -1031,3 +1031,217 @@ void LightingOcean()
         g_Pixels.setPixelColor(i, r, g, b);
     }
 }
+
+// ─── Lava — red/orange flowing heat (WLED palette-style) ─────────────────
+void LightingLava()
+{
+    static uint8_t fxPhase = 0;
+    fxPhase += 3;
+
+    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
+    {
+        uint8_t wave1 = g_Pixels.sine8(fxPhase + i * 35);
+        uint8_t wave2 = g_Pixels.sine8(fxPhase * 3 / 2 + i * 55);
+        uint8_t heat = (wave1 + wave2) / 2;
+        // Lava palette: dark red → orange → yellow
+        uint8_t r = heat;
+        uint8_t g = heat > 128 ? (heat - 128) * 2 : 0;
+        uint8_t b = heat > 200 ? (heat - 200) * 4 : 0;
+        g_Pixels.setPixelColor(i, r, g, b);
+    }
+}
+
+// ─── Scanner — Knight Rider / Larson scanner ─────────────────────────────
+void LightingScanner()
+{
+    static uint8_t fxPos = 0;
+    static int8_t fxDir = 1;
+    static uint8_t fxHue = 0;
+    static uint8_t frameCount = 0;
+
+    if (++frameCount < 3) return;
+    frameCount = 0;
+
+    // Fade trail
+    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
+    {
+        uint32_t c = g_Pixels.getPixelColor(i);
+        uint8_t r = ((c >> 16) & 0xFF) * 200 / 256;
+        uint8_t g = ((c >> 8) & 0xFF) * 200 / 256;
+        uint8_t b = (c & 0xFF) * 200 / 256;
+        g_Pixels.setPixelColor(i, r, g, b);
+    }
+
+    // Draw scanner dot
+    uint16_t hue16 = (uint16_t)fxHue * 256;
+    uint32_t color = g_Pixels.ColorHSV(hue16, 255, 255);
+    g_Pixels.setPixelColor(fxPos, g_Pixels.gamma32(color));
+
+    fxPos += fxDir;
+    if (fxPos >= PIXELS_COUNT - 1) { fxDir = -1; fxHue += 20; }
+    if (fxPos == 0) { fxDir = 1; fxHue += 20; }
+}
+
+// ─── Theater Chase — classic marquee chase ───────────────────────────────
+void LightingTheaterChase()
+{
+    static uint8_t fxStep = 0;
+    static uint8_t fxHue = 0;
+    static uint8_t frameCount = 0;
+
+    if (++frameCount < 5) return;
+    frameCount = 0;
+
+    g_Pixels.clear();
+    for (uint8_t i = fxStep; i < PIXELS_COUNT; i += 3)
+    {
+        uint16_t hue16 = (uint16_t)(fxHue + i * 25) * 256;
+        uint32_t color = g_Pixels.ColorHSV(hue16, 255, 200);
+        g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
+    }
+    fxStep = (fxStep + 1) % 3;
+    fxHue += 4;
+}
+
+// ─── Running Lights — sinusoidal brightness wave ─────────────────────────
+void LightingRunningLights()
+{
+    static uint8_t fxPhase = 0;
+    static uint8_t fxHue = 0;
+    fxPhase += 4;
+    fxHue += 1;
+
+    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
+    {
+        uint8_t bright = g_Pixels.sine8(fxPhase + i * (256 / PIXELS_COUNT));
+        uint16_t hue16 = (uint16_t)fxHue * 256;
+        uint32_t color = g_Pixels.ColorHSV(hue16, 255, bright);
+        g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
+    }
+}
+
+// ─── Gradient — smooth rotating dual-color gradient ──────────────────────
+void LightingGradient()
+{
+    static uint8_t fxHue = 0;
+    fxHue += 1;
+
+    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
+    {
+        uint8_t ratio = i * 255 / (PIXELS_COUNT - 1);
+        uint8_t h = fxHue + ratio / 2;
+        uint16_t hue16 = (uint16_t)h * 256;
+        uint32_t color = g_Pixels.ColorHSV(hue16, 255, 180);
+        g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
+    }
+}
+
+// ─── Sparkle — random white flashes on dark ──────────────────────────────
+void LightingSparkle()
+{
+    static uint8_t frameCount = 0;
+    if (++frameCount < 2) return;
+    frameCount = 0;
+
+    g_Pixels.clear();
+    uint8_t idx = random(PIXELS_COUNT);
+    g_Pixels.setPixelColor(idx, 255, 255, 255);
+}
+
+// ─── Aurora — slow shifting green/purple/blue northern lights ────────────
+void LightingAurora()
+{
+    static uint8_t fxPhase = 0;
+    fxPhase += 1;
+
+    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
+    {
+        // Multi-layered sine waves for organic movement
+        uint8_t wave1 = g_Pixels.sine8(fxPhase * 2 + i * 40);
+        uint8_t wave2 = g_Pixels.sine8(fxPhase * 3 + i * 60 + 128);
+        uint8_t bright = (wave1 + wave2) / 3;
+
+        // Aurora palette: green → teal → purple
+        uint8_t hue8 = 85 + g_Pixels.sine8(fxPhase + i * 30) / 4;  // ~85-148 (green→blue)
+        uint16_t hue16 = (uint16_t)hue8 * 256;
+        uint32_t color = g_Pixels.ColorHSV(hue16, 200, bright);
+        g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
+    }
+}
+
+void LightingVolume(SessionData *item, Color *c1, Color *c2)
+{
+    if (!item->data.isMuted)
+    {
+        uint32_t volAcc = ((uint32_t)item->data.volume * 255 * PIXELS_COUNT) / 100;
+        for (int i = 0; i < PIXELS_COUNT; i++)
+        {
+            uint32_t amp = min(volAcc, (uint32_t)255);
+            if(volAcc >= amp) volAcc -= amp;
+            else volAcc = 0;
+            Color c = LerpColor(c1, c2, amp);
+            g_Pixels.setPixelColor(i, c.r, c.g, c.b);
+        }
+    }
+    else
+    {
+        const uint32_t period = 500;
+        uint32_t phase = millis() % (2U * period);
+        uint32_t triangle = phase <= period ? phase : (2U * period - phase);
+        uint8_t amp = (uint8_t)(triangle * 255U / period);
+        Color c = LerpColor(c1, c2, amp);
+        uint32_t color32 = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
+        g_Pixels.fill(color32);
+    }
+}
+
+Color LerpColor(Color *c1, Color *c2, uint8_t coeff)
+{
+    uint8_t r = c1->r + ((int)(c2->r - c1->r) * coeff) / 255;
+    uint8_t g = c1->g + ((int)(c2->g - c1->g) * coeff) / 255;
+    uint8_t b = c1->b + ((int)(c2->b - c1->b) * coeff) / 255;
+    return {r, g, b};
+}
+
+// ─── Audio-Reactive VU Meter with Peak Hold & Decay ──────────────────────
+void LightingAudioVU(uint8_t levelL, uint8_t levelR)
+{
+    static uint8_t s_peakLevel = 0;
+    static uint8_t s_decayCounter = 0;
+
+    uint8_t maxLevel = max(levelL, levelR);
+
+    // Peak hold & smooth gravity decay
+    if (maxLevel >= s_peakLevel) {
+        s_peakLevel = maxLevel;
+    } else if ((s_decayCounter & 1) == 0 && s_peakLevel > 0) {
+        s_peakLevel--;
+    }
+    s_decayCounter++;
+
+    // Number of active LEDs (0 to 10)
+    uint8_t litCount = (maxLevel * PIXELS_COUNT + 50) / 100;
+    uint8_t peakLed = (s_peakLevel * (PIXELS_COUNT - 1) + 50) / 100;
+
+    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
+    {
+        if (i < litCount)
+        {
+            // Gradient: Green (0-5) -> Yellow/Orange (6-7) -> Red (8-9)
+            uint16_t hue16;
+            if (i < 6) hue16 = (uint16_t)(21845 - i * 2500); // Green to Yellow
+            else hue16 = (uint16_t)(6800 - (i - 6) * 3400);  // Orange to Red
+            uint32_t color = g_Pixels.ColorHSV(hue16, 255, 255);
+            g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
+        }
+        else if (i == peakLed && s_peakLevel > 5)
+        {
+            // Peak indicator dot (bright Cyan/White)
+            g_Pixels.setPixelColor(i, 255, 255, 255);
+        }
+        else
+        {
+            g_Pixels.setPixelColor(i, 0, 0, 0);
+        }
+    }
+}
