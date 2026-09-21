@@ -22,6 +22,8 @@ from protocol import (
     ModeStates,
     SessionData,
     SessionInfo,
+    StandbyLedMode,
+    STANDBY_LED_NAMES,
     VolumeData,
     encode_frame,
 )
@@ -84,6 +86,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(unpacked.led_brightness, 255)
         self.assertEqual(unpacked.clock_standby_minutes, 0)
         self.assertEqual(unpacked.volume_min_color.to_list(), [0, 255, 10])
+
+    def test_led_test_mode_extends_settings_without_protocol_change(self):
+        self.assertEqual(int(StandbyLedMode.LED_TEST), 16)
+        self.assertEqual(STANDBY_LED_NAMES[16], "LED Test 0-9")
+        settings = DeviceSettings.from_config({"standby_led_mode": 16})
+        unpacked = DeviceSettings.unpack(settings.pack())
+        self.assertEqual(unpacked.standby_led_mode, 16)
+        self.assertEqual(len(settings.pack()), 19)
 
     def test_meter_levels_are_clamped(self):
         packed = MeterData(current=150, alternate=-4).pack()

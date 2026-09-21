@@ -14,7 +14,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, colorchooser
 import customtkinter as ctk
 from typing import Optional
 import serial.tools.list_ports
@@ -127,7 +127,7 @@ class SettingsDialog:
         self._window.overrideredirect(True)
         
         window_width = 320
-        window_height = 625
+        window_height = 660
         screen_width = self._window.winfo_screenwidth()
         screen_height = self._window.winfo_screenheight()
         x = screen_width - window_width - 15
@@ -213,7 +213,40 @@ class SettingsDialog:
         self._brightness_var = tk.DoubleVar(value=self.config.device_settings.led_brightness)
         add_row(content, "LED Brightness", lambda r: ctk.CTkSlider(r, from_=0, to=255, variable=self._brightness_var, width=120, height=14, command=self._on_brightness_change))
 
+        # Runtime color controls. Keep all four existing protocol colors but
+        # expose them in one compact row so the settings window stays usable.
+        self._led_color_values = {
+            "volume_min_color": self.config.device_settings.volume_min_color.to_list(),
+            "volume_max_color": self.config.device_settings.volume_max_color.to_list(),
+            "mix_channel_a_color": self.config.device_settings.mix_channel_a_color.to_list(),
+            "mix_channel_b_color": self.config.device_settings.mix_channel_b_color.to_list(),
+        }
+        self._led_color_buttons = {}
 
+        def build_led_color_row(parent):
+            frame = ctk.CTkFrame(parent, fg_color="transparent")
+            for key, label in (
+                ("volume_min_color", "V-"),
+                ("volume_max_color", "V+"),
+                ("mix_channel_a_color", "A"),
+                ("mix_channel_b_color", "B"),
+            ):
+                rgb = self._led_color_values[key]
+                hex_color = "#{:02x}{:02x}{:02x}".format(*rgb)
+                button = ctk.CTkButton(
+                    frame,
+                    text=label,
+                    width=27,
+                    height=23,
+                    fg_color=hex_color,
+                    hover_color=hex_color,
+                    command=lambda selected=key: self._choose_led_color(selected),
+                )
+                button.pack(side="left", padx=1)
+                self._led_color_buttons[key] = button
+            return frame
+
+        add_row(content, "LED Colors V-/V+/A/B", build_led_color_row)
 
         # Sleep Timeout is shown in minutes; the wire/config representation
         # remains seconds for compatibility with existing firmware/configs.
@@ -498,6 +531,43 @@ class SettingsDialog:
                 self.controller.serial.port = port
                 self.controller.start()
 
+    def _choose_led_color(self, key):
+        values = self._led_color_values.get(key)
+        if not values:
+            return
+
+        initial = "#{:02x}{:02x}{:02x}".format(*values)
+        rgb, hex_color = colorchooser.askcolor(
+            color=initial,
+            parent=self._window,
+            title="Choose LED color",
+        )
+        if rgb is None or hex_color is None:
+            return
+
+        selected = [max(0, min(255, int(round(channel)))) for channel in rgb]
+        self._led_color_values[key] = selected
+        button = self._led_color_buttons.get(key)
+        if button is not None:
+            button.configure(fg_color=hex_color, hover_color=hex_color)
+
+        # Preview on hardware without mutating the saved config until Save.
+        if self.controller._device_connected:
+            import copy
+            from protocol import Color, Command
+
+            preview_settings = copy.deepcopy(self.config.device_settings)
+            for color_key, color_values in self._led_color_values.items():
+                setattr(
+                    preview_settings,
+                    color_key,
+                    Color.from_list(color_values),
+                )
+            self.controller.serial.send_command(
+                Command.SETTINGS,
+                preview_settings.pack(),
+            )
+
     def _save(self):
         try:
             old_port = self.config.com_port
@@ -517,6 +587,15 @@ class SettingsDialog:
             self.config.device_settings.standby_led_mode = STANDBY_LED_NAMES.index(led_name) if led_name in STANDBY_LED_NAMES else 0
             self.config.device_settings.continuous_scroll = self._scroll_var.get()
             self.config.device_settings.led_brightness = int(self._brightness_var.get())
+
+            from protocol import Color
+            for key, values in self._led_color_values.items():
+                setattr(
+                    self.config.device_settings,
+                    key,
+                    Color.from_list(values),
+                )
+
             self.config.save()
             self.controller.audio.set_favorite_apps(self.config.favorite_apps)
             
