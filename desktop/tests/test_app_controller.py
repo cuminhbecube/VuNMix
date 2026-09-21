@@ -125,7 +125,19 @@ class PreferredSessionTests(unittest.TestCase):
     def test_peak_meter_db_mapping(self):
         self.assertEqual(AppController._peak_to_level(0.0), 0)
         self.assertEqual(AppController._peak_to_level(1.0), 100)
-        self.assertGreater(AppController._peak_to_level(0.1), 60)
+
+        # Calibrated VU curve keeps normal program material away from the
+        # end-stop while preserving full scale for a true 0 dB peak.
+        self.assertEqual(AppController._peak_to_level(0.1), 44)   # -20 dB
+        self.assertEqual(AppController._peak_to_level(0.25), 64)  # ~-12 dB
+        self.assertEqual(AppController._peak_to_level(0.5), 81)   # ~-6 dB
+
+    def test_peak_meter_smoothing_limits_flash_and_release(self):
+        self.assertEqual(AppController._smooth_meter_level(0, 100), 18)
+        self.assertEqual(AppController._smooth_meter_level(50, 100), 68)
+        self.assertEqual(AppController._smooth_meter_level(70, 74), 74)
+        self.assertEqual(AppController._smooth_meter_level(80, 0), 75)
+        self.assertEqual(AppController._smooth_meter_level(4, 0), 0)
 
     def test_output_uses_windows_default_even_at_nonzero_index(self):
         items = [Item(), Item(is_default=True), Item()]
