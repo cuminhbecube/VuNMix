@@ -69,6 +69,14 @@ class ConnectionSettingsDialog(SettingsDialog):
 class ConnectionTrayApp(TrayApp):
     """Tray app with profiles, routing, media, diagnostics and OBS controls."""
 
+    def _create_settings_dialog(self):
+        return ConnectionSettingsDialog(
+            self.config,
+            self.controller,
+            on_save=self._on_settings_saved,
+            on_close=self._on_settings_closed,
+        )
+
     def run(self):
         import pystray
         from pystray import Menu, MenuItem
@@ -249,6 +257,9 @@ class ConnectionTrayApp(TrayApp):
             MenuItem("Exit", self._on_exit),
         )
 
+        dialog = self._ensure_settings_dialog()
+        dialog.initialize()
+
         self._icon = pystray.Icon("VuNMix", icon_image, status_text, menu)
         self.controller.on_connection_changed = self._on_connection_status
         obs.set_state_callback(lambda state: self._on_obs_state_changed())
@@ -256,7 +267,8 @@ class ConnectionTrayApp(TrayApp):
         if self.controller._device_connected:
             self._on_connection_status(True)
 
-        self._icon.run()
+        self._icon.run_detached()
+        dialog.run_loop()
 
     def _routing_status_label(self):
         status = getattr(self.controller, "routing_status", None)
@@ -332,11 +344,7 @@ class ConnectionTrayApp(TrayApp):
             except Exception:
                 log.exception("Media action failed: %s", label)
             finally:
-                if self._icon is not None:
-                    try:
-                        self._icon.update_menu()
-                    except Exception:
-                        pass
+                self._dispatch_ui(self._safe_update_menu)
 
         import threading
 
@@ -371,28 +379,35 @@ class ConnectionTrayApp(TrayApp):
         except Exception:
             log.exception("Failed to cycle audio profile")
 
+    def _safe_update_menu(self):
+        if self._icon is not None:
+            try:
+                self._icon.update_menu()
+            except Exception as exc:
+                log.debug("Failed to refresh tray menu: %s", exc)
+
     def _on_connection_status(self, connected: bool):
         log.info(
             "Tray connection state changed: %s",
             "connected" if connected else "disconnected",
         )
-        if self._icon is not None:
-            try:
-                self._icon.icon = create_tray_icon(connected)
-                self._icon.title = (
-                    f"VuNMix {APP_VERSION} - "
-                    f"{'Connected' if connected else 'Disconnected'}"
-                )
-                self._icon.update_menu()
-            except Exception as exc:
-                log.warning("Failed to update tray icon state: %s", exc)
+
+        def apply():
+            if self._icon is not None:
+                try:
+                    self._icon.icon = create_tray_icon(connected)
+                    self._icon.title = (
+                        f"VuNMix {APP_VERSION} - "
+                        f"{'Connected' if connected else 'Disconnected'}"
+                    )
+                    self._icon.update_menu()
+                except Exception as exc:
+                    log.warning("Failed to update tray icon state: %s", exc)
+
+        self._dispatch_ui(apply)
 
     def _on_obs_state_changed(self):
-        if self._icon is not None:
-            try:
-                self._icon.update_menu()
-            except Exception as exc:
-                log.debug("Failed to refresh OBS tray menu: %s", exc)
+        self._dispatch_ui(self._safe_update_menu)
 
     def _obs_stats_label(self):
         obs = self.controller.obs_service
@@ -413,7 +428,7 @@ class ConnectionTrayApp(TrayApp):
             except Exception:
                 log.exception("OBS action failed: %s", label)
             finally:
-                self._on_obs_state_changed()
+                self._dispatch_ui(self._safe_update_menu)
 
         import threading
 
@@ -477,11 +492,4 @@ class ConnectionTrayApp(TrayApp):
         if self._settings_open:
             return
         self._settings_open = True
-        if self._settings_dialog is None:
-            self._settings_dialog = ConnectionSettingsDialog(
-                self.config,
-                self.controller,
-                on_save=self._on_settings_saved,
-                on_close=self._on_settings_closed,
-            )
-        self._settings_dialog.show()
+        self._ensure_settings_dialog().show()
