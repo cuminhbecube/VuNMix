@@ -3,6 +3,9 @@
 #include "Communications.h"
 #include <Keypad.h>
 #include <Wire.h>
+
+extern bool g_DisplayAsleep;
+
 //#if ARDUINO_USB_MODE
 //#include "USB.h"
 //#include "USBHIDConsumerControl.h"
@@ -197,8 +200,7 @@ namespace Input {
             {
                 s_touchDown = true;
                 s_touchDownX = x;
-                s_touchDownY = y;
-                s_touchDownAt = now;
+                s_touchDownY = y;                s_touchDownAt = now;
             }
             s_touchLastX = x;
             s_touchLastY = y;
@@ -340,7 +342,10 @@ namespace Input {
                         if (k == 'P') g_ButtonEvent = doubleTap;
                         if (k == '-') g_EncoderSteps = g_EncoderSteps - 1;
                         if (k == '+') g_EncoderSteps = g_EncoderSteps + 1;
-                        if (k == ' ') Communications::SendMediaControl(1); // 1 = Play/Pause
+                        // First key press while asleep is wake-only, matching
+                        // encoder/touch behavior. A second press controls media.
+                        if (k == ' ' && !g_DisplayAsleep)
+                            Communications::SendMediaControl(1); // 1 = Play/Pause
                     }
                     else if (state == RELEASED) {
                         holdingKey = 0;
@@ -398,7 +403,6 @@ namespace Input {
             }
         }
     }
-
     bool TouchAvailable()
     {
         return s_touchAvailable;
