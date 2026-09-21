@@ -771,6 +771,7 @@ class TrayApp:
         self._update_stop = threading.Event()
         self._latest_app_update = None
         self._notified_update_tag = None
+        self._update_watcher_started = False
 
     def _create_settings_dialog(self):
         return SettingsDialog(
@@ -816,6 +817,7 @@ class TrayApp:
             MenuItem('🎵 Audio Presets', Menu(*preset_items)),
             Menu.SEPARATOR,
             MenuItem('Settings', self._on_settings, default=True),
+            MenuItem('Check app update', self._on_check_app_update),
             MenuItem('Reconnect', self._on_reconnect),
             Menu.SEPARATOR,
             MenuItem('Exit', self._on_exit),
@@ -842,18 +844,23 @@ class TrayApp:
         dialog.run_loop()
 
     def _start_app_update_watcher(self):
+        if self._update_watcher_started:
+            return
         if not self.config.auto_update_enabled:
             return
         if version_tuple(APP_VERSION) is None:
             log.info("Automatic app update disabled for non-release build %s", APP_VERSION)
             return
 
+        self._update_watcher_started = True
+
         def watcher():
             # Let startup/serial discovery settle before the first network call.
             if self._update_stop.wait(8.0):
                 return
             while not self._update_stop.is_set():
-                self._check_app_update_worker(manual=False)
+                if self.config.auto_update_enabled:
+                    self._check_app_update_worker(manual=False)
                 if self._update_stop.wait(6 * 60 * 60):
                     return
 
@@ -983,6 +990,14 @@ class TrayApp:
             if self.controller._device_connected:
                 self.controller.serial.send_command(Command.SETTINGS, self.config.device_settings.pack())
                 self.controller._push_updated_state()
+
+        if self.config.auto_update_enabled:
+            self._start_app_update_watcher()
+
+    def _on_check_app_update(self, icon=None, item=None):
+        dialog = self._ensure_settings_dialog()
+        self._dispatch_ui(lambda: dialog.set_app_update_checking(True))
+        self._request_app_update_check(manual=True)
 
     def _on_reconnect(self, icon, item):
         log.info("Manual reconnect requested")
