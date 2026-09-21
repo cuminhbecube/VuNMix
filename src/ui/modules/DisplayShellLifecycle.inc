@@ -70,7 +70,6 @@
     // Clear Content Area (preserves shell)
     // =========================================================
     static void ClearContent(ScreenType type) {
-        digitalWrite(PIN_TFT_BL, HIGH);
         if (s_currentScreen != type) {
             if (s_contentArea) {
                 lv_obj_clean(s_contentArea);

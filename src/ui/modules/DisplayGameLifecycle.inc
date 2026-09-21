@@ -139,8 +139,4 @@
 
     void ResetTimers() {
     }
-
-    void Sleep() {
-        digitalWrite(PIN_TFT_BL, LOW);
-    }
 }

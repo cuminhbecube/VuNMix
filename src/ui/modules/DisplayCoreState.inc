@@ -9,6 +9,7 @@ extern DeviceSettings g_Settings;
 
 namespace Display {
     TFT_eSPI tft = TFT_eSPI();
+    static bool s_backlightAwake = false;
 
     static constexpr int16_t SW = 320;
     static constexpr int16_t SH = 240;
@@ -69,6 +70,7 @@ namespace Display {
     void Initialize() {
         pinMode(PIN_TFT_BL, OUTPUT);
         digitalWrite(PIN_TFT_BL, HIGH);
+        s_backlightAwake = true;
         delay(100);
 
         tft.init();
@@ -93,6 +95,22 @@ namespace Display {
 
     void Update() {
         lv_task_handler();
+    }
+
+    void Sleep() {
+        if (!s_backlightAwake)
+            return;
+        digitalWrite(PIN_TFT_BL, LOW);
+        s_backlightAwake = false;
+    }
+
+    void Wake() {
+        if (s_backlightAwake)
+            return;
+        digitalWrite(PIN_TFT_BL, HIGH);
+        s_backlightAwake = true;
+        if (lv_scr_act())
+            lv_obj_invalidate(lv_scr_act());
     }
 
     // =========================================================

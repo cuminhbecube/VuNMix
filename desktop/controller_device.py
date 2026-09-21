@@ -26,13 +26,30 @@ class DeviceLifecycleMixin:
     def _on_pc_resume(self):
         log.info("PC resuming from sleep. Waking VuNMix device.")
         self._is_sleeping = False
+        # Best-effort immediate wake for systems whose USB CDC link survived
+        # suspend. _recover_after_resume retries after re-enumeration.
         self.serial.send_command(Command.OK)
 
-        def delayed_resume():
-            # Wait a bit for USB to settle and device to potentially boot.
-            time.sleep(2.0)
+        threading.Thread(
+            target=self._recover_after_resume,
+            daemon=True,
+            name="ResumeSync",
+        ).start()
+
+    def _recover_after_resume(self) -> bool:
+        """Retry wake/state recovery while USB is settling after resume."""
+        deadline = time.monotonic() + 12.0
+        while self._running and not self._is_sleeping and time.monotonic() < deadline:
             if not self.is_connected:
-                return
+                time.sleep(0.25)
+                continue
+
+            # OK is the explicit firmware host-wake signal. Do this before
+            # SETTINGS/state so stale telemetry cannot implicitly wake display.
+            if not self.serial.send_command(Command.OK):
+                time.sleep(0.25)
+                continue
+
             log.info("Pushing full state to recover device after sleep...")
             comtypes.CoInitialize()
             try:
@@ -43,14 +60,16 @@ class DeviceLifecycleMixin:
                 if mode == DisplayMode.MODE_SPLASH:
                     mode = DisplayMode.MODE_OUTPUT
                 self._push_full_state(mode)
+                return True
+            except Exception:
+                log.exception("Resume state recovery failed; retrying")
+                time.sleep(0.25)
             finally:
                 comtypes.CoUninitialize()
 
-        threading.Thread(
-            target=delayed_resume,
-            daemon=True,
-            name="ResumeSync",
-        ).start()
+        if self._running and not self._is_sleeping:
+            log.warning("VuNMix resume recovery timed out waiting for device")
+        return False
 
     def _on_device_connected(self):
         """Called when the COM port opens; protocol identity is not verified yet."""
@@ -89,6 +108,13 @@ class DeviceLifecycleMixin:
             return
 
         try:
+            # A reconnect while the PC is awake must explicitly release any
+            # host-sleep latch left in firmware. During actual PC sleep, keep
+            # the latch intact even if the COM port briefly re-enumerates.
+            if not self._is_sleeping:
+                self.serial.send_command(Command.OK)
+                time.sleep(0.02)
+
             self.serial.send_settings(self.config.device_settings)
             time.sleep(0.1)
 

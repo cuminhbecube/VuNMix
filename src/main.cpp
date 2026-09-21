@@ -27,6 +27,7 @@ MediaInfoData g_MediaInfo;
 bool g_MediaInfoValid = false;
 bool g_DisplayDirty;
 bool g_DisplayAsleep;
+bool g_IdleDisplayAsleep = false;
 bool g_PcAsleep = false;
 
 // Time & Sleep
@@ -53,6 +54,7 @@ uint8_t GetIndexForMode(DisplayMode mode);
 bool ProcessEncoderRotation();
 bool ProcessEncoderButton();
 bool ProcessTouch();
+bool RefreshDisplaySleepState();
 bool ProcessSleep();
 bool ProcessClockStandby();
 bool ProcessDisplayScroll();
@@ -127,10 +129,12 @@ void loop()
 
     if (Input::g_KeyStatesChanged) {
         Input::g_KeyStatesChanged = false;
-        if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH) {
+        // Any physical key activity should reset the idle/clock timers. When
+        // asleep, the first key event is consumed as a wake-only gesture.
+        g_LastActivity = g_Now;
+        g_LastVolumeActivity = g_Now;
+        if (g_DisplayAsleep || g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
             g_DisplayDirty = true;
-            g_LastActivity = g_Now;
-        }
     }
 
     static uint32_t lastTouchSampleCounter = 0;
@@ -155,15 +159,21 @@ void loop()
             g_SettingsChangedAt = g_Now;
         }
         else if (command == Command::SLEEP) {
+            // Host sleep is independent from the user-configurable idle sleep.
+            // Keep it latched until an explicit resume heartbeat (OK) arrives.
             g_PcAsleep = true;
-            g_DisplayAsleep = true;
+            g_ClockMode = false;
+            RefreshDisplaySleepState();
             Display::Sleep();
-            g_LastActivity = g_Now - (g_Settings.sleepAfterSeconds * 1000) - 1000;
-        } else {
-            if (g_PcAsleep) {
-                g_LastActivity = g_Now;
-            }
+        }
+        else if (command == Command::OK && g_PcAsleep) {
+            // The desktop sends OK explicitly on resume. Do not let unrelated
+            // telemetry/settings frames wake a PC-suspended display.
             g_PcAsleep = false;
+            g_LastActivity = g_Now;
+            g_LastVolumeActivity = g_Now;
+            g_ClockMode = false;
+            RefreshDisplaySleepState();
         }
     }
 
@@ -262,6 +272,8 @@ void ResetState()
     g_MeterData = MeterData();
     g_DisplayDirty = true;
     g_DisplayAsleep = false;
+    g_IdleDisplayAsleep = false;
+    g_PcAsleep = false;
 
     // Time & Sleep
     g_Now = millis();
@@ -390,6 +402,11 @@ bool ProcessEncoderButton()
     Input::g_ButtonEvent = Input::none;
     interrupts();
 
+    // The first button event while asleep only wakes the display. This also
+    // covers double-tap so waking cannot accidentally mute/reset a volume.
+    if (readButtonEvent != Input::none && g_DisplayAsleep)
+        return true;
+
     if (readButtonEvent == Input::tap)
     {
         if (g_DisplayAsleep) return true;
@@ -468,10 +485,10 @@ bool ProcessTouch()
     if (event == Input::TouchEvent::None)
         return false;
 
-    // The first gesture wakes a sleeping display without changing anything.
+    // The first gesture wakes an idle-sleeping display without changing
+    // anything. Host sleep remains authoritative until the PC resumes.
     if (g_DisplayAsleep)
     {
-        g_DisplayAsleep = false;
         g_ClockMode = false;
         return true;
     }
@@ -537,37 +554,49 @@ bool ProcessTouch()
     return true;
 }
 
+bool RefreshDisplaySleepState()
+{
+    bool nextState = g_PcAsleep || g_IdleDisplayAsleep;
+    bool changed = nextState != g_DisplayAsleep;
+    g_DisplayAsleep = nextState;
+    return changed;
+}
+
 bool ProcessSleep()
 {
-    if (!g_Settings.sleepEnabled)
+    // Idle sleep is user-configurable, but host sleep is not. A zero timeout
+    // is treated as "no idle timeout" rather than "sleep immediately".
+    if (!g_Settings.sleepEnabled ||
+        g_Settings.sleepAfterSeconds == 0 ||
+        g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
     {
-        g_DisplayAsleep = false;
-        return false;
+        g_IdleDisplayAsleep = false;
     }
-
-    // Don't sleep while in splash/waiting mode (no PC connected yet)
-    if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
-    {
-        if (g_DisplayAsleep)
-        {
-            g_DisplayAsleep = false;
-            return true; // state changed, need redraw
-        }
-        return false;
-    }
-
-    bool lastState = g_DisplayAsleep;
-    uint32_t activityTimeDelta = g_Now - g_LastActivity;
-    if (activityTimeDelta > (uint32_t)g_Settings.sleepAfterSeconds * 1000)
-        g_DisplayAsleep = true;
     else
-        g_DisplayAsleep = false;
+    {
+        uint32_t activityTimeDelta = g_Now - g_LastActivity;
+        g_IdleDisplayAsleep =
+            activityTimeDelta > (uint32_t)g_Settings.sleepAfterSeconds * 1000UL;
+    }
 
-    return lastState != g_DisplayAsleep;
+    bool changed = RefreshDisplaySleepState();
+    if (g_DisplayAsleep)
+        g_ClockMode = false;
+    return changed;
 }
 
 bool ProcessClockStandby()
 {
+    // Power-off states always take precedence over the decorative clock.
+    if (g_DisplayAsleep || g_PcAsleep)
+    {
+        if (g_ClockMode) {
+            g_ClockMode = false;
+            return true;
+        }
+        return false;
+    }
+
     // Clock standby disabled if clockStandbyMinutes == 0 or no time synced
     if (g_Settings.clockStandbyMinutes == 0 || !g_TimeValid)
     {
@@ -646,18 +675,23 @@ void UpdateDisplay()
 {
     Display::SetMeterLevels(g_MeterData.current, g_MeterData.alternate);
 
+    // Physical display power is resolved before choosing a UI screen. This
+    // guarantees that CLOCK/SPLASH/INFO cannot leave the logical state awake
+    // while the backlight remains off.
+    if (g_DisplayAsleep)
+    {
+        Display::Sleep();
+        return;
+    }
+
+    Display::Wake();
+
     // Clock standby mode — show fullscreen digital clock
     if (g_ClockMode && g_TimeValid)
     {
         uint8_t h, m, s;
         GetCurrentTime(h, m, s);
         Display::ClockScreen(h, m, s);
-        return;
-    }
-
-    if (g_DisplayAsleep)
-    {
-        Display::Sleep();
         return;
     }
 
