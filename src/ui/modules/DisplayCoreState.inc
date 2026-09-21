@@ -215,7 +215,8 @@ namespace Display {
 
         for (uint16_t i = 0; i < APP_ICON_SIZE * APP_ICON_SIZE; ++i) {
             uint16_t rgb565 = (uint16_t)icon->data[i * 2] | ((uint16_t)icon->data[i * 2 + 1] << 8);
-            uint8_t r = (uint8_t)(((rgb565 >> 11) & 0x1F) * 255 / 31);            uint8_t g = (uint8_t)(((rgb565 >> 5) & 0x3F) * 255 / 63);
+            uint8_t r = (uint8_t)(((rgb565 >> 11) & 0x1F) * 255 / 31);
+            uint8_t g = (uint8_t)(((rgb565 >> 5) & 0x3F) * 255 / 63);
             uint8_t b = (uint8_t)((rgb565 & 0x1F) * 255 / 31);
             s_appIconCanvasBuf[i] = lv_color_make(r, g, b);
         }
