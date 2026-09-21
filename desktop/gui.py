@@ -102,22 +102,36 @@ class SettingsDialog:
         self.on_save = on_save
         self.on_close = on_close
         self._window: Optional[tk.Tk] = None
-        self._window_thread: Optional[threading.Thread] = None
+        self._ui_thread_id: Optional[int] = None
         self._window_commands = queue.Queue()
         self._drag_x = 0
         self._drag_y = 0
 
-    def show(self):
-        """Show the persistent settings window on its owning Tk thread."""
-        if self._window_thread and self._window_thread.is_alive():
-            self._window_commands.put("show")
+    def initialize(self):
+        """Create the single Tcl/Tk interpreter on the process main thread."""
+        if self._window is not None:
             return
-        self._window_thread = threading.Thread(
-            target=self._create_window,
-            daemon=True,
-            name="SettingsTk",
-        )
-        self._window_thread.start()
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("VuNMix Tk UI must be initialized on MainThread")
+        self._ui_thread_id = threading.get_ident()
+        self._create_window()
+
+    def run_loop(self):
+        """Run the Tk main loop on the same thread that created the interpreter."""
+        self.initialize()
+        if threading.get_ident() != self._ui_thread_id:
+            raise RuntimeError("VuNMix Tk mainloop must run on its owning thread")
+        log.info("Starting Tk UI loop on MainThread")
+        self._window.mainloop()
+        log.info("Tk UI loop stopped")
+
+    def show(self):
+        """Thread-safe request to show the persistent settings window."""
+        self._window_commands.put(("show", None))
+
+    def request_shutdown(self):
+        """Thread-safe request to tear Tcl/Tk down on its owning thread."""
+        self._window_commands.put(("shutdown", None))
 
     def _create_window(self):
         ctk.set_appearance_mode("dark")
@@ -336,23 +350,57 @@ class SettingsDialog:
         save_btn = ctk.CTkButton(main_frame, text="Save Settings", command=self._save, height=32, font=ctk.CTkFont(size=12, weight="bold"))
         save_btn.pack(fill='x', padx=12, pady=(6, 12))
 
+        # Keep the interpreter alive from process start, but do not show
+        # Settings until the tray callback asks for it.  This avoids creating
+        # or destroying Tcl interpreters from worker/pystray threads.
+        self._window.withdraw()
         self._update_status_loop()
         self._process_window_commands()
-        self._window.mainloop()
 
     def _process_window_commands(self):
-        """Marshal show/hide requests onto the Tk-owning thread."""
+        """Drain UI work exclusively on the Tcl/Tk owning thread."""
+        if self._ui_thread_id is not None and threading.get_ident() != self._ui_thread_id:
+            raise RuntimeError("Tk command pump executed on the wrong thread")
+
         try:
             while True:
-                command = self._window_commands.get_nowait()
+                command, payload = self._window_commands.get_nowait()
                 if command == "show" and self._window:
                     self._window.deiconify()
                     self._window.lift()
                     self._window.focus_force()
+                elif command == "call" and payload is not None:
+                    try:
+                        payload()
+                    except Exception:
+                        log.exception("Queued Tk callback failed")
+                elif command == "shutdown":
+                    self._shutdown_from_ui()
+                    return
         except queue.Empty:
             pass
-        if self._window and self._window.winfo_exists():
-            self._window.after(100, self._process_window_commands)
+
+        if self._window is not None:
+            try:
+                self._window.after(50, self._process_window_commands)
+            except tk.TclError:
+                pass
+
+    def _shutdown_from_ui(self):
+        """Destroy Tcl/Tk only from its owner thread."""
+        window = self._window
+        self._window = None
+        if window is None:
+            return
+        log.info("Destroying Tk UI on MainThread")
+        try:
+            window.quit()
+        except tk.TclError:
+            pass
+        try:
+            window.destroy()
+        except tk.TclError:
+            pass
 
     def _start_drag(self, event):
         self._drag_x = event.x
@@ -391,9 +439,9 @@ class SettingsDialog:
         self._window.after(500, self._update_status_loop)
 
     def _ui_call(self, callback):
-        window = self._window
-        if window and window.winfo_exists():
-            window.after(0, callback)
+        # Worker threads must never call Tk methods directly.  Queue the
+        # callback and let _process_window_commands execute it on MainThread.
+        self._window_commands.put(("call", callback))
 
     def _select_firmware(self):
         if not self.controller.can_update_firmware:
@@ -628,6 +676,23 @@ class TrayApp:
         self._settings_open = False
         self._settings_dialog = None
 
+    def _create_settings_dialog(self):
+        return SettingsDialog(
+            self.config,
+            self.controller,
+            on_save=self._on_settings_saved,
+            on_close=self._on_settings_closed,
+        )
+
+    def _ensure_settings_dialog(self):
+        if self._settings_dialog is None:
+            self._settings_dialog = self._create_settings_dialog()
+        return self._settings_dialog
+
+    def _dispatch_ui(self, callback):
+        """Marshal tray/worker UI updates onto the Tk main thread."""
+        self._ensure_settings_dialog()._ui_call(callback)
+
     def run(self):
         """Start the tray application (blocking)."""
         import pystray
@@ -658,6 +723,11 @@ class TrayApp:
             MenuItem('Exit', self._on_exit),
         )
 
+        # Tcl/Tk must exist on MainThread before detached tray callbacks can
+        # request Settings or enqueue other UI work.
+        dialog = self._ensure_settings_dialog()
+        dialog.initialize()
+
         self._icon = pystray.Icon('VuNMix', icon_image, status_text, menu)
 
         # Wire connection status updates
@@ -667,31 +737,31 @@ class TrayApp:
         if self.controller._device_connected:
             self._on_connection_status(True)
 
-        self._icon.run()
+        # pystray documents run_detached() specifically for integration with
+        # another library that owns the process main loop (Tk in our case).
+        self._icon.run_detached()
+        dialog.run_loop()
 
     def _on_connection_status(self, connected: bool):
-        """Update pystray tray icon, tooltip title, and menu dynamically."""
+        """Update tray state through the main-thread UI dispatcher."""
         log.info("Tray connection state changed: %s", "connected" if connected else "disconnected")
-        if self._icon is not None:
-            try:
-                self._icon.icon = create_tray_icon(connected)
-                self._icon.title = f"VuNMix - {'Connected' if connected else 'Disconnected'}"
-                self._icon.update_menu()
-            except Exception as e:
-                log.warning("Failed to update tray icon state: %s", e)
+
+        def apply():
+            if self._icon is not None:
+                try:
+                    self._icon.icon = create_tray_icon(connected)
+                    self._icon.title = f"VuNMix - {'Connected' if connected else 'Disconnected'}"
+                    self._icon.update_menu()
+                except Exception as exc:
+                    log.warning("Failed to update tray icon state: %s", exc)
+
+        self._dispatch_ui(apply)
 
     def _on_settings(self, icon, item):
         if self._settings_open:
             return
         self._settings_open = True
-        if self._settings_dialog is None:
-            self._settings_dialog = SettingsDialog(
-                self.config,
-                self.controller,
-                on_save=self._on_settings_saved,
-                on_close=self._on_settings_closed,
-            )
-        self._settings_dialog.show()
+        self._ensure_settings_dialog().show()
 
     def _on_settings_closed(self):
         self._settings_open = False
@@ -716,5 +786,7 @@ class TrayApp:
 
     def _on_exit(self, icon, item):
         log.info("Exit requested")
-        self.controller.stop()
-        self._icon.stop()
+        if self._settings_dialog is not None:
+            self._settings_dialog.request_shutdown()
+        if self._icon is not None:
+            self._icon.stop()
