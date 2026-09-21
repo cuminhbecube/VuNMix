@@ -843,23 +843,31 @@ static uint8_t SmoothMeterValue(uint8_t current, uint8_t target, uint32_t deltaM
     uint16_t rate = target > current
         ? LED_ATTACK_UNITS_PER_SEC
         : LED_RELEASE_UNITS_PER_SEC;
-    uint16_t step = max<uint16_t>(1, (uint32_t)rate * max<uint32_t>(1, deltaMs) / 1000U);
+    uint32_t safeDeltaMs = deltaMs == 0 ? 1U : deltaMs;
+    uint16_t step = (uint32_t)rate * safeDeltaMs / 1000U;
+    if (step == 0)
+        step = 1;
 
     if (target > current)
-        return (uint8_t)min<uint16_t>(target, current + step);
-    return (uint8_t)max<int16_t>(target, (int16_t)current - (int16_t)step);
+    {
+        uint16_t raised = (uint16_t)current + step;
+        return raised > target ? target : (uint8_t)raised;
+    }
+
+    int16_t lowered = (int16_t)current - (int16_t)step;
+    return lowered < target ? target : (uint8_t)lowered;
 }
 
 static void UpdateMeterSmoothing(uint32_t deltaMs)
 {
     s_meterCurrent = SmoothMeterValue(
         s_meterCurrent,
-        min<uint8_t>(100, g_MeterData.current),
+        g_MeterData.current > 100 ? 100 : g_MeterData.current,
         deltaMs
     );
     s_meterAlternate = SmoothMeterValue(
         s_meterAlternate,
-        min<uint8_t>(100, g_MeterData.alternate),
+        g_MeterData.alternate > 100 ? 100 : g_MeterData.alternate,
         deltaMs
     );
 }
@@ -1396,7 +1404,7 @@ static void RenderVolumeBar(
         return;
     }
 
-    uint8_t volume = min<uint8_t>(100, item->data.volume);
+    uint8_t volume = item->data.volume > 100 ? 100 : item->data.volume;
     uint16_t units = (uint16_t)volume * count;
     uint8_t fullPixels = units / 100U;
     uint8_t remainder = units % 100U;
@@ -1449,7 +1457,8 @@ static void RenderVuGradientChannel(
     const uint8_t *logicalPixels,
     uint8_t count)
 {
-    uint16_t units = (uint16_t)min<uint8_t>(100, level) * count;
+    uint8_t clampedLevel = level > 100 ? 100 : level;
+    uint16_t units = (uint16_t)clampedLevel * count;
     uint8_t fullPixels = units / 100U;
     uint8_t remainder = units % 100U;
 
@@ -1476,7 +1485,8 @@ static void RenderVuColorChannel(
     const uint8_t *logicalPixels,
     uint8_t count)
 {
-    uint16_t units = (uint16_t)min<uint8_t>(100, level) * count;
+    uint8_t clampedLevel = level > 100 ? 100 : level;
+    uint16_t units = (uint16_t)clampedLevel * count;
     uint8_t fullPixels = units / 100U;
     uint8_t remainder = units % 100U;
 
