@@ -176,11 +176,28 @@ class SyncWorkersMixin:
 
     @staticmethod
     def _peak_to_level(peak: float) -> int:
-        """Map WASAPI linear peak to a readable -60 dB..0 dB meter."""
+        """Map WASAPI peak to a calmer VU scale with useful headroom.
+
+        The previous linear dB mapping put ordinary program audio around
+        80-95%, so both the TFT meter and RGB bar lived near the end stop.
+        Keep the same -60 dB..0 dB input window, then apply a square curve:
+        typical peaks stay in the middle while true 0 dB peaks can still
+        reach 100%.
+        """
         if peak <= 0.001:
             return 0
         db = 20.0 * math.log10(min(1.0, peak))
-        return max(0, min(100, round((db + 60.0) * (100.0 / 60.0))))
+        normalized = max(0.0, min(1.0, (db + 60.0) / 60.0))
+        return max(0, min(100, round((normalized ** 2.0) * 100.0)))
+
+    @staticmethod
+    def _smooth_meter_level(shown: int, target: int) -> int:
+        """Limit meter attack/release so short peaks do not flash full-scale."""
+        shown = max(0, min(100, int(shown)))
+        target = max(0, min(100, int(target)))
+        if target > shown:
+            return min(target, shown + 18)
+        return max(target, shown - 5)
 
     def _meter_loop(self):
         """Send smoothed live peak levels without blocking volume sync."""
@@ -270,8 +287,14 @@ class SyncWorkersMixin:
                     target_current = 0
                     target_alternate = 0
 
-                shown_current = max(target_current, shown_current - 7)
-                shown_alternate = max(target_alternate, shown_alternate - 7)
+                shown_current = self._smooth_meter_level(
+                    shown_current,
+                    target_current,
+                )
+                shown_alternate = self._smooth_meter_level(
+                    shown_alternate,
+                    target_alternate,
+                )
                 levels = (shown_current, shown_alternate)
                 if levels != last_sent:
                     self.serial.send_meter(MeterData(*levels))
