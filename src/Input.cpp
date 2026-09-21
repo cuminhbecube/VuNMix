@@ -200,7 +200,8 @@ namespace Input {
             {
                 s_touchDown = true;
                 s_touchDownX = x;
-                s_touchDownY = y;                s_touchDownAt = now;
+                s_touchDownY = y;
+                s_touchDownAt = now;
             }
             s_touchLastX = x;
             s_touchLastY = y;
@@ -403,6 +404,7 @@ namespace Input {
             }
         }
     }
+
     bool TouchAvailable()
     {
         return s_touchAvailable;
