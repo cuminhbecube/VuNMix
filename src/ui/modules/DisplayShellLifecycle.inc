@@ -70,7 +70,6 @@
     // Clear Content Area (preserves shell)
     // =========================================================
     static void ClearContent(ScreenType type) {
-        digitalWrite(PIN_TFT_BL, HIGH);
         if (s_currentScreen != type) {
             if (s_contentArea) {
                 lv_obj_clean(s_contentArea);
@@ -197,8 +196,7 @@
             if (chunk->index == 0) {
                 icon = &s_appIcons[s_appIconWriteSlot];
                 s_appIconWriteSlot = (s_appIconWriteSlot + 1) % APP_ICON_CACHE_SIZE;
-                icon->id = chunk->id;
-                icon->received = 0;
+                icon->id = chunk->id;                icon->received = 0;
                 memset(icon->data, 0, sizeof(icon->data));
             } else {
                 return;
