@@ -77,8 +77,11 @@ void LightingRunningLights();
 void LightingGradient();
 void LightingSparkle();
 void LightingAurora();
+void LightingLedTest();
 void LightingAudioVU(uint8_t levelL, uint8_t levelR);
+void LightingGameVU(uint8_t levelGame, uint8_t levelVoice);
 void LightingVolume(SessionData *item, Color *c1, Color *c2);
+void LightingGameVolume();
 Color LerpColor(Color *c1, Color *c2, uint8_t coeff);
 
 //---------------------------------------------------------
@@ -247,10 +250,11 @@ void loop()
     Display::UpdateTimers(g_Now - last);
     g_DisplayDirty = false;
 
-    // Update Lighting at 30Hz
+    // Update lighting at 50 Hz. Meter data arrives slower from Windows, so
+    // firmware interpolation keeps motion smooth between USB samples.
     if (g_Now - g_NextPixelUpdate < 0x80000000U)
     {
-        g_NextPixelUpdate = g_Now + 33;
+        g_NextPixelUpdate = g_Now + LED_FRAME_INTERVAL_MS;
         UpdateLighting();
     }
 
@@ -778,75 +782,246 @@ void UpdateDisplay()
 }
 
 // Lighting
+enum class LightingRenderMode : uint8_t
+{
+    STANDBY,
+    SPLASH,
+    VOLUME,
+    VU,
+    LED_TEST
+};
+
+static_assert(PIXELS_COUNT == 10, "VuNMix LED layouts assume exactly 10 pixels");
+
+static LightingRenderMode s_lightingRenderMode = LightingRenderMode::SPLASH;
+static uint8_t s_meterCurrent = 0;
+static uint8_t s_meterAlternate = 0;
+static bool s_audioActive = false;
+static uint32_t s_audioSilenceSince = 0;
+static uint32_t s_lastLightingFrameAt = 0;
+
+static constexpr uint8_t LED_AUDIO_ENTER_LEVEL = 3;
+static constexpr uint8_t LED_AUDIO_EXIT_LEVEL = 1;
+static constexpr uint32_t LED_AUDIO_RELEASE_MS = 600;
+static constexpr uint32_t LED_VOLUME_FEEDBACK_MS = 1800;
+static constexpr uint16_t LED_ATTACK_UNITS_PER_SEC = 600;
+static constexpr uint16_t LED_RELEASE_UNITS_PER_SEC = 180;
+
+static const uint8_t LED_ALL[PIXELS_COUNT] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+static const uint8_t LED_STEREO_LEFT[5] = {4, 3, 2, 1, 0};
+static const uint8_t LED_STEREO_RIGHT[5] = {5, 6, 7, 8, 9};
+static const uint8_t LED_GAME_A[5] = {0, 1, 2, 3, 4};
+static const uint8_t LED_GAME_B[5] = {5, 6, 7, 8, 9};
+
+static uint8_t PhysicalLed(uint8_t logical)
+{
+    if (logical >= PIXELS_COUNT)
+        return 0;
+    return LED_LOGICAL_TO_PHYSICAL[logical];
+}
+
+static void SetLogicalPacked(uint8_t logical, uint32_t color)
+{
+    if (logical >= PIXELS_COUNT)
+        return;
+    g_Pixels.setPixelColor(PhysicalLed(logical), color);
+}
+
+static uint32_t GammaColor(const Color &color, uint8_t intensity = 255)
+{
+    uint8_t r = (uint16_t)color.r * intensity / 255U;
+    uint8_t g = (uint16_t)color.g * intensity / 255U;
+    uint8_t b = (uint16_t)color.b * intensity / 255U;
+    return g_Pixels.gamma32(g_Pixels.Color(r, g, b));
+}
+
+static uint8_t SmoothMeterValue(uint8_t current, uint8_t target, uint32_t deltaMs)
+{
+    if (current == target)
+        return current;
+
+    uint16_t rate = target > current
+        ? LED_ATTACK_UNITS_PER_SEC
+        : LED_RELEASE_UNITS_PER_SEC;
+    uint16_t step = max<uint16_t>(1, (uint32_t)rate * max<uint32_t>(1, deltaMs) / 1000U);
+
+    if (target > current)
+        return (uint8_t)min<uint16_t>(target, current + step);
+    return (uint8_t)max<int16_t>(target, (int16_t)current - (int16_t)step);
+}
+
+static void UpdateMeterSmoothing(uint32_t deltaMs)
+{
+    s_meterCurrent = SmoothMeterValue(
+        s_meterCurrent,
+        min<uint8_t>(100, g_MeterData.current),
+        deltaMs
+    );
+    s_meterAlternate = SmoothMeterValue(
+        s_meterAlternate,
+        min<uint8_t>(100, g_MeterData.alternate),
+        deltaMs
+    );
+}
+
+static void UpdateAudioActivity()
+{
+    uint8_t rawPeak = max(g_MeterData.current, g_MeterData.alternate);
+
+    if (rawPeak >= LED_AUDIO_ENTER_LEVEL)
+    {
+        s_audioActive = true;
+        s_audioSilenceSince = 0;
+        return;
+    }
+
+    if (!s_audioActive || rawPeak > LED_AUDIO_EXIT_LEVEL)
+        return;
+
+    if (s_audioSilenceSince == 0)
+    {
+        s_audioSilenceSince = g_Now;
+        return;
+    }
+
+    if ((uint32_t)(g_Now - s_audioSilenceSince) >= LED_AUDIO_RELEASE_MS)
+    {
+        s_audioActive = false;
+        s_audioSilenceSince = 0;
+    }
+}
+
+static LightingRenderMode SelectLightingMode()
+{
+    // Diagnostic mode is intentionally visible immediately instead of only
+    // while sleeping, so PCB LED order can be verified from Settings.
+    if (g_Settings.standbyLedMode == 16)
+        return LightingRenderMode::LED_TEST;
+
+    if (g_DisplayAsleep)
+        return LightingRenderMode::STANDBY;
+
+    if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
+        return LightingRenderMode::SPLASH;
+
+    if ((uint32_t)(g_Now - g_LastVolumeActivity) < LED_VOLUME_FEEDBACK_MS)
+        return LightingRenderMode::VOLUME;
+
+    return s_audioActive ? LightingRenderMode::VU : LightingRenderMode::VOLUME;
+}
+
 void UpdateLighting()
 {
-    uint32_t activityTimeDelta = g_Now - g_LastActivity;
-    bool isLedStandby = false;
+    uint32_t deltaMs = s_lastLightingFrameAt == 0
+        ? LED_FRAME_INTERVAL_MS
+        : (uint32_t)(g_Now - s_lastLightingFrameAt);
+    s_lastLightingFrameAt = g_Now;
 
-    if (g_DisplayAsleep) {
-        isLedStandby = true;
-    } else if (!g_Settings.sleepEnabled && activityTimeDelta > 300000) { // 5 minutes
-        isLedStandby = true;
+    UpdateMeterSmoothing(deltaMs);
+    UpdateAudioActivity();
+
+    LightingRenderMode nextMode = SelectLightingMode();
+    if (nextMode != s_lightingRenderMode)
+    {
+        // Effects such as meteor/twinkle use the previous pixel buffer as
+        // history. Clear it when changing semantic modes so stale volume bars
+        // never bleed into a standby animation.
+        g_Pixels.clear();
+        s_lightingRenderMode = nextMode;
     }
 
-    if (isLedStandby) {
-        LightingStandby();
-    } else if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH) {
-        LightingColorWave();
-    } else {
-        bool isRecentVolume = (g_Now - g_LastVolumeActivity) < 1800;
-        bool hasAudio = (g_MeterData.current > 0 || g_MeterData.alternate > 0);
+    switch (s_lightingRenderMode)
+    {
+        case LightingRenderMode::LED_TEST:
+            LightingLedTest();
+            break;
 
-        if (!isRecentVolume && hasAudio) {
-            LightingAudioVU(g_MeterData.current, g_MeterData.alternate);
-        } else if (g_SessionInfo.mode == DisplayMode::MODE_GAME) {
-            LightingVolume(&g_Sessions[SessionIndex::INDEX_CURRENT], &g_Settings.mixChannelAColor, &g_Settings.mixChannelBColor);
-        } else {
-            LightingVolume(&g_Sessions[SessionIndex::INDEX_CURRENT], &g_Settings.volumeMinColor, &g_Settings.volumeMaxColor);
-        }
+        case LightingRenderMode::STANDBY:
+            LightingStandby();
+            break;
+
+        case LightingRenderMode::SPLASH:
+            LightingColorWave();
+            break;
+
+        case LightingRenderMode::VU:
+            if (g_SessionInfo.mode == DisplayMode::MODE_GAME)
+            {
+                // Game UI defines A=alternate (left) and B=current (right).
+                LightingGameVU(s_meterAlternate, s_meterCurrent);
+            }
+            else
+            {
+                // Non-game modes carry stereo as current=left, alternate=right.
+                LightingAudioVU(s_meterCurrent, s_meterAlternate);
+            }
+            break;
+
+        case LightingRenderMode::VOLUME:
+        default:
+            if (g_SessionInfo.mode == DisplayMode::MODE_GAME)
+                LightingGameVolume();
+            else
+                LightingVolume(
+                    &g_Sessions[SessionIndex::INDEX_CURRENT],
+                    &g_Settings.volumeMinColor,
+                    &g_Settings.volumeMaxColor
+                );
+            break;
     }
+
     g_Pixels.show();
 }
 
-void LightingBlackOut() { g_Pixels.clear(); }
+void LightingBlackOut()
+{
+    g_Pixels.clear();
+}
 
 // ─── Standby LED Mode Dispatcher ─────────────────────────────────────────
 void LightingStandby()
 {
     switch (g_Settings.standbyLedMode)
     {
-        case 0:  LightingColorWave();    break;
-        case 1:  LightingRainbow();      break;
-        case 2:  LightingMeteor();       break;
-        case 3:  LightingTwinkle();      break;
-        case 4:  LightingBreathe();      break;
-        case 5:  LightingConfetti();     break;
-        case 6:  LightingFire();         break;
-        case 7:  LightingOcean();        break;
-        case 8:  LightingLava();         break;
-        case 9:  LightingScanner();      break;
-        case 10: LightingTheaterChase(); break;
-        case 11: LightingRunningLights();break;
-        case 12: LightingGradient();     break;
-        case 13: LightingSparkle();      break;
-        case 14: LightingAurora();       break;
-        case 15: LightingBlackOut();     break;
-        default: LightingColorWave();    break;
+        case 0:  LightingColorWave();     break;
+        case 1:  LightingRainbow();       break;
+        case 2:  LightingMeteor();        break;
+        case 3:  LightingTwinkle();       break;
+        case 4:  LightingBreathe();       break;
+        case 5:  LightingConfetti();      break;
+        case 6:  LightingFire();          break;
+        case 7:  LightingOcean();         break;
+        case 8:  LightingLava();          break;
+        case 9:  LightingScanner();       break;
+        case 10: LightingTheaterChase();  break;
+        case 11: LightingRunningLights(); break;
+        case 12: LightingGradient();      break;
+        case 13: LightingSparkle();       break;
+        case 14: LightingAurora();        break;
+        case 15: LightingBlackOut();      break;
+        case 16: LightingLedTest();       break;
+        default: LightingColorWave();     break;
     }
 }
 
+void LightingLedTest()
+{
+    g_Pixels.clear();
+    uint8_t logical = (g_Now / 500U) % PIXELS_COUNT;
+    SetLogicalPacked(logical, g_Pixels.gamma32(g_Pixels.Color(255, 255, 255)));
+}
 
 void LightingColorWave()
 {
     static uint8_t fxHue = 0;
-    fxHue += 5;
+    fxHue += 2;
 
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t phase = fxHue + i * (256 / PIXELS_COUNT);
         uint8_t bright = g_Pixels.sine8(phase);
         uint8_t pixelHue8 = fxHue + i * (255 / PIXELS_COUNT);
-        uint16_t pixelHue16 = pixelHue8 * 256;
+        uint16_t pixelHue16 = (uint16_t)pixelHue8 * 256U;
         uint32_t color = g_Pixels.ColorHSV(pixelHue16, 255, bright);
         g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
     }
@@ -856,45 +1031,43 @@ void LightingColorWave()
 void LightingRainbow()
 {
     static uint8_t fxHue = 0;
-    fxHue += 3;
+    fxHue += 2;
 
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t pixelHue8 = fxHue + i * (255 / PIXELS_COUNT);
-        uint16_t pixelHue16 = pixelHue8 * 256;
+        uint16_t pixelHue16 = (uint16_t)pixelHue8 * 256U;
         uint32_t color = g_Pixels.ColorHSV(pixelHue16, 255, 200);
         g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
     }
 }
 
-// ─── Meteor — shooting star with random fading tail ──────────────────────
+// ─── Meteor — shooting star with fading tail ─────────────────────────────
 void LightingMeteor()
 {
     static uint8_t fxHue = 0;
     static uint8_t fxPos = 0;
     static uint8_t frameCount = 0;
 
-    // Run at ~20 Hz (every ~2 calls at 30Hz)
-    if (++frameCount < 2) return;
+    if (++frameCount < 2)
+        return;
     frameCount = 0;
 
-    // Random fade existing pixels
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         if (random(256) < 100)
         {
-            uint32_t c = g_Pixels.getPixelColor(i);
-            uint8_t r = ((c >> 16) & 0xFF) * 176 / 256;
-            uint8_t g = ((c >> 8) & 0xFF) * 176 / 256;
-            uint8_t b = (c & 0xFF) * 176 / 256;
+            uint32_t color = g_Pixels.getPixelColor(i);
+            uint8_t r = ((color >> 16) & 0xFF) * 176 / 256;
+            uint8_t g = ((color >> 8) & 0xFF) * 176 / 256;
+            uint8_t b = (color & 0xFF) * 176 / 256;
             g_Pixels.setPixelColor(i, r, g, b);
         }
     }
 
-    // Draw meteor head
     if (fxPos < PIXELS_COUNT)
     {
-        uint16_t hue16 = (uint16_t)fxHue * 256;
+        uint16_t hue16 = (uint16_t)fxHue * 256U;
         uint32_t color = g_Pixels.ColorHSV(hue16, 200, 255);
         g_Pixels.setPixelColor(fxPos, g_Pixels.gamma32(color));
     }
@@ -910,24 +1083,21 @@ void LightingMeteor()
 void LightingTwinkle()
 {
     static uint8_t frameCount = 0;
-
-    // Run at ~18 Hz (every ~2 calls at 30Hz)
-    if (++frameCount < 2) return;
+    if (++frameCount < 2)
+        return;
     frameCount = 0;
 
-    // Fade all pixels
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
-        uint32_t c = g_Pixels.getPixelColor(i);
-        uint8_t r = ((c >> 16) & 0xFF) * 230 / 256;
-        uint8_t g = ((c >> 8) & 0xFF) * 230 / 256;
-        uint8_t b = (c & 0xFF) * 230 / 256;
+        uint32_t color = g_Pixels.getPixelColor(i);
+        uint8_t r = ((color >> 16) & 0xFF) * 230 / 256;
+        uint8_t g = ((color >> 8) & 0xFF) * 230 / 256;
+        uint8_t b = (color & 0xFF) * 230 / 256;
         g_Pixels.setPixelColor(i, r, g, b);
     }
 
-    // Light up a random pixel
     uint8_t idx = random(PIXELS_COUNT);
-    uint16_t hue16 = (uint16_t)random(256) * 256;
+    uint16_t hue16 = (uint16_t)random(256) * 256U;
     uint32_t color = g_Pixels.ColorHSV(hue16, 200, 255);
     g_Pixels.setPixelColor(idx, g_Pixels.gamma32(color));
 }
@@ -940,15 +1110,15 @@ void LightingBreathe()
 
     uint8_t sinVal = g_Pixels.sine8(breathePhase);
     uint8_t bright = 10 + (uint16_t)sinVal * 210 / 255;
-    uint16_t hue16 = (uint16_t)fxHue * 256;
-    uint32_t color = g_Pixels.ColorHSV(hue16, 255, bright);
-    uint32_t corrected = g_Pixels.gamma32(color);
+    uint16_t hue16 = (uint16_t)fxHue * 256U;
+    uint32_t color = g_Pixels.gamma32(g_Pixels.ColorHSV(hue16, 255, bright));
 
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
-        g_Pixels.setPixelColor(i, corrected);
+        g_Pixels.setPixelColor(i, color);
 
-    breathePhase += 2;
-    if (breathePhase < 2) fxHue += 30;  // wrap = one full cycle done
+    breathePhase += 1;
+    if (breathePhase < 1)
+        fxHue += 30;
 }
 
 // ─── Confetti — random colored sparkles with slow fade ───────────────────
@@ -956,25 +1126,31 @@ void LightingConfetti()
 {
     static uint8_t fxHue = 0;
 
-    // Fade all pixels slightly
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
-        uint32_t c = g_Pixels.getPixelColor(i);
-        uint8_t r = ((c >> 16) & 0xFF) * 240 / 256;
-        uint8_t g = ((c >> 8) & 0xFF) * 240 / 256;
-        uint8_t b = (c & 0xFF) * 240 / 256;
+        uint32_t color = g_Pixels.getPixelColor(i);
+        uint8_t r = ((color >> 16) & 0xFF) * 240 / 256;
+        uint8_t g = ((color >> 8) & 0xFF) * 240 / 256;
+        uint8_t b = (color & 0xFF) * 240 / 256;
         g_Pixels.setPixelColor(i, r, g, b);
     }
 
-    // Add a random sparkle
     uint8_t idx = random(PIXELS_COUNT);
-    uint16_t hue16 = (uint16_t)(fxHue + random(64)) * 256;
-    uint32_t color = g_Pixels.ColorHSV(hue16, 220, 255);
-    // Additive blend: get existing + add new
+    uint16_t hue16 = (uint16_t)(fxHue + random(64)) * 256U;
+    uint32_t color = g_Pixels.gamma32(g_Pixels.ColorHSV(hue16, 220, 255));
     uint32_t existing = g_Pixels.getPixelColor(idx);
-    uint8_t er = (existing >> 16) & 0xFF, eg2 = (existing >> 8) & 0xFF, eb = existing & 0xFF;
-    uint8_t nr = (color >> 16) & 0xFF, ng = (color >> 8) & 0xFF, nb = color & 0xFF;
-    g_Pixels.setPixelColor(idx, min(255, er + nr), min(255, eg2 + ng), min(255, eb + nb));
+    uint8_t er = (existing >> 16) & 0xFF;
+    uint8_t eg = (existing >> 8) & 0xFF;
+    uint8_t eb = existing & 0xFF;
+    uint8_t nr = (color >> 16) & 0xFF;
+    uint8_t ng = (color >> 8) & 0xFF;
+    uint8_t nb = color & 0xFF;
+    g_Pixels.setPixelColor(
+        idx,
+        min(255, (int)er + nr),
+        min(255, (int)eg + ng),
+        min(255, (int)eb + nb)
+    );
     fxHue++;
 }
 
@@ -983,71 +1159,82 @@ void LightingFire()
 {
     static uint8_t heat[PIXELS_COUNT] = {0};
 
-    // Cool down each cell
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t cooldown = random(0, ((55 * 10) / PIXELS_COUNT) + 2);
-        heat[i] = (heat[i] > cooldown) ? heat[i] - cooldown : 0;
+        heat[i] = heat[i] > cooldown ? heat[i] - cooldown : 0;
     }
 
-    // Heat diffuses upward
     for (uint8_t k = PIXELS_COUNT - 1; k >= 2; k--)
         heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) / 3;
 
-    // Random ignition at bottom
     if (random(256) < 120)
     {
         uint8_t y = random(2);
         heat[y] = min(255, (int)heat[y] + (int)random(160, 255));
     }
 
-    // Map heat to fire colors (black → red → yellow → white)
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t t192 = (uint16_t)heat[i] * 191 / 255;
-        uint8_t r, g, b;
-        if (t192 < 64) { r = t192 * 4; g = 0; b = 0; }
-        else if (t192 < 128) { r = 255; g = (t192 - 64) * 4; b = 0; }
-        else { r = 255; g = 255; b = (t192 - 128) * 4; }
-        g_Pixels.setPixelColor(i, r, g, b);
+        uint8_t r;
+        uint8_t g;
+        uint8_t b;
+        if (t192 < 64)
+        {
+            r = t192 * 4;
+            g = 0;
+            b = 0;
+        }
+        else if (t192 < 128)
+        {
+            r = 255;
+            g = (t192 - 64) * 4;
+            b = 0;
+        }
+        else
+        {
+            r = 255;
+            g = 255;
+            b = (t192 - 128) * 4;
+        }
+        g_Pixels.setPixelColor(i, g_Pixels.gamma32(g_Pixels.Color(r, g, b)));
     }
 }
 
-// ─── Ocean — blue/cyan/teal wave (WLED palette-style) ────────────────────
+// ─── Ocean — blue/cyan/teal wave ─────────────────────────────────────────
 void LightingOcean()
 {
     static uint8_t fxPhase = 0;
-    fxPhase += 2;
+    fxPhase += 1;
 
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t wave1 = g_Pixels.sine8(fxPhase + i * 30);
         uint8_t wave2 = g_Pixels.sine8(fxPhase * 2 + i * 50);
         uint8_t bright = (wave1 + wave2) / 2;
-        // Ocean palette: deep blue to cyan
         uint8_t r = bright / 8;
         uint8_t g = bright / 3;
         uint8_t b = bright;
-        g_Pixels.setPixelColor(i, r, g, b);
+        g_Pixels.setPixelColor(i, g_Pixels.gamma32(g_Pixels.Color(r, g, b)));
     }
 }
 
-// ─── Lava — red/orange flowing heat (WLED palette-style) ─────────────────
+// ─── Lava — red/orange flowing heat ──────────────────────────────────────
 void LightingLava()
 {
     static uint8_t fxPhase = 0;
-    fxPhase += 3;
+    fxPhase += 2;
 
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t wave1 = g_Pixels.sine8(fxPhase + i * 35);
         uint8_t wave2 = g_Pixels.sine8(fxPhase * 3 / 2 + i * 55);
         uint8_t heat = (wave1 + wave2) / 2;
-        // Lava palette: dark red → orange → yellow
         uint8_t r = heat;
         uint8_t g = heat > 128 ? (heat - 128) * 2 : 0;
-        uint8_t b = heat > 200 ? (heat - 200) * 4 : 0;
-        g_Pixels.setPixelColor(i, r, g, b);
+        uint8_t b = heat > 200 ? min(255, (int)(heat - 200) * 4) : 0;
+        g_Pixels.setPixelColor(i, g_Pixels.gamma32(g_Pixels.Color(r, g, b)));
     }
 }
 
@@ -1059,27 +1246,34 @@ void LightingScanner()
     static uint8_t fxHue = 0;
     static uint8_t frameCount = 0;
 
-    if (++frameCount < 3) return;
+    if (++frameCount < 2)
+        return;
     frameCount = 0;
 
-    // Fade trail
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
-        uint32_t c = g_Pixels.getPixelColor(i);
-        uint8_t r = ((c >> 16) & 0xFF) * 200 / 256;
-        uint8_t g = ((c >> 8) & 0xFF) * 200 / 256;
-        uint8_t b = (c & 0xFF) * 200 / 256;
+        uint32_t color = g_Pixels.getPixelColor(i);
+        uint8_t r = ((color >> 16) & 0xFF) * 200 / 256;
+        uint8_t g = ((color >> 8) & 0xFF) * 200 / 256;
+        uint8_t b = (color & 0xFF) * 200 / 256;
         g_Pixels.setPixelColor(i, r, g, b);
     }
 
-    // Draw scanner dot
-    uint16_t hue16 = (uint16_t)fxHue * 256;
+    uint16_t hue16 = (uint16_t)fxHue * 256U;
     uint32_t color = g_Pixels.ColorHSV(hue16, 255, 255);
     g_Pixels.setPixelColor(fxPos, g_Pixels.gamma32(color));
 
     fxPos += fxDir;
-    if (fxPos >= PIXELS_COUNT - 1) { fxDir = -1; fxHue += 20; }
-    if (fxPos == 0) { fxDir = 1; fxHue += 20; }
+    if (fxPos >= PIXELS_COUNT - 1)
+    {
+        fxDir = -1;
+        fxHue += 20;
+    }
+    if (fxPos == 0)
+    {
+        fxDir = 1;
+        fxHue += 20;
+    }
 }
 
 // ─── Theater Chase — classic marquee chase ───────────────────────────────
@@ -1089,13 +1283,14 @@ void LightingTheaterChase()
     static uint8_t fxHue = 0;
     static uint8_t frameCount = 0;
 
-    if (++frameCount < 5) return;
+    if (++frameCount < 3)
+        return;
     frameCount = 0;
 
     g_Pixels.clear();
     for (uint8_t i = fxStep; i < PIXELS_COUNT; i += 3)
     {
-        uint16_t hue16 = (uint16_t)(fxHue + i * 25) * 256;
+        uint16_t hue16 = (uint16_t)(fxHue + i * 25) * 256U;
         uint32_t color = g_Pixels.ColorHSV(hue16, 255, 200);
         g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
     }
@@ -1108,13 +1303,13 @@ void LightingRunningLights()
 {
     static uint8_t fxPhase = 0;
     static uint8_t fxHue = 0;
-    fxPhase += 4;
+    fxPhase += 2;
     fxHue += 1;
 
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t bright = g_Pixels.sine8(fxPhase + i * (256 / PIXELS_COUNT));
-        uint16_t hue16 = (uint16_t)fxHue * 256;
+        uint16_t hue16 = (uint16_t)fxHue * 256U;
         uint32_t color = g_Pixels.ColorHSV(hue16, 255, bright);
         g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
     }
@@ -1129,8 +1324,8 @@ void LightingGradient()
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
         uint8_t ratio = i * 255 / (PIXELS_COUNT - 1);
-        uint8_t h = fxHue + ratio / 2;
-        uint16_t hue16 = (uint16_t)h * 256;
+        uint8_t hue = fxHue + ratio / 2;
+        uint16_t hue16 = (uint16_t)hue * 256U;
         uint32_t color = g_Pixels.ColorHSV(hue16, 255, 180);
         g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
     }
@@ -1140,12 +1335,16 @@ void LightingGradient()
 void LightingSparkle()
 {
     static uint8_t frameCount = 0;
-    if (++frameCount < 2) return;
+    if (++frameCount < 3)
+        return;
     frameCount = 0;
 
     g_Pixels.clear();
     uint8_t idx = random(PIXELS_COUNT);
-    g_Pixels.setPixelColor(idx, 255, 255, 255);
+    g_Pixels.setPixelColor(
+        idx,
+        g_Pixels.gamma32(g_Pixels.Color(255, 255, 255))
+    );
 }
 
 // ─── Aurora — slow shifting green/purple/blue northern lights ────────────
@@ -1156,42 +1355,13 @@ void LightingAurora()
 
     for (uint8_t i = 0; i < PIXELS_COUNT; i++)
     {
-        // Multi-layered sine waves for organic movement
         uint8_t wave1 = g_Pixels.sine8(fxPhase * 2 + i * 40);
         uint8_t wave2 = g_Pixels.sine8(fxPhase * 3 + i * 60 + 128);
         uint8_t bright = (wave1 + wave2) / 3;
-
-        // Aurora palette: green → teal → purple
-        uint8_t hue8 = 85 + g_Pixels.sine8(fxPhase + i * 30) / 4;  // ~85-148 (green→blue)
-        uint16_t hue16 = (uint16_t)hue8 * 256;
+        uint8_t hue8 = 85 + g_Pixels.sine8(fxPhase + i * 30) / 4;
+        uint16_t hue16 = (uint16_t)hue8 * 256U;
         uint32_t color = g_Pixels.ColorHSV(hue16, 200, bright);
         g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
-    }
-}
-
-void LightingVolume(SessionData *item, Color *c1, Color *c2)
-{
-    if (!item->data.isMuted)
-    {
-        uint32_t volAcc = ((uint32_t)item->data.volume * 255 * PIXELS_COUNT) / 100;
-        for (int i = 0; i < PIXELS_COUNT; i++)
-        {
-            uint32_t amp = min(volAcc, (uint32_t)255);
-            if(volAcc >= amp) volAcc -= amp;
-            else volAcc = 0;
-            Color c = LerpColor(c1, c2, amp);
-            g_Pixels.setPixelColor(i, c.r, c.g, c.b);
-        }
-    }
-    else
-    {
-        const uint32_t period = 500;
-        uint32_t phase = millis() % (2U * period);
-        uint32_t triangle = phase <= period ? phase : (2U * period - phase);
-        uint8_t amp = (uint8_t)(triangle * 255U / period);
-        Color c = LerpColor(c1, c2, amp);
-        uint32_t color32 = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
-        g_Pixels.fill(color32);
     }
 }
 
@@ -1203,45 +1373,137 @@ Color LerpColor(Color *c1, Color *c2, uint8_t coeff)
     return {r, g, b};
 }
 
-// ─── Audio-Reactive VU Meter with Peak Hold & Decay ──────────────────────
+static void RenderVolumeBar(
+    SessionData *item,
+    Color *startColor,
+    Color *endColor,
+    const uint8_t *logicalPixels,
+    uint8_t count)
+{
+    if (count == 0)
+        return;
+
+    if (item->data.isMuted)
+    {
+        const uint32_t period = 450;
+        uint32_t phase = g_Now % (2U * period);
+        uint32_t triangle = phase <= period ? phase : (2U * period - phase);
+        uint8_t intensity = 32 + (uint32_t)triangle * 223U / period;
+        Color pulseColor = *endColor;
+        uint32_t packed = GammaColor(pulseColor, intensity);
+        for (uint8_t i = 0; i < count; i++)
+            SetLogicalPacked(logicalPixels[i], packed);
+        return;
+    }
+
+    uint8_t volume = min<uint8_t>(100, item->data.volume);
+    uint16_t units = (uint16_t)volume * count;
+    uint8_t fullPixels = units / 100U;
+    uint8_t remainder = units % 100U;
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        uint8_t intensity = 0;
+        if (i < fullPixels)
+            intensity = 255;
+        else if (i == fullPixels && fullPixels < count && remainder > 0)
+            intensity = (uint16_t)remainder * 255U / 100U;
+
+        uint8_t blend = count <= 1
+            ? 0
+            : (uint16_t)i * 255U / (count - 1);
+        Color color = LerpColor(startColor, endColor, blend);
+        SetLogicalPacked(logicalPixels[i], GammaColor(color, intensity));
+    }
+}
+
+void LightingVolume(SessionData *item, Color *c1, Color *c2)
+{
+    g_Pixels.clear();
+    RenderVolumeBar(item, c1, c2, LED_ALL, PIXELS_COUNT);
+}
+
+void LightingGameVolume()
+{
+    g_Pixels.clear();
+
+    // DisplayGameLifecycle defines alternate as GAME/A and current as VOICE/B.
+    RenderVolumeBar(
+        &g_Sessions[SessionIndex::INDEX_ALTERNATE],
+        &g_Settings.mixChannelAColor,
+        &g_Settings.mixChannelAColor,
+        LED_GAME_A,
+        5
+    );
+    RenderVolumeBar(
+        &g_Sessions[SessionIndex::INDEX_CURRENT],
+        &g_Settings.mixChannelBColor,
+        &g_Settings.mixChannelBColor,
+        LED_GAME_B,
+        5
+    );
+}
+
+static void RenderVuGradientChannel(
+    uint8_t level,
+    const uint8_t *logicalPixels,
+    uint8_t count)
+{
+    uint16_t units = (uint16_t)min<uint8_t>(100, level) * count;
+    uint8_t fullPixels = units / 100U;
+    uint8_t remainder = units % 100U;
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        uint8_t intensity = 0;
+        if (i < fullPixels)
+            intensity = 255;
+        else if (i == fullPixels && fullPixels < count && remainder > 0)
+            intensity = (uint16_t)remainder * 255U / 100U;
+
+        // Safe green -> yellow -> red gradient; never underflows uint16_t.
+        uint16_t hue16 = count <= 1
+            ? 0
+            : (uint32_t)21845U * (count - 1U - i) / (count - 1U);
+        uint32_t color = g_Pixels.ColorHSV(hue16, 255, intensity);
+        SetLogicalPacked(logicalPixels[i], g_Pixels.gamma32(color));
+    }
+}
+
+static void RenderVuColorChannel(
+    uint8_t level,
+    Color *color,
+    const uint8_t *logicalPixels,
+    uint8_t count)
+{
+    uint16_t units = (uint16_t)min<uint8_t>(100, level) * count;
+    uint8_t fullPixels = units / 100U;
+    uint8_t remainder = units % 100U;
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        uint8_t intensity = 0;
+        if (i < fullPixels)
+            intensity = 255;
+        else if (i == fullPixels && fullPixels < count && remainder > 0)
+            intensity = (uint16_t)remainder * 255U / 100U;
+
+        SetLogicalPacked(logicalPixels[i], GammaColor(*color, intensity));
+    }
+}
+
+// ─── Stereo VU: 5 LEDs left + 5 LEDs right, growing from center outward ──
 void LightingAudioVU(uint8_t levelL, uint8_t levelR)
 {
-    static uint8_t s_peakLevel = 0;
-    static uint8_t s_decayCounter = 0;
+    g_Pixels.clear();
+    RenderVuGradientChannel(levelL, LED_STEREO_LEFT, 5);
+    RenderVuGradientChannel(levelR, LED_STEREO_RIGHT, 5);
+}
 
-    uint8_t maxLevel = max(levelL, levelR);
-
-    // Peak hold & smooth gravity decay
-    if (maxLevel >= s_peakLevel) {
-        s_peakLevel = maxLevel;
-    } else if ((s_decayCounter & 1) == 0 && s_peakLevel > 0) {
-        s_peakLevel--;
-    }
-    s_decayCounter++;
-
-    // Number of active LEDs (0 to 10)
-    uint8_t litCount = (maxLevel * PIXELS_COUNT + 50) / 100;
-    uint8_t peakLed = (s_peakLevel * (PIXELS_COUNT - 1) + 50) / 100;
-
-    for (uint8_t i = 0; i < PIXELS_COUNT; i++)
-    {
-        if (i < litCount)
-        {
-            // Gradient: Green (0-5) -> Yellow/Orange (6-7) -> Red (8-9)
-            uint16_t hue16;
-            if (i < 6) hue16 = (uint16_t)(21845 - i * 2500); // Green to Yellow
-            else hue16 = (uint16_t)(6800 - (i - 6) * 3400);  // Orange to Red
-            uint32_t color = g_Pixels.ColorHSV(hue16, 255, 255);
-            g_Pixels.setPixelColor(i, g_Pixels.gamma32(color));
-        }
-        else if (i == peakLed && s_peakLevel > 5)
-        {
-            // Peak indicator dot (bright Cyan/White)
-            g_Pixels.setPixelColor(i, 255, 255, 255);
-        }
-        else
-        {
-            g_Pixels.setPixelColor(i, 0, 0, 0);
-        }
-    }
+// ─── Game VU: independent A/Game and B/Voice channels ────────────────────
+void LightingGameVU(uint8_t levelGame, uint8_t levelVoice)
+{
+    g_Pixels.clear();
+    RenderVuColorChannel(levelGame, &g_Settings.mixChannelAColor, LED_GAME_A, 5);
+    RenderVuColorChannel(levelVoice, &g_Settings.mixChannelBColor, LED_GAME_B, 5);
 }
