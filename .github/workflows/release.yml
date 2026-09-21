@@ -374,6 +374,17 @@ jobs:
           printf '  %s\n' "${ASSETS[@]}"
 
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            # Rebuilding the same version is intentional for release hotfixes.
+            # Keep the Git tag aligned with the exact commit that produced the
+            # replacement assets instead of leaving source/tag and binaries
+            # pointing at different revisions.
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+              -f sha="${GITHUB_SHA}" \
+              -F force=true \
+              >/dev/null
+
             gh release upload \
               "${TAG}" \
               "${ASSETS[@]}" \
