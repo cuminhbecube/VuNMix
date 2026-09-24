@@ -1,11 +1,17 @@
     static lv_obj_t* s_healthRows[8] = {nullptr};
 
     // Clock Standby
-    static lv_obj_t* s_clockHM     = nullptr;
-    static lv_obj_t* s_clockColon  = nullptr;
-    static lv_obj_t* s_clockSec    = nullptr;
-    static lv_obj_t* s_clockBrand  = nullptr;
-    static lv_obj_t* s_clockPanel  = nullptr;
+    static lv_obj_t* s_clockHM       = nullptr;
+    static lv_obj_t* s_clockColon    = nullptr;
+    static lv_obj_t* s_clockSec      = nullptr;
+    static lv_obj_t* s_clockSecond   = nullptr;
+    static lv_obj_t* s_clockBrand    = nullptr;
+    static lv_obj_t* s_clockPanel    = nullptr;
+    static lv_obj_t* s_clockMeter    = nullptr;
+    static lv_meter_indicator_t* s_clockHourHand   = nullptr;
+    static lv_meter_indicator_t* s_clockMinuteHand = nullptr;
+    static lv_meter_indicator_t* s_clockSecondHand = nullptr;
+    static uint8_t   s_clockStyleBuilt = 255;
     static uint8_t   s_lastClockSec = 255;
 
     // =========================================================
