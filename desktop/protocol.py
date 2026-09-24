@@ -383,6 +383,7 @@ class DeviceSettings:
       mixChannelAColor:       Color (3 bytes)
       mixChannelBColor:       Color (3 bytes)
       ledBrightness:          uint8
+      clockStandbyMinutes:    uint8
     """
     sleep_after_seconds: int = 5
     acceleration_percentage: int = 60
