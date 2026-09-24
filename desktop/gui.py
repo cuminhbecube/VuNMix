@@ -286,6 +286,18 @@ class SettingsDialog:
         self._clock_standby_var = tk.StringVar(value=str(self.config.device_settings.clock_standby_minutes))
         add_row(content, "Clock Standby (min)", lambda r: ctk.CTkEntry(r, textvariable=self._clock_standby_var, width=55, height=24))
 
+        # Clock visual style
+        from protocol import CLOCK_STYLE_NAMES
+        clock_style_index = max(0, min(len(CLOCK_STYLE_NAMES) - 1, int(self.config.device_settings.clock_style)))
+        self._clock_style_var = tk.StringVar(value=CLOCK_STYLE_NAMES[clock_style_index])
+        add_row(content, "Clock Style", lambda r: ctk.CTkOptionMenu(
+            r,
+            variable=self._clock_style_var,
+            values=CLOCK_STYLE_NAMES,
+            width=120,
+            height=24,
+        ))
+
         # Continuous Scroll
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
         add_row(content, "Continuous Scroll", lambda r: ctk.CTkSwitch(r, text="", variable=self._scroll_var, switch_width=36, switch_height=18))
@@ -721,7 +733,13 @@ class SettingsDialog:
             )
             self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
             self.config.device_settings.clock_standby_minutes = max(0, min(255, int(self._clock_standby_var.get())))
-            from protocol import STANDBY_LED_NAMES
+            from protocol import CLOCK_STYLE_NAMES, STANDBY_LED_NAMES
+            clock_style_name = self._clock_style_var.get()
+            self.config.device_settings.clock_style = (
+                CLOCK_STYLE_NAMES.index(clock_style_name)
+                if clock_style_name in CLOCK_STYLE_NAMES
+                else 0
+            )
             led_name = self._led_mode_var.get()
             self.config.device_settings.standby_led_mode = STANDBY_LED_NAMES.index(led_name) if led_name in STANDBY_LED_NAMES else 0
             self.config.device_settings.continuous_scroll = self._scroll_var.get()
