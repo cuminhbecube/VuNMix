@@ -288,6 +288,7 @@ class ConnectionTrayApp(TrayApp):
 
         if self.controller._device_connected:
             self._on_connection_status(True)
+            self._on_device_ready()
 
         self._icon.run_detached()
         self._start_app_update_watcher()
