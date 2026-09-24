@@ -94,7 +94,8 @@ struct __attribute__((__packed__)) DeviceSettings
     uint8_t accelerationPercentage : 7; // 7 Bits
     bool continuousScroll : 1;          // 1 Bit
     bool sleepEnabled;                  // 8 Bits (bool)
-    uint8_t standbyLedMode;             // 8 Bits (0=ColorWave,1=Rainbow,...,15=Off)
+    uint8_t standbyLedMode : 5;         // Low 5 bits (0=ColorWave,...,16=LED Test)
+    uint8_t clockStyle : 3;              // High 3 bits (0=Neon,1=Minimal,2=Flip,3=Analog)
     Color volumeMinColor;               // 24 Bits
     Color volumeMaxColor;               // 24 Bits
     Color mixChannelAColor;             // 24 Bits
@@ -103,7 +104,7 @@ struct __attribute__((__packed__)) DeviceSettings
     uint8_t clockStandbyMinutes;        // 8 Bits (0=disabled, default=10)
     // 19 bytes
 
-    DeviceSettings() : sleepAfterSeconds(300), accelerationPercentage(60), continuousScroll(true), sleepEnabled(true), standbyLedMode(0),
+    DeviceSettings() : sleepAfterSeconds(300), accelerationPercentage(60), continuousScroll(true), sleepEnabled(true), standbyLedMode(0), clockStyle(0),
                  volumeMinColor(0, 0, 255), volumeMaxColor(255, 0, 0), mixChannelAColor(0, 0, 255), mixChannelBColor(255, 0, 255),
                  ledBrightness(96), clockStandbyMinutes(10) {}
 };

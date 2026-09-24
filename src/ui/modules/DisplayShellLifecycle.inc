@@ -154,8 +154,14 @@
         s_clockHM = nullptr;
         s_clockColon = nullptr;
         s_clockSec = nullptr;
+        s_clockSecond = nullptr;
         s_clockBrand = nullptr;
         s_clockPanel = nullptr;
+        s_clockMeter = nullptr;
+        s_clockHourHand = nullptr;
+        s_clockMinuteHand = nullptr;
+        s_clockSecondHand = nullptr;
+        s_clockStyleBuilt = 255;
         s_faderA = nullptr;
         s_faderB = nullptr;
         s_faderNameA = nullptr;

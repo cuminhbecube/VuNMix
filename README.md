@@ -165,6 +165,7 @@ VuNMix có cơ chế tiết kiệm điện và hiệu ứng chờ:
 - Có nhiều hiệu ứng LED chờ, chọn trong VuNMix Desktop Settings.
 - Có thể bật/tắt Auto Sleep.
 - Có thể cấu hình Clock Standby để hiển thị đồng hồ khi không có hoạt động âm thanh trong một khoảng thời gian.
+- Clock Standby có 4 giao diện chọn từ VuNMix Desktop: **Neon Digital**, **Minimal**, **Flip Cards** và **Analog**.
 - Khi PC sleep, desktop app gửi lệnh để thiết bị chuyển trạng thái nghỉ; khi PC resume, app đẩy lại state để đồng bộ.
 
 ## Phần cứng yêu cầu
@@ -313,7 +314,7 @@ Firmware và desktop dùng frame nhị phân có marker và CRC để tránh l�
 Các nhóm dữ liệu chính:
 
 - `TEST`: handshake và đọc version firmware.
-- `SETTINGS`: cấu hình sleep, LED, clock standby.
+- `SETTINGS`: cấu hình sleep, LED, clock standby và clock style. Clock style dùng 3 bit cao của byte standby LED để giữ nguyên payload `DeviceSettings` 19 byte.
 - `SESSION_INFO`: mode hiện tại, index đang chọn, số lượng session.
 - `CURRENT_SESSION`, `ALTERNATE_SESSION`, `PREVIOUS_SESSION`, `NEXT_SESSION`: thông tin các mục quanh vị trí hiện tại.
 - `VOLUME_*_CHANGE`: thay đổi volume/mute/default.
@@ -353,6 +354,7 @@ Các thiết lập chính:
 - Auto Sleep.
 - Standby LED effect.
 - Clock Standby minutes.
+- Clock Style: Neon Digital / Minimal / Flip Cards / Analog.
 - Update interval.
 
 ## Kiểm thử

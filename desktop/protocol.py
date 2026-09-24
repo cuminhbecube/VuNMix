@@ -98,6 +98,21 @@ STANDBY_LED_NAMES = [
     "LED Test 0-9",
 ]
 
+
+class ClockStyle(IntEnum):
+    NEON_DIGITAL = 0
+    MINIMAL      = 1
+    FLIP_CARDS   = 2
+    ANALOG       = 3
+
+
+CLOCK_STYLE_NAMES = [
+    "Neon Digital",
+    "Minimal",
+    "Flip Cards",
+    "Analog",
+]
+
 # Binary frame:
 #   magic[2] | command[1] | payload_length[1] | payload | crc16[2]
 # CRC-16/CCITT-FALSE covers command, payload_length and payload.
@@ -362,18 +377,20 @@ class DeviceSettings:
       sleepAfterSeconds:      uint16
       accelerationPercentage: 7 bits | continuousScroll: 1 bit (MSB)
       sleepEnabled:           uint8 (bool)
-      standbyLedMode:         uint8 (StandbyLedMode enum)
+      settingsByte:           standbyLedMode(5 bits) | clockStyle(3 bits)
       volumeMinColor:         Color (3 bytes)
       volumeMaxColor:         Color (3 bytes)
       mixChannelAColor:       Color (3 bytes)
       mixChannelBColor:       Color (3 bytes)
       ledBrightness:          uint8
+      clockStandbyMinutes:    uint8
     """
     sleep_after_seconds: int = 5
     acceleration_percentage: int = 60
     continuous_scroll: bool = True
     sleep_enabled: bool = True
     standby_led_mode: int = 0  # StandbyLedMode.COLOR_WAVE
+    clock_style: int = 0  # ClockStyle.NEON_DIGITAL
     volume_min_color: Color = field(default_factory=lambda: Color(0, 0, 255))
     volume_max_color: Color = field(default_factory=lambda: Color(255, 0, 0))
     mix_channel_a_color: Color = field(default_factory=lambda: Color(0, 0, 255))
@@ -386,7 +403,9 @@ class DeviceSettings:
         acceleration = _clamp_int(self.acceleration_percentage, 0, 100)
         byte2 = (acceleration & 0x7F) | (0x80 if self.continuous_scroll else 0)
         byte3 = 1 if self.sleep_enabled else 0
-        byte4 = _clamp_int(self.standby_led_mode, 0, len(STANDBY_LED_NAMES) - 1)
+        standby_mode = _clamp_int(self.standby_led_mode, 0, 31)
+        clock_style = _clamp_int(self.clock_style, 0, 7)
+        byte4 = (standby_mode & 0x1F) | ((clock_style & 0x07) << 5)
         return struct.pack('<HBBB', sleep_seconds, byte2, byte3, byte4) + \
                self.volume_min_color.pack() + \
                self.volume_max_color.pack() + \
@@ -403,7 +422,8 @@ class DeviceSettings:
             acceleration_percentage=byte2 & 0x7F,
             continuous_scroll=bool(byte2 & 0x80),
             sleep_enabled=bool(byte3),
-            standby_led_mode=byte4,
+            standby_led_mode=byte4 & 0x1F,
+            clock_style=min((byte4 >> 5) & 0x07, len(CLOCK_STYLE_NAMES) - 1),
             volume_min_color=Color.unpack(data[5:8]),
             volume_max_color=Color.unpack(data[8:11]),
             mix_channel_a_color=Color.unpack(data[11:14]),
@@ -420,6 +440,7 @@ class DeviceSettings:
             continuous_scroll=cfg.get('continuous_scroll', True),
             sleep_enabled=cfg.get('sleep_enabled', True),
             standby_led_mode=_clamp_int(cfg.get('standby_led_mode', 0), 0, len(STANDBY_LED_NAMES) - 1),
+            clock_style=_clamp_int(cfg.get('clock_style', 0), 0, len(CLOCK_STYLE_NAMES) - 1),
             volume_min_color=Color.from_list(cfg.get('volume_min_color', [0, 0, 255])),
             volume_max_color=Color.from_list(cfg.get('volume_max_color', [255, 0, 0])),
             mix_channel_a_color=Color.from_list(cfg.get('mix_channel_a_color', [0, 0, 255])),

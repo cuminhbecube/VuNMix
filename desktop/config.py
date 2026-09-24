@@ -36,6 +36,7 @@ _DEFAULT_CONFIG = {
         "mix_channel_b_color": [255, 0, 255],
         "led_brightness": 96,
         "clock_standby_minutes": 10,
+        "clock_style": 0,
     }
 }
 
@@ -121,6 +122,7 @@ class AppConfig:
                 "mix_channel_b_color": self.device_settings.mix_channel_b_color.to_list(),
                 "led_brightness": self.device_settings.led_brightness,
                 "clock_standby_minutes": self.device_settings.clock_standby_minutes,
+                "clock_style": self.device_settings.clock_style,
             }
         }
         temp_path = f"{path}.tmp"
