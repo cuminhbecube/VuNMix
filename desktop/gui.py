@@ -925,8 +925,13 @@ class SettingsDialog:
                 "firmware_version",
                 "",
             )
+            display_version = str(version or "")
+            if display_version and not display_version.startswith("v"):
+                display_version = f"v{display_version}"
             self._firmware_status_var.set(
-                f"Firmware v{version} updated" if version else "Update complete"
+                f"Firmware {display_version} updated"
+                if display_version
+                else "Update complete"
             )
             if not automatic:
                 messagebox.showinfo(
@@ -1139,6 +1144,7 @@ class TrayApp:
         # If already connected before icon.run() was reached
         if self.controller._device_connected:
             self._on_connection_status(True)
+            self._on_device_ready()
 
         # pystray documents run_detached() specifically for integration with
         # another library that owns the process main loop (Tk in our case).
