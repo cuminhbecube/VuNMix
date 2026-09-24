@@ -15,6 +15,7 @@ OutputBaseFilename=VuNMix_Setup
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=yes
+ForceCloseApplications=yes
 RestartApplications=yes
 SetupIconFile=assets\icon.ico
 UninstallDisplayIcon={app}\VuNMix.exe
@@ -33,4 +34,4 @@ Name: "{group}\Uninstall VuNMix"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\VuNMix"; Filename: "{app}\VuNMix.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\VuNMix.exe"; Description: "Launch VuNMix"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\VuNMix.exe"; Description: "Launch VuNMix"; Flags: nowait runasoriginaluser
