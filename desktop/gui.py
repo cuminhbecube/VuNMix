@@ -952,10 +952,7 @@ class TrayApp:
                 )
                 log.info("App update installer started: %s", path)
                 self._dispatch_ui(
-                    lambda:
-                        self._ensure_settings_dialog().set_app_update_status(
-                            f"Installer started for {info.tag}. VuNMix may restart."
-                        )
+                    lambda found=info: self._finish_app_update_launch(found)
                 )
             except Exception as exc:
                 log.exception("App update failed")
@@ -971,6 +968,26 @@ class TrayApp:
             daemon=True,
             name="AppUpdateInstall",
         ).start()
+
+    def _finish_app_update_launch(self, info: UpdateInfo):
+        """Show the handoff briefly, then release the running executable."""
+        dialog = self._ensure_settings_dialog()
+        dialog.set_app_update_status(
+            f"Installing {info.tag}. VuNMix is closing..."
+        )
+        if dialog._window is not None:
+            dialog._window.after(250, self._shutdown_for_app_update)
+        else:
+            self._shutdown_for_app_update()
+
+    def _shutdown_for_app_update(self):
+        """Exit cleanly so Inno Setup can replace VuNMix.exe and restart it."""
+        log.info("Closing VuNMix for desktop app update")
+        self._update_stop.set()
+        if self._settings_dialog is not None:
+            self._settings_dialog.request_shutdown()
+        if self._icon is not None:
+            self._icon.stop()
 
     def _on_connection_status(self, connected: bool):
         """Update tray state through the main-thread UI dispatcher."""
