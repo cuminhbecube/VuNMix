@@ -109,8 +109,9 @@
                 lv_obj_set_style_text_color(s_clockSec, lv_color_hex(0xF4F4F4), LV_PART_MAIN);
                 lv_obj_center(s_clockSec);
 
-                for (lv_obj_t* card : {hourCard, minuteCard}) {
-                    lv_obj_t* split = lv_obj_create(card);
+                lv_obj_t* flipCards[2] = {hourCard, minuteCard};
+                for (uint8_t i = 0; i < 2; ++i) {
+                    lv_obj_t* split = lv_obj_create(flipCards[i]);
                     lv_obj_set_size(split, 112, 2);
                     lv_obj_center(split);
                     lv_obj_set_style_bg_color(split, lv_color_hex(0x08080A), LV_PART_MAIN);
