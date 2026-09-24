@@ -39,7 +39,8 @@ focused UI modules under `src/ui/modules`:
   receive/cache lifecycle;
 - `DisplayStandalone.inc` — splash, input-test and version/info screens;
 - `DisplayHealth.inc` — PC/device telemetry dashboard;
-- `DisplayClockSelect.inc` — standby clock and output/input/app selection screen;
+- `DisplayClock.inc` — selectable standby clock faces;
+- `DisplayClockSelect.inc` — output/input/app selection screen;
 - `DisplayMixerMedia.inc` — volume edit, application media metadata and game
   selection/mixer construction;
 - `DisplayGameLifecycle.inc` — game fader completion plus display timer/sleep
