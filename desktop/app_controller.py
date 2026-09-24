@@ -79,6 +79,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self.serial.on_version = self._on_version
 
         self.on_connection_changed: Optional[callable] = None
+        self.on_device_ready: Optional[callable] = None
 
     def start(self):
         """Start serial transport and the normal synchronization workers."""
