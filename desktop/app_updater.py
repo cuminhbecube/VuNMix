@@ -238,13 +238,16 @@ class AppUpdater:
 
     @staticmethod
     def installer_command(installer_path: Path) -> list[str]:
+        log_path = installer_path.with_suffix(".log")
         return [
             str(installer_path),
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
             "/CLOSEAPPLICATIONS",
+            "/FORCECLOSEAPPLICATIONS",
             "/RESTARTAPPLICATIONS",
+            f"/LOG={log_path}",
         ]
 
     def launch_installer(self, installer_path: Path) -> None:
