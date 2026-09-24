@@ -6,6 +6,7 @@
 #include "modules/DisplayShellLifecycle.inc"
 #include "modules/DisplayStandalone.inc"
 #include "modules/DisplayHealth.inc"
+#include "modules/DisplayClock.inc"
 #include "modules/DisplayClockSelect.inc"
 #include "modules/DisplayMixerMedia.inc"
 #include "modules/DisplayGameLifecycle.inc"
