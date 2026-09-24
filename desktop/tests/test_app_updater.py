@@ -114,7 +114,8 @@ class AppUpdaterTests(unittest.TestCase):
 
     def test_installer_forces_old_app_closed_and_relaunches_after_silent_update(self):
         installer = (DESKTOP_DIR / "VuNMix_Installer.iss").read_text(encoding="utf-8")
-        self.assertIn("ForceCloseApplications=yes", installer)
+        self.assertIn("taskkill /F /IM VuNMix.exe", installer)
+        self.assertIn("function PrepareToInstall", installer)
         run_line = next(
             line for line in installer.splitlines()
             if line.startswith('Filename: "{app}\\VuNMix.exe"')
