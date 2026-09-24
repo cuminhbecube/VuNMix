@@ -23,6 +23,11 @@ from PIL import Image, ImageDraw
 
 from build_info import APP_VERSION
 from app_updater import AppUpdater, UpdateInfo, version_tuple
+from firmware_release import (
+    FirmwareReleaseClient,
+    FirmwareReleaseInfo,
+    should_auto_update_firmware,
+)
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +124,8 @@ class SettingsDialog:
         self._window_commands = queue.Queue()
         self._drag_x = 0
         self._drag_y = 0
+        self._firmware_release_client = FirmwareReleaseClient()
+        self._firmware_release_loading = False
 
     def initialize(self):
         """Create the single Tcl/Tk interpreter on the process main thread."""
@@ -321,6 +328,18 @@ class SettingsDialog:
         self._auto_update_var = tk.BooleanVar(value=self.config.auto_update_enabled)
         add_row(content, "Auto App Update", lambda r: ctk.CTkSwitch(r, text="", variable=self._auto_update_var, switch_width=36, switch_height=18))
 
+        # Automatic firmware sync to the exact Desktop App release version.
+        self._auto_firmware_update_var = tk.BooleanVar(
+            value=self.config.auto_firmware_update_enabled
+        )
+        add_row(content, "Auto FW Update", lambda r: ctk.CTkSwitch(
+            r,
+            text="",
+            variable=self._auto_firmware_update_var,
+            switch_width=36,
+            switch_height=18,
+        ))
+
         # Auto Sleep (default off)
         self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
         add_row(content, "Auto Sleep", lambda r: ctk.CTkSwitch(r, text="", variable=self._sleep_enabled_var, switch_width=36, switch_height=18))
@@ -389,14 +408,24 @@ class SettingsDialog:
             text="Device Firmware",
             font=ctk.CTkFont(size=12),
         ).pack(side='left')
+        firmware_actions = ctk.CTkFrame(firmware_top, fg_color="transparent")
+        firmware_actions.pack(side='right')
+        self.btn_firmware_versions = ctk.CTkButton(
+            firmware_actions,
+            text="Versions",
+            width=70,
+            height=22,
+            command=self._choose_firmware_release,
+        )
+        self.btn_firmware_versions.pack(side='left', padx=(0, 4))
         self.btn_firmware = ctk.CTkButton(
-            firmware_top,
-            text="Update .bin",
-            width=88,
+            firmware_actions,
+            text=".bin",
+            width=48,
             height=22,
             command=self._select_firmware,
         )
-        self.btn_firmware.pack(side='right')
+        self.btn_firmware.pack(side='left')
 
         self._firmware_progress = ctk.CTkProgressBar(
             firmware_frame,
@@ -495,10 +524,26 @@ class SettingsDialog:
         if hasattr(self, "btn_firmware"):
             firmware_ready = (
                 self.controller.can_update_firmware
+                and not self._firmware_release_loading
             )
-            self.btn_firmware.configure(
-                state="normal" if firmware_ready else "disabled"
-            )
+            state = "normal" if firmware_ready else "disabled"
+            self.btn_firmware.configure(state=state)
+            if hasattr(self, "btn_firmware_versions"):
+                self.btn_firmware_versions.configure(state=state)
+
+            if (
+                not self.controller.firmware_updating
+                and not self._firmware_release_loading
+                and hasattr(self, "_firmware_status_var")
+                and (
+                    self._firmware_status_var.get() == "Ready"
+                    or self._firmware_status_var.get().startswith("FW ")
+                )
+            ):
+                current_fw = getattr(self.controller, "firmware_version", "unknown")
+                self._firmware_status_var.set(
+                    f"FW {current_fw} · PC {APP_VERSION}"
+                )
         self._window.after(500, self._update_status_loop)
 
     def _ui_call(self, callback):
@@ -552,6 +597,206 @@ class SettingsDialog:
         percent = max(0, min(100, int(round(float(value) * 100))))
         self._app_update_status_var.set(f"{text} {percent}%")
 
+    def _choose_firmware_release(self):
+        if not self.controller.can_update_firmware:
+            messagebox.showwarning("Firmware Update", "Connect VuNMix first.")
+            return
+        if self._firmware_release_loading:
+            return
+
+        self._firmware_release_loading = True
+        self._firmware_progress.set(0)
+        self._firmware_status_var.set("Loading firmware versions...")
+
+        def worker():
+            try:
+                releases = self._firmware_release_client.list_releases(limit=30)
+                self._ui_call(
+                    lambda found=releases: self._show_firmware_release_picker(found)
+                )
+            except Exception as exc:
+                log.exception("Firmware release list failed")
+                self._ui_call(
+                    lambda error=str(exc): self._firmware_release_list_failed(error)
+                )
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="FirmwareReleaseList",
+        ).start()
+
+    def _firmware_release_list_failed(self, message: str):
+        self._firmware_release_loading = False
+        self._firmware_progress.set(0)
+        self._firmware_status_var.set(f"Release check failed: {message}")
+
+    def _show_firmware_release_picker(self, releases):
+        self._firmware_release_loading = False
+        if not releases:
+            self._firmware_status_var.set("No firmware releases found.")
+            messagebox.showwarning(
+                "Firmware Versions",
+                "No stable release with a firmware image and SHA256SUMS.txt was found.",
+                parent=self._window,
+            )
+            return
+
+        picker = ctk.CTkToplevel(self._window)
+        picker.title("Firmware Versions")
+        picker.geometry("290x190")
+        picker.attributes("-topmost", True)
+        picker.transient(self._window)
+        picker.grab_set()
+
+        current = getattr(self.controller, "firmware_version", "unknown")
+        ctk.CTkLabel(
+            picker,
+            text=f"Device: {current}    Desktop: {APP_VERSION}",
+            font=ctk.CTkFont(size=11),
+        ).pack(fill="x", padx=12, pady=(14, 8))
+
+        by_tag = {info.tag: info for info in releases}
+        preferred = next(
+            (info.tag for info in releases if info.version == APP_VERSION.lstrip("v")),
+            releases[0].tag,
+        )
+        selected = tk.StringVar(value=preferred)
+        ctk.CTkOptionMenu(
+            picker,
+            variable=selected,
+            values=list(by_tag),
+            width=180,
+            height=28,
+        ).pack(padx=12, pady=6)
+
+        ctk.CTkLabel(
+            picker,
+            text="Official GitHub release · SHA-256 verified",
+            font=ctk.CTkFont(size=10),
+            text_color="#a0a0a0",
+        ).pack(pady=(2, 8))
+
+        buttons = ctk.CTkFrame(picker, fg_color="transparent")
+        buttons.pack(fill="x", padx=12, pady=(0, 10))
+
+        def install_selected():
+            info = by_tag.get(selected.get())
+            if info is None:
+                return
+            confirmed = messagebox.askyesno(
+                "Firmware Update",
+                f"Flash firmware {info.tag}?\n\n"
+                f"Current device: {current}\n"
+                f"Desktop App: {APP_VERSION}",
+                parent=picker,
+            )
+            if not confirmed:
+                return
+            picker.grab_release()
+            picker.destroy()
+            self.start_firmware_release_update(info, automatic=False)
+
+        ctk.CTkButton(
+            buttons,
+            text="Install",
+            command=install_selected,
+            width=90,
+            height=28,
+        ).pack(side="right")
+        ctk.CTkButton(
+            buttons,
+            text="Cancel",
+            command=picker.destroy,
+            width=80,
+            height=28,
+            fg_color="#444444",
+        ).pack(side="right", padx=6)
+
+        self._firmware_status_var.set(
+            f"{len(releases)} firmware version(s) available"
+        )
+
+    def start_firmware_release_update(
+        self,
+        info: FirmwareReleaseInfo,
+        automatic: bool = False,
+    ):
+        if not self.controller.can_update_firmware:
+            if not automatic:
+                messagebox.showwarning(
+                    "Firmware Update",
+                    "Connect VuNMix first.",
+                    parent=self._window,
+                )
+            return
+
+        self._firmware_release_loading = True
+        self._firmware_progress.set(0)
+        prefix = "Auto " if automatic else ""
+        self._firmware_status_var.set(
+            f"{prefix}downloading firmware {info.tag}..."
+        )
+
+        def worker():
+            try:
+                def on_download(value, text):
+                    self._ui_call(
+                        lambda v=value, t=text:
+                            self._set_firmware_progress(v * 0.20, t)
+                    )
+
+                firmware = self._firmware_release_client.download(
+                    info,
+                    progress=on_download,
+                )
+
+                def on_flash(value, text):
+                    self._ui_call(
+                        lambda v=value, t=text:
+                            self._set_firmware_progress(0.20 + (v * 0.80), t)
+                    )
+
+                def on_complete(success, message):
+                    self._ui_call(
+                        lambda ok=success, msg=message:
+                            self._firmware_complete(
+                                ok,
+                                msg,
+                                automatic=automatic,
+                                target_version=info.version,
+                            )
+                    )
+
+                started = self.controller.start_firmware_update(
+                    str(firmware),
+                    on_progress=on_flash,
+                    on_complete=on_complete,
+                )
+                if not started:
+                    self._ui_call(
+                        lambda: self._firmware_release_start_failed(
+                            "Another firmware update is already running."
+                        )
+                    )
+            except Exception as exc:
+                log.exception("Firmware release update failed")
+                self._ui_call(
+                    lambda error=str(exc):
+                        self._firmware_release_start_failed(error)
+                )
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="FirmwareReleaseInstall",
+        ).start()
+
+    def _firmware_release_start_failed(self, message: str):
+        self._firmware_release_loading = False
+        self._firmware_progress.set(0)
+        self._firmware_status_var.set(f"Firmware update failed: {message}")
+
     def _select_firmware(self):
         if not self.controller.can_update_firmware:
             messagebox.showwarning("Firmware Update", "Connect VuNMix first.")
@@ -581,7 +826,7 @@ class SettingsDialog:
         if not confirmed:
             return
 
-        self.btn_firmware.configure(state="disabled")
+        self._firmware_release_loading = True
         self._firmware_progress.set(0)
         self._firmware_status_var.set("Preparing device...")
 
@@ -600,6 +845,7 @@ class SettingsDialog:
             on_progress=on_progress,
             on_complete=on_complete,
         ):
+            self._firmware_release_loading = False
             self._firmware_status_var.set("Another update is already running.")
 
     def _set_firmware_progress(self, value, text):
@@ -664,15 +910,45 @@ class SettingsDialog:
         ctk.CTkButton(buttons, text="Apply", command=apply_selection, height=28).pack(side="right")
         ctk.CTkButton(buttons, text="Cancel", command=picker.destroy, height=28, fg_color="#444444").pack(side="right", padx=6)
 
-    def _firmware_complete(self, success, message):
+    def _firmware_complete(
+        self,
+        success,
+        message,
+        automatic: bool = False,
+        target_version: str = "",
+    ):
+        self._firmware_release_loading = False
         self._firmware_progress.set(1.0 if success else 0.0)
-        self._firmware_status_var.set(
-            "Update complete" if success else "Update failed"
-        )
         if success:
-            messagebox.showinfo("Firmware Update", message, parent=self._window)
+            version = target_version or getattr(
+                self.controller,
+                "firmware_version",
+                "",
+            )
+            display_version = str(version or "")
+            if display_version and not display_version.startswith("v"):
+                display_version = f"v{display_version}"
+            self._firmware_status_var.set(
+                f"Firmware {display_version} updated"
+                if display_version
+                else "Update complete"
+            )
+            if not automatic:
+                messagebox.showinfo(
+                    "Firmware Update",
+                    message,
+                    parent=self._window,
+                )
         else:
-            messagebox.showerror("Firmware Update", message, parent=self._window)
+            self._firmware_status_var.set(
+                "Auto FW update failed" if automatic else "Update failed"
+            )
+            if not automatic:
+                messagebox.showerror(
+                    "Firmware Update",
+                    message,
+                    parent=self._window,
+                )
 
     def _toggle_connect(self):
         if self.controller.firmware_updating:
@@ -733,6 +1009,9 @@ class SettingsDialog:
             self.config.com_port = new_port
             self.config.run_on_startup = self._startup_var.get()
             self.config.auto_update_enabled = self._auto_update_var.get()
+            self.config.auto_firmware_update_enabled = (
+                self._auto_firmware_update_var.get()
+            )
             self.config.favorite_apps = sorted(set(self.config.favorite_apps))
             sleep_minutes = max(0, int(self._sleep_var.get()))
             self.config.device_settings.sleep_after_seconds = min(
@@ -797,6 +1076,10 @@ class TrayApp:
         self._latest_app_update = None
         self._notified_update_tag = None
         self._update_watcher_started = False
+        self._firmware_release_client = FirmwareReleaseClient()
+        self._firmware_auto_lock = threading.Lock()
+        self._auto_firmware_attempted = set()
+        self.controller.on_device_ready = self._on_device_ready
 
     def _create_settings_dialog(self):
         return SettingsDialog(
@@ -861,12 +1144,77 @@ class TrayApp:
         # If already connected before icon.run() was reached
         if self.controller._device_connected:
             self._on_connection_status(True)
+            self._on_device_ready()
 
         # pystray documents run_detached() specifically for integration with
         # another library that owns the process main loop (Tk in our case).
         self._icon.run_detached()
         self._start_app_update_watcher()
         dialog.run_loop()
+
+    def _on_device_ready(self):
+        """Check firmware only after the normal protocol handshake is complete."""
+        threading.Thread(
+            target=self._auto_firmware_update_worker,
+            daemon=True,
+            name="FirmwareAutoCheck",
+        ).start()
+
+    def _auto_firmware_update_worker(self):
+        if not getattr(self.config, "auto_firmware_update_enabled", True):
+            return
+
+        current = str(
+            getattr(self.controller, "firmware_version", "unknown") or "unknown"
+        )
+        if not should_auto_update_firmware(
+            current,
+            APP_VERSION,
+            enabled=True,
+        ):
+            return
+
+        attempt_key = (current, APP_VERSION)
+        with self._firmware_auto_lock:
+            if attempt_key in self._auto_firmware_attempted:
+                return
+            self._auto_firmware_attempted.add(attempt_key)
+
+        try:
+            info = self._firmware_release_client.get_version(APP_VERSION)
+            if info is None:
+                log.warning(
+                    "No firmware asset matches Desktop App %s",
+                    APP_VERSION,
+                )
+                self._dispatch_ui(
+                    lambda: self._ensure_settings_dialog()._firmware_status_var.set(
+                        f"No firmware matches PC {APP_VERSION}"
+                    )
+                )
+                return
+
+            log.info(
+                "Auto firmware sync: device=%s desktop=%s release=%s",
+                current,
+                APP_VERSION,
+                info.tag,
+            )
+            self._dispatch_ui(
+                lambda found=info:
+                    self._ensure_settings_dialog().start_firmware_release_update(
+                        found,
+                        automatic=True,
+                    )
+            )
+        except Exception as exc:
+            log.warning("Automatic firmware check failed: %s", exc)
+            self._dispatch_ui(
+                lambda error=str(exc):
+                    self._ensure_settings_dialog()._firmware_status_var.set(
+                        f"Auto FW check failed: {error}"
+                    )
+            )
 
     def _start_app_update_watcher(self):
         if self._update_watcher_started:

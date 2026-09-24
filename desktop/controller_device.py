@@ -132,6 +132,11 @@ class DeviceLifecycleMixin:
                     self.audio.get_session_count(DisplayMode.MODE_INPUT),
                     self.audio.get_session_count(DisplayMode.MODE_APPLICATION),
                 )
+                if self.on_device_ready:
+                    try:
+                        self.on_device_ready()
+                    except Exception:
+                        log.exception("Device-ready callback failed")
             finally:
                 comtypes.CoUninitialize()
         except Exception:

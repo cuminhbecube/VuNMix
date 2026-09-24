@@ -36,6 +36,14 @@ class DiagnosticAppController(AppController):
         self._last_update_error_code = ""
 
     @property
+    def firmware_version(self) -> str:
+        return self._firmware_version
+
+    @property
+    def firmware_protocol(self):
+        return self._firmware_protocol
+
+    @property
     def last_update_log(self) -> str:
         return self._last_update_log
 

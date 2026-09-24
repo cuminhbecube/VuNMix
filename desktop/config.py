@@ -23,6 +23,7 @@ _DEFAULT_CONFIG = {
     "update_interval_ms": 500,
     "run_on_startup": False,
     "auto_update_enabled": True,
+    "auto_firmware_update_enabled": True,
     "favorite_apps": [],
     "settings": {
         "sleep_after_seconds": 300,
@@ -47,6 +48,7 @@ class AppConfig:
     update_interval_ms: int = 500
     run_on_startup: bool = False
     auto_update_enabled: bool = True
+    auto_firmware_update_enabled: bool = True
     favorite_apps: list = field(default_factory=list)
     device_settings: DeviceSettings = field(default_factory=DeviceSettings)
 
@@ -93,6 +95,9 @@ class AppConfig:
             update_interval_ms=max(50, min(10000, int(data.get('update_interval_ms', 500)))),
             run_on_startup=bool(data.get('run_on_startup', False)),
             auto_update_enabled=bool(data.get('auto_update_enabled', True)),
+            auto_firmware_update_enabled=bool(
+                data.get('auto_firmware_update_enabled', True)
+            ),
             favorite_apps=[
                 str(item).lower().removesuffix(".exe")
                 for item in data.get("favorite_apps", [])
@@ -109,6 +114,7 @@ class AppConfig:
             "update_interval_ms": self.update_interval_ms,
             "run_on_startup": self.run_on_startup,
             "auto_update_enabled": self.auto_update_enabled,
+            "auto_firmware_update_enabled": self.auto_firmware_update_enabled,
             "favorite_apps": sorted(set(self.favorite_apps)),
             "settings": {
                 "sleep_after_seconds": self.device_settings.sleep_after_seconds,
