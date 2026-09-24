@@ -1,7 +1,9 @@
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 
 DESKTOP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -106,7 +108,34 @@ class AppUpdaterTests(unittest.TestCase):
             self.assertEqual(command[0], str(path))
             self.assertIn("/VERYSILENT", command)
             self.assertIn("/CLOSEAPPLICATIONS", command)
+            self.assertIn("/FORCECLOSEAPPLICATIONS", command)
             self.assertIn("/RESTARTAPPLICATIONS", command)
+            self.assertTrue(any(arg.startswith("/LOG=") for arg in command))
+
+    def test_installer_forces_old_app_closed_and_relaunches_after_silent_update(self):
+        installer = (DESKTOP_DIR / "VuNMix_Installer.iss").read_text(encoding="utf-8")
+        self.assertIn("taskkill /F /IM VuNMix.exe", installer)
+        self.assertIn("function PrepareToInstall", installer)
+        run_line = next(
+            line for line in installer.splitlines()
+            if line.startswith('Filename: "{app}\\VuNMix.exe"')
+        )
+        self.assertIn("runasoriginaluser", run_line)
+        self.assertNotIn("skipifsilent", run_line)
+
+    def test_update_shutdown_releases_running_app(self):
+        from gui import TrayApp
+
+        app = object.__new__(TrayApp)
+        app._update_stop = threading.Event()
+        app._settings_dialog = mock.Mock()
+        app._icon = mock.Mock()
+
+        TrayApp._shutdown_for_app_update(app)
+
+        self.assertTrue(app._update_stop.is_set())
+        app._settings_dialog.request_shutdown.assert_called_once_with()
+        app._icon.stop.assert_called_once_with()
 
 
 if __name__ == "__main__":
