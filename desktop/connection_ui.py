@@ -59,9 +59,28 @@ class ConnectionSettingsDialog(SettingsDialog):
             self._com_var.set(active_port)
 
         if hasattr(self, "btn_firmware"):
-            self.btn_firmware.configure(
-                state="normal" if self.controller.can_update_firmware else "disabled"
+            firmware_ready = (
+                self.controller.can_update_firmware
+                and not self._firmware_release_loading
             )
+            state = "normal" if firmware_ready else "disabled"
+            self.btn_firmware.configure(state=state)
+            if hasattr(self, "btn_firmware_versions"):
+                self.btn_firmware_versions.configure(state=state)
+
+            if (
+                not self.controller.firmware_updating
+                and not self._firmware_release_loading
+                and hasattr(self, "_firmware_status_var")
+                and (
+                    self._firmware_status_var.get() == "Ready"
+                    or self._firmware_status_var.get().startswith("FW ")
+                )
+            ):
+                current_fw = getattr(self.controller, "firmware_version", "unknown")
+                self._firmware_status_var.set(
+                    f"FW {current_fw} · PC {APP_VERSION}"
+                )
 
         self._window.after(500, self._update_status_loop)
 
