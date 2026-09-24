@@ -19,14 +19,18 @@ class AppUpdateIntegrationTests(unittest.TestCase):
 
             cfg = AppConfig.load(str(path))
             self.assertTrue(cfg.auto_update_enabled)
+            self.assertTrue(cfg.auto_firmware_update_enabled)
 
             cfg.auto_update_enabled = False
+            cfg.auto_firmware_update_enabled = False
             cfg.save(str(path))
             loaded = AppConfig.load(str(path))
             self.assertFalse(loaded.auto_update_enabled)
+            self.assertFalse(loaded.auto_firmware_update_enabled)
 
             raw = json.loads(path.read_text(encoding="utf-8"))
             self.assertIn("auto_update_enabled", raw)
+            self.assertIn("auto_firmware_update_enabled", raw)
 
     def test_update_worker_marshals_progress_to_main_ui_queue(self):
         source = (REPO_DIR / "desktop" / "gui.py").read_text(encoding="utf-8")
@@ -37,6 +41,16 @@ class AppUpdateIntegrationTests(unittest.TestCase):
         self.assertIn("self._dispatch_ui(", source)
         self.assertIn("set_app_update_progress", source)
         self.assertIn("prompt_app_update", source)
+
+    def test_firmware_release_controls_and_auto_sync_are_exposed(self):
+        source = (REPO_DIR / "desktop" / "gui.py").read_text(encoding="utf-8")
+
+        self.assertIn('"Auto FW Update"', source)
+        self.assertIn('text="Versions"', source)
+        self.assertIn('name="FirmwareReleaseList"', source)
+        self.assertIn('name="FirmwareReleaseInstall"', source)
+        self.assertIn('name="FirmwareAutoCheck"', source)
+        self.assertIn("should_auto_update_firmware(", source)
 
     def test_connection_tray_exposes_manual_update_check(self):
         source = (REPO_DIR / "desktop" / "connection_ui.py").read_text(
