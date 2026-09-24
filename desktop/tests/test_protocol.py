@@ -11,6 +11,8 @@ from config import AppConfig
 from protocol import (
     Color,
     Command,
+    ClockStyle,
+    CLOCK_STYLE_NAMES,
     DeviceSettings,
     AppIconChunk,
     AppIconMeta,
@@ -90,10 +92,20 @@ class ProtocolTests(unittest.TestCase):
     def test_led_test_mode_extends_settings_without_protocol_change(self):
         self.assertEqual(int(StandbyLedMode.LED_TEST), 16)
         self.assertEqual(STANDBY_LED_NAMES[16], "LED Test 0-9")
-        settings = DeviceSettings.from_config({"standby_led_mode": 16})
+        settings = DeviceSettings.from_config({
+            "standby_led_mode": 16,
+            "clock_style": int(ClockStyle.ANALOG),
+        })
         unpacked = DeviceSettings.unpack(settings.pack())
         self.assertEqual(unpacked.standby_led_mode, 16)
+        self.assertEqual(unpacked.clock_style, int(ClockStyle.ANALOG))
         self.assertEqual(len(settings.pack()), 19)
+
+    def test_clock_style_defaults_and_clamps(self):
+        self.assertEqual(CLOCK_STYLE_NAMES[0], "Neon Digital")
+        self.assertEqual(DeviceSettings.from_config({}).clock_style, int(ClockStyle.NEON_DIGITAL))
+        settings = DeviceSettings.from_config({"clock_style": 99})
+        self.assertEqual(settings.clock_style, int(ClockStyle.ANALOG))
 
     def test_meter_levels_are_clamped(self):
         packed = MeterData(current=150, alternate=-4).pack()
