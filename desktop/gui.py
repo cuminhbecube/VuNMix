@@ -185,13 +185,13 @@ class SettingsDialog:
         main_frame.pack(fill='both', expand=True)
 
         # Header (draggable)
-        header = ctk.CTkFrame(main_frame, fg_color="transparent", height=36)
-        header.pack(fill='x', padx=12, pady=(10, 2))
+        header = ctk.CTkFrame(main_frame, fg_color="transparent", height=32)
+        header.pack(fill='x', padx=12, pady=(6, 0))
         header.pack_propagate(False)
         title_lbl = ctk.CTkLabel(header, text="VuNMix", font=ctk.CTkFont(size=16, weight="bold"))
         title_lbl.pack(side='left')
         
-        close_btn = ctk.CTkButton(header, text="✕", width=28, height=28, fg_color="transparent", 
+        close_btn = ctk.CTkButton(header, text="✕", width=26, height=24, fg_color="transparent", 
                                   hover_color="#dc3545", font=ctk.CTkFont(size=14), command=self._on_window_close)
         close_btn.pack(side='right')
 
@@ -201,8 +201,8 @@ class SettingsDialog:
             widget.bind("<B1-Motion>", self._do_drag)
 
         # Connection row: COM Port + dropdown + Connect/Disconnect
-        conn_row = ctk.CTkFrame(main_frame, fg_color="transparent", height=30)
-        conn_row.pack(fill='x', padx=12, pady=(4, 2))
+        conn_row = ctk.CTkFrame(main_frame, fg_color="transparent", height=28)
+        conn_row.pack(fill='x', padx=12, pady=(2, 1))
         conn_row.pack_propagate(False)
         ctk.CTkLabel(conn_row, text="COM Port", font=ctk.CTkFont(size=12)).pack(side='left')
         
@@ -211,19 +211,30 @@ class SettingsDialog:
         if self.config.com_port not in ports and self.config.com_port:
             ports.append(self.config.com_port)
         
-        self.btn_toggle_conn = ctk.CTkButton(conn_row, text="Connect", command=self._toggle_connect, width=75, height=24,
+        self.btn_toggle_conn = ctk.CTkButton(conn_row, text="Connect", command=self._toggle_connect, width=75, height=22,
                                              font=ctk.CTkFont(size=11, weight="bold"))
         self.btn_toggle_conn.pack(side='right')
         
-        ctk.CTkOptionMenu(conn_row, variable=self._com_var, values=ports if ports else ["None"], width=90, height=24).pack(side='right', padx=6)
+        ctk.CTkOptionMenu(conn_row, variable=self._com_var, values=ports if ports else ["None"], width=90, height=22).pack(side='right', padx=6)
 
-        # Content rows
+        # Reserve the footer before packing the settings body. This keeps Save
+        # visible even when more settings or status rows are added later.
+        save_btn = ctk.CTkButton(
+            main_frame,
+            text="Save Settings",
+            command=self._save,
+            height=28,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        save_btn.pack(side='bottom', fill='x', padx=12, pady=(4, 8))
+
+        # Content rows stay compact and consume only their requested height.
         content = ctk.CTkFrame(main_frame, fg_color="transparent")
-        content.pack(fill='both', expand=True, padx=12)
+        content.pack(fill='x', padx=12)
 
         def add_row(parent, label_text, widget_builder):
-            row = ctk.CTkFrame(parent, fg_color="transparent", height=30)
-            row.pack(fill='x', pady=3)
+            row = ctk.CTkFrame(parent, fg_color="transparent", height=26)
+            row.pack(fill='x', pady=1)
             row.pack_propagate(False)
             ctk.CTkLabel(row, text=label_text, font=ctk.CTkFont(size=12)).pack(side='left')
             widget = widget_builder(row)
@@ -316,9 +327,9 @@ class SettingsDialog:
 
         # Favorite apps
         favorites_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
-        favorites_frame.pack(fill='x', padx=12, pady=(5, 2))
+        favorites_frame.pack(fill='x', padx=12, pady=(3, 1))
         favorites_top = ctk.CTkFrame(favorites_frame, fg_color="transparent")
-        favorites_top.pack(fill='x', padx=8, pady=(6, 2))
+        favorites_top.pack(fill='x', padx=8, pady=(4, 0))
         ctk.CTkLabel(
             favorites_top,
             text="App Favorites",
@@ -327,8 +338,8 @@ class SettingsDialog:
         ctk.CTkButton(
             favorites_top,
             text="Choose",
-            width=82,
-            height=24,
+            width=78,
+            height=22,
             command=self._choose_favorite_apps,
         ).pack(side='right')
         self._favorites_status_var = tk.StringVar()
@@ -339,13 +350,13 @@ class SettingsDialog:
             font=ctk.CTkFont(size=10),
             text_color="#a0a0a0",
             anchor="w",
-        ).pack(fill='x', padx=8, pady=(0, 6))
+        ).pack(fill='x', padx=8, pady=(0, 3))
 
         # Desktop app update
         update_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
-        update_frame.pack(fill='x', padx=12, pady=(5, 2))
+        update_frame.pack(fill='x', padx=12, pady=(3, 1))
         update_top = ctk.CTkFrame(update_frame, fg_color="transparent")
-        update_top.pack(fill='x', padx=8, pady=(6, 2))
+        update_top.pack(fill='x', padx=8, pady=(4, 0))
         ctk.CTkLabel(
             update_top,
             text=f"Desktop App  {APP_VERSION}",
@@ -354,8 +365,8 @@ class SettingsDialog:
         self.btn_app_update = ctk.CTkButton(
             update_top,
             text="Check",
-            width=72,
-            height=24,
+            width=70,
+            height=22,
             command=self._manual_check_app_update,
         )
         self.btn_app_update.pack(side='right')
@@ -366,13 +377,13 @@ class SettingsDialog:
             font=ctk.CTkFont(size=10),
             text_color="#a0a0a0",
             anchor="w",
-        ).pack(fill='x', padx=8, pady=(0, 5))
+        ).pack(fill='x', padx=8, pady=(0, 3))
 
         # Firmware update
         firmware_frame = ctk.CTkFrame(main_frame, fg_color="#191919", corner_radius=8)
-        firmware_frame.pack(fill='x', padx=12, pady=(5, 2))
+        firmware_frame.pack(fill='x', padx=12, pady=(3, 1))
         firmware_top = ctk.CTkFrame(firmware_frame, fg_color="transparent")
-        firmware_top.pack(fill='x', padx=8, pady=(6, 2))
+        firmware_top.pack(fill='x', padx=8, pady=(4, 0))
         ctk.CTkLabel(
             firmware_top,
             text="Device Firmware",
@@ -381,18 +392,18 @@ class SettingsDialog:
         self.btn_firmware = ctk.CTkButton(
             firmware_top,
             text="Update .bin",
-            width=92,
-            height=24,
+            width=88,
+            height=22,
             command=self._select_firmware,
         )
         self.btn_firmware.pack(side='right')
 
         self._firmware_progress = ctk.CTkProgressBar(
             firmware_frame,
-            height=6,
+            height=4,
             progress_color="#00bcd4",
         )
-        self._firmware_progress.pack(fill='x', padx=8, pady=(2, 2))
+        self._firmware_progress.pack(fill='x', padx=8, pady=(1, 1))
         self._firmware_progress.set(0)
         self._firmware_status_var = tk.StringVar(value="Ready")
         ctk.CTkLabel(
@@ -400,11 +411,7 @@ class SettingsDialog:
             textvariable=self._firmware_status_var,
             font=ctk.CTkFont(size=10),
             text_color="#a0a0a0",
-        ).pack(anchor='w', padx=8, pady=(0, 5))
-
-        # Save Button
-        save_btn = ctk.CTkButton(main_frame, text="Save Settings", command=self._save, height=32, font=ctk.CTkFont(size=12, weight="bold"))
-        save_btn.pack(fill='x', padx=12, pady=(6, 12))
+        ).pack(anchor='w', padx=8, pady=(0, 3))
 
         # Keep the interpreter alive from process start, but do not show
         # Settings until the tray callback asks for it.  This avoids creating
