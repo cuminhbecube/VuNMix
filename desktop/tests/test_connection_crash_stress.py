@@ -13,6 +13,7 @@ sys.path.insert(0, str(DESKTOP_DIR))
 from app_controller import AppController
 from controller_device import DeviceLifecycleMixin
 from controller_state import HardwareStateMixin
+from controller_workers import SyncWorkersMixin
 from gui import TrayApp
 from protocol import DisplayMode, SessionData, SessionIndex, SessionInfo, VolumeData
 from serial_service import SerialService
