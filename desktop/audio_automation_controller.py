@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+
+import comtypes
 import os
 import threading
 import time
@@ -180,30 +182,38 @@ class AudioAutomationController(MediaAppController):
         return levels
 
     def _automation_loop(self):
-        next_routing = 0.0
-        next_recovery = 0.0
-        while not self._automation_stop.wait(DUCKING_TICK_SECONDS):
-            now = time.monotonic()
-            try:
-                if now >= next_recovery and self.audio_automation.has_pending_recovery():
-                    self.audio_automation.recover_pending()
-                    next_recovery = now + 1.0
+        # This worker creates/uses WASAPI meter COM interfaces directly.
+        # Initialize one COM apartment for the lifetime of the thread so native
+        # pycaw/comtypes calls cannot run on an uninitialized worker.
+        comtypes.CoInitialize()
+        try:
+            next_routing = 0.0
+            next_recovery = 0.0
+            while not self._automation_stop.wait(DUCKING_TICK_SECONDS):
+                now = time.monotonic()
+                try:
+                    if now >= next_recovery and self.audio_automation.has_pending_recovery():
+                        self.audio_automation.recover_pending()
+                        next_recovery = now + 1.0
 
-                if self.ducking_enabled and self.audio_automation.trigger_patterns():
-                    self._refresh_duck_meters()
-                    trigger_levels = self._read_trigger_levels()
-                else:
-                    if self._duck_meters:
-                        self._close_duck_meters()
-                    trigger_levels = {}
-                self.audio_automation.tick_ducking(trigger_levels, now)
+                    if self.ducking_enabled and self.audio_automation.trigger_patterns():
+                        self._refresh_duck_meters()
+                        trigger_levels = self._read_trigger_levels()
+                    else:
+                        if self._duck_meters:
+                            self._close_duck_meters()
+                        trigger_levels = {}
+                    self.audio_automation.tick_ducking(trigger_levels, now)
 
-                if now >= next_routing:
-                    next_routing = now + ROUTING_REFRESH_SECONDS
-                    if self._audio_policy_router is not None:
-                        self.audio_automation.apply_routing_rules(self._audio_policy_router)
-            except Exception:
-                # Audio automation is an optional layer. A broken rule or a
-                # transient endpoint/session must never take down mixer sync.
-                log.exception("Audio routing/ducking iteration failed")
-                self._close_duck_meters()
+                    if now >= next_routing:
+                        next_routing = now + ROUTING_REFRESH_SECONDS
+                        if self._audio_policy_router is not None:
+                            self.audio_automation.apply_routing_rules(self._audio_policy_router)
+                except Exception:
+                    # Audio automation is an optional layer. A broken rule or a
+                    # transient endpoint/session must never take down mixer sync.
+                    log.exception("Audio routing/ducking iteration failed")
+                    self._close_duck_meters()
+        finally:
+            self._close_duck_meters()
+            comtypes.CoUninitialize()
