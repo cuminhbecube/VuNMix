@@ -67,6 +67,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._selection_transitioning = False
 
         # Worker/lifecycle state.
+        self._heartbeat_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
         self._meter_thread: Optional[threading.Thread] = None
         self._firmware_update_lock = threading.Lock()
@@ -97,6 +98,12 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
             self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
         self.serial.start()
 
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            daemon=True,
+            name="ProtocolHeartbeat",
+        )
+        self._heartbeat_thread.start()
         self._sync_thread = threading.Thread(
             target=self._sync_loop,
             daemon=True,
@@ -115,13 +122,19 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
     def stop(self):
         """Stop all services and workers."""
         log.info("AppController stopping...")
+        # Stop controller-owned loops first so shutdown/restart cannot leave
+        # them blocked behind a transport or WASAPI call while new workers are
+        # starting for the next connection generation.
+        self._running = False
         self.weather_service.stop()
         self.obs_service.stop()
         if self._power_monitor is not None:
             self._power_monitor.stop()
             self._power_monitor = None
-        self._running = False
         self.serial.stop()
+        if self._heartbeat_thread:
+            self._heartbeat_thread.join(timeout=1.0)
+            self._heartbeat_thread = None
         if self._sync_thread:
             self._sync_thread.join(timeout=3.0)
             self._sync_thread = None
