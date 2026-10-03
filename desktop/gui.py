@@ -1189,6 +1189,18 @@ class TrayApp:
         if not getattr(self.config, "auto_firmware_update_enabled", True):
             return
 
+        # Do not tear down a connection immediately after it becomes ready.
+        # Give the normal protocol/USB link time to prove it is stable first;
+        # otherwise an automatic firmware flash is indistinguishable from the
+        # "connect for ~2 seconds, then Waiting" failure seen by users.
+        if self._update_stop.wait(10.0):
+            return
+        if (
+            not self.controller.is_connected
+            or getattr(self.controller, "firmware_updating", False)
+        ):
+            return
+
         current = str(
             getattr(self.controller, "firmware_version", "unknown") or "unknown"
         )
