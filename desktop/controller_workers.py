@@ -109,12 +109,12 @@ class SyncWorkersMixin:
                 continue
 
             now = time.monotonic()
-            last_test = getattr(self.serial, "last_test_response", 0.0)
+            last_ack = getattr(self.serial, "last_ok_response", 0.0)
 
             if heartbeat_pending_since:
-                if last_test > heartbeat_response_floor:
-                    # The firmware replied to the outstanding TEST. Clear the
-                    # pending request before scheduling another heartbeat.
+                if last_ack > heartbeat_response_floor:
+                    # Firmware ACKed traffic after this heartbeat was sent.
+                    # Clear the pending request before scheduling another one.
                     heartbeat_pending_since = 0.0
                     heartbeat_response_floor = 0.0
                 elif now - heartbeat_pending_since >= 6.0:
@@ -128,15 +128,13 @@ class SyncWorkersMixin:
                     continue
 
             if not heartbeat_pending_since and now - last_heartbeat >= 2.0:
-                # TEST is a real round-trip heartbeat. Record the response
-                # baseline BEFORE sending, then wait up to 6 seconds for a
-                # newer TEST response. The previous implementation checked the
-                # old timestamp immediately after send_test(), so it could
-                # disconnect a healthy device milliseconds before its reply
-                # arrived, causing reconnect loops and eventually destabilizing
-                # the desktop app.
-                heartbeat_response_floor = last_test
-                if not self.serial.send_test():
+                # Use the protocol ACK path for health checks instead of TEST.
+                # TEST is reserved for identity/version handshake; using it as
+                # a periodic heartbeat made every 2-second tick look like a new
+                # firmware handshake and correlated with short connect/drop
+                # cycles on real hardware.
+                heartbeat_response_floor = last_ack
+                if not self.serial.send_command(Command.OK):
                     log.warning("VuNMix heartbeat write failed; reconnecting")
                     heartbeat_response_floor = 0.0
                     self.serial.disconnect()
