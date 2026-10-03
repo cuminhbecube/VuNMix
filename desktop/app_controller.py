@@ -55,6 +55,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._is_sleeping = False
         self._handshake_token = 0
         self._handshake_in_progress = False
+        self._handshake_watchdog_timer: Optional[threading.Timer] = None
         self._sent_icon_ids = set()
         self._connection_lock = threading.RLock()
 
