@@ -791,7 +791,7 @@ class AppStartStopStressTests(unittest.TestCase):
 class UiFreezeRegressionTests(unittest.TestCase):
     def test_connection_restart_is_dispatched_off_tk_thread(self):
         source = (DESKTOP_DIR / "gui.py").read_text(encoding="utf-8")
-        self.assertIn('name="ConnectionRestart"', source)
+        self.assertIn('thread_name = "ConnectionRestart"', source)
         self.assertIn('name="ControllerPortRestart"', source)
         self.assertIn('name="SettingsStatePush"', source)
 
