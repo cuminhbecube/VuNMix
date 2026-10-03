@@ -65,6 +65,7 @@ class PowerHarness(DeviceLifecycleMixin):
 
     def _push_full_state(self, mode):
         self.pushed_modes.append(mode)
+        return True
 
 
 class ResumeRecoveryTests(unittest.TestCase):
