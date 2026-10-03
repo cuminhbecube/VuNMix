@@ -104,8 +104,25 @@ class SyncWorkersMixin:
             now = time.monotonic()
 
             if now - last_heartbeat >= 2.0:
-                self.serial.send_command(Command.OK)
+                # TEST is a real round-trip heartbeat. A successful write only
+                # proves Windows accepted bytes into the COM driver; the TEST
+                # response proves the VuNMix firmware is actually reachable.
+                if not self.serial.send_test():
+                    log.warning("VuNMix heartbeat write failed; reconnecting")
+                    self.serial.disconnect()
+                    last_heartbeat = now
+                    continue
+
                 last_heartbeat = now
+
+                last_test = getattr(self.serial, "last_test_response", 0.0)
+                if last_test > 0 and (now - last_test) > 6.0:
+                    log.warning(
+                        "VuNMix protocol heartbeat timed out (%.1fs); reconnecting",
+                        now - last_test,
+                    )
+                    self.serial.disconnect()
+                    continue
 
             if now - last_time_sync >= 30.0:
                 dt = datetime.now()

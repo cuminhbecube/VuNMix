@@ -105,6 +105,8 @@ class DeviceLifecycleMixin:
         with self._connection_lock:
             valid_token = token == self._handshake_token
         if not valid_token or not self.serial.is_connected:
+            with self._connection_lock:
+                self._handshake_in_progress = False
             return
 
         try:
@@ -112,14 +114,17 @@ class DeviceLifecycleMixin:
             # host-sleep latch left in firmware. During actual PC sleep, keep
             # the latch intact even if the COM port briefly re-enumerates.
             if not self._is_sleeping:
-                self.serial.send_command(Command.OK)
+                if not self.serial.send_command(Command.OK):
+                    raise ConnectionError("Failed to send wake command")
                 time.sleep(0.02)
 
-            self.serial.send_settings(self.config.device_settings)
+            if not self.serial.send_settings(self.config.device_settings):
+                raise ConnectionError("Failed to send settings during handshake")
             time.sleep(0.1)
 
             now = datetime.now()
-            self.serial.send_time_sync(now.hour, now.minute, now.second)
+            if not self.serial.send_time_sync(now.hour, now.minute, now.second):
+                raise ConnectionError("Failed to send time sync during handshake")
             time.sleep(0.05)
 
             comtypes.CoInitialize()
@@ -132,15 +137,32 @@ class DeviceLifecycleMixin:
                     self.audio.get_session_count(DisplayMode.MODE_INPUT),
                     self.audio.get_session_count(DisplayMode.MODE_APPLICATION),
                 )
-                if self.on_device_ready:
-                    try:
-                        self.on_device_ready()
-                    except Exception:
-                        log.exception("Device-ready callback failed")
             finally:
                 comtypes.CoUninitialize()
+
+            # Do not expose Connected merely because Windows opened the COM
+            # port. We only reach this point after a valid TEST response and
+            # successful initial state transfer.
+            with self._connection_lock:
+                if token != self._handshake_token or not self.serial.is_connected:
+                    self._handshake_in_progress = False
+                    return
+                self._device_connected = True
+                self._update_only_connected = True
+                self._handshake_in_progress = False
+
+            if self.on_connection_changed:
+                self.on_connection_changed(True)
+
+            if self.on_device_ready:
+                try:
+                    self.on_device_ready()
+                except Exception:
+                    log.exception("Device-ready callback failed")
         except Exception:
             log.exception("Failed to initialize device after handshake")
+            with self._connection_lock:
+                self._handshake_in_progress = False
             if token == self._handshake_token:
                 self.serial.disconnect()
 
@@ -151,6 +173,7 @@ class DeviceLifecycleMixin:
             self._handshake_token += 1
             self._device_connected = False
             self._update_only_connected = False
+            self._handshake_in_progress = False
             self._sent_icon_ids.clear()
             self._session_info = SessionInfo()
         if self.on_connection_changed:
@@ -186,13 +209,11 @@ class DeviceLifecycleMixin:
             firmware_protocol,
         )
         with self._connection_lock:
-            if self._device_connected:
+            if self._device_connected or getattr(self, "_handshake_in_progress", False):
                 return
-            self._device_connected = True
             self._update_only_connected = True
+            self._handshake_in_progress = True
             token = self._handshake_token
-        if self.on_connection_changed:
-            self.on_connection_changed(True)
         threading.Thread(
             target=self._complete_handshake,
             args=(token,),

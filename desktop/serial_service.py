@@ -61,6 +61,8 @@ class SerialService:
         self._icon_lock = threading.Lock()
         self._connect_lock = threading.Lock()
         self._parser = FrameParser()
+        self._last_protocol_rx = 0.0
+        self._last_test_response = 0.0
 
         # Callbacks
         self.on_connected: Optional[Callable] = None
@@ -96,6 +98,22 @@ class SerialService:
     @property
     def is_connected(self) -> bool:
         return self._serial is not None and self._serial.is_open
+
+    @property
+    def last_protocol_rx(self) -> float:
+        """Monotonic timestamp of the last valid VuNMix protocol frame."""
+        return self._last_protocol_rx
+
+    @property
+    def last_test_response(self) -> float:
+        """Monotonic timestamp of the last TEST response from firmware."""
+        return self._last_test_response
+
+    def protocol_alive(self, max_age: float = 6.0) -> bool:
+        """True only when the device has replied recently at protocol level."""
+        if not self.is_connected or self._last_protocol_rx <= 0:
+            return False
+        return (time.monotonic() - self._last_protocol_rx) <= max(0.1, float(max_age))
 
     def _set_status(self, text: str):
         if text == self._status:
@@ -202,6 +220,8 @@ class SerialService:
                 connection.reset_input_buffer()
                 connection.reset_output_buffer()
                 self._parser.reset()
+                self._last_protocol_rx = 0.0
+                self._last_test_response = 0.0
                 self._serial = connection
                 self._active_port = target_port
                 self._preferred_port = target_port
@@ -243,6 +263,8 @@ class SerialService:
             except (serial.SerialException, OSError) as exc:
                 log.debug("Error while closing serial port: %s", exc)
             self._parser.reset()
+            self._last_protocol_rx = 0.0
+            self._last_test_response = 0.0
             log.info("Disconnected from %s", active_port or self._preferred_port)
             self._set_status("Disconnected")
             if self.on_disconnected:
@@ -366,7 +388,14 @@ class SerialService:
                     continue
 
                 for cmd, payload in self._parser.feed(raw):
+                    # An open COM handle is not enough to call the device
+                    # connected. Only valid framed traffic proves the PC and
+                    # VuNMix firmware are actually communicating.
+                    now = time.monotonic()
+                    self._last_protocol_rx = now
+
                     if cmd == Command.TEST:
+                        self._last_test_response = now
                         # A TEST response is the protocol-level proof that this
                         # serial target is VuNMix. Only now persist its identity.
                         self.confirm_current_device()

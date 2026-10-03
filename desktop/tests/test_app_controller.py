@@ -4,6 +4,7 @@ import threading
 import types
 import unittest
 from dataclasses import dataclass
+from unittest import mock
 
 
 DESKTOP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -121,6 +122,25 @@ class PreferredSessionTests(unittest.TestCase):
 
         self.assertFalse(controller._device_connected)
         self.assertTrue(controller._update_only_connected)
+
+    def test_valid_version_waits_for_full_handshake_before_connected(self):
+        controller = AppController.__new__(AppController)
+        controller.serial = object()
+        controller._connection_lock = threading.RLock()
+        controller._device_connected = False
+        controller._update_only_connected = False
+        controller._handshake_in_progress = False
+        controller._handshake_token = 7
+        controller.on_connection_changed = mock.Mock()
+
+        with mock.patch("controller_device.threading.Thread") as thread_cls:
+            controller._on_version(f"v0.4.14;P={__import__('protocol').PROTOCOL_VERSION}")
+
+        self.assertFalse(controller._device_connected)
+        self.assertTrue(controller._update_only_connected)
+        self.assertTrue(controller._handshake_in_progress)
+        controller.on_connection_changed.assert_not_called()
+        thread_cls.assert_called_once()
 
     def test_peak_meter_db_mapping(self):
         self.assertEqual(AppController._peak_to_level(0.0), 0)
