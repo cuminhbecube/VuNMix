@@ -12,8 +12,10 @@ import math
 import os
 import queue
 import sys
+import time
 import threading
 import tkinter as tk
+import traceback
 from tkinter import ttk, messagebox, filedialog, colorchooser
 import customtkinter as ctk
 from typing import Optional
@@ -127,6 +129,7 @@ class SettingsDialog:
         self._firmware_release_client = FirmwareReleaseClient()
         self._firmware_release_loading = False
         self._connection_action_thread = None
+        self._last_ui_pump = time.monotonic()
 
     def initialize(self):
         """Create the single Tcl/Tk interpreter on the process main thread."""
@@ -477,6 +480,7 @@ class SettingsDialog:
 
     def _process_window_commands(self):
         """Drain UI work exclusively on the Tcl/Tk owning thread."""
+        self._last_ui_pump = time.monotonic()
         if self._ui_thread_id is not None and threading.get_ident() != self._ui_thread_id:
             raise RuntimeError("Tk command pump executed on the wrong thread")
 
@@ -1137,6 +1141,8 @@ class TrayApp:
         self._auto_firmware_attempted = set()
         self._firmware_auto_thread = None
         self._controller_restart_thread = None
+        self._ui_watchdog_stop = threading.Event()
+        self._ui_watchdog_thread = None
         self.controller.on_device_ready = self._on_device_ready
 
     def _create_settings_dialog(self):
@@ -1157,6 +1163,52 @@ class TrayApp:
     def _dispatch_ui(self, callback):
         """Marshal tray/worker UI updates onto the Tk main thread."""
         self._ensure_settings_dialog()._ui_call(callback)
+
+    def _dump_thread_stacks(self, reason: str):
+        """Write one bounded all-thread snapshot to the normal VuNMix log."""
+        try:
+            frames = sys._current_frames()
+            names = {
+                thread.ident: thread.name
+                for thread in threading.enumerate()
+                if thread.ident is not None
+            }
+            log.error("Hang watchdog snapshot: %s", reason)
+            for ident, frame in frames.items():
+                name = names.get(ident, f"thread-{ident}")
+                stack = "".join(traceback.format_stack(frame))
+                if len(stack) > 12000:
+                    stack = stack[-12000:]
+                log.error("Thread %s (%s)\n%s", name, ident, stack)
+        except Exception:
+            log.exception("Failed to capture hang watchdog snapshot")
+
+    def _start_ui_hang_watchdog(self, dialog):
+        current = self._ui_watchdog_thread
+        if current is not None and current.is_alive():
+            return
+        self._ui_watchdog_stop.clear()
+
+        def watch():
+            reported = False
+            while not self._ui_watchdog_stop.wait(1.0):
+                last_pump = getattr(dialog, "_last_ui_pump", 0.0)
+                age = time.monotonic() - last_pump if last_pump else 0.0
+                if age >= 5.0 and not reported:
+                    reported = True
+                    self._dump_thread_stacks(
+                        f"Tk command pump stalled for {age:.1f}s"
+                    )
+                elif age < 2.0:
+                    reported = False
+
+        worker = threading.Thread(
+            target=watch,
+            daemon=True,
+            name="UiHangWatchdog",
+        )
+        self._ui_watchdog_thread = worker
+        worker.start()
 
     def run(self):
         """Start the tray application (blocking)."""
@@ -1193,6 +1245,7 @@ class TrayApp:
         # request Settings or enqueue other UI work.
         dialog = self._ensure_settings_dialog()
         dialog.initialize()
+        self._start_ui_hang_watchdog(dialog)
 
         self._icon = pystray.Icon('VuNMix', icon_image, status_text, menu)
 
@@ -1420,6 +1473,7 @@ class TrayApp:
         """Exit cleanly so Inno Setup can replace VuNMix.exe and restart it."""
         log.info("Closing VuNMix for desktop app update")
         self._update_stop.set()
+        self._ui_watchdog_stop.set()
         if self._settings_dialog is not None:
             self._settings_dialog.request_shutdown()
         if self._icon is not None:
@@ -1507,6 +1561,7 @@ class TrayApp:
     def _on_exit(self, icon, item):
         log.info("Exit requested")
         self._update_stop.set()
+        self._ui_watchdog_stop.set()
         if self._settings_dialog is not None:
             self._settings_dialog.request_shutdown()
         if self._icon is not None:
