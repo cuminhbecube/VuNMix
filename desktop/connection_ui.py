@@ -28,7 +28,15 @@ class ConnectionSettingsDialog(SettingsDialog):
         connected = bool(self.controller._device_connected)
         serial_service = self.controller.serial
 
-        if connected:
+        firmware_busy = bool(
+            self.controller.firmware_updating or self._firmware_release_loading
+        )
+
+        if firmware_busy:
+            text = "FW Update..."
+            color = "#b8860b"
+            hover = "#a07808"
+        elif connected:
             text = "Disconnect"
             color = "#dc3545"
             hover = "#c82333"
