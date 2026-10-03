@@ -125,6 +125,27 @@ class SerialLifecycleStressTests(unittest.TestCase):
         self.assertFalse(service.is_connected)
         self.assertEqual(callback_count, 1)
 
+    def test_disconnect_callback_exception_does_not_escape_or_break_transport(self):
+        port = FakePort()
+        service = SerialService(
+            "COM77",
+            device_identity=None,
+            port_provider=lambda: [port],
+        )
+        service._device_identity = None
+        service.on_disconnected = mock.Mock(side_effect=RuntimeError("UI observer failed"))
+
+        with (
+            mock.patch("serial_service.serial.Serial", side_effect=FakeSerialConnection),
+            mock.patch("serial_service.time.sleep", return_value=None),
+        ):
+            for cycle in range(50):
+                self.assertTrue(service.connect(), cycle)
+                service.disconnect()
+                self.assertFalse(service.is_connected, cycle)
+
+        self.assertEqual(service.on_disconnected.call_count, 50)
+
     def test_stop_does_not_attempt_to_join_its_own_serial_thread(self):
         service = SerialService(
             "COM77",
@@ -286,6 +307,24 @@ class HandshakeStressTests(unittest.TestCase):
         controller.on_connection_changed.assert_not_called()
         controller.on_device_ready.assert_not_called()
 
+
+    def test_connection_ui_callback_exception_does_not_drop_healthy_handshake(self):
+        controller = LifecycleHarness()
+        controller._handshake_in_progress = True
+        controller.on_connection_changed = mock.Mock(
+            side_effect=RuntimeError("tray callback failed")
+        )
+
+        with (
+            mock.patch("controller_device.time.sleep", return_value=None),
+            mock.patch("controller_device.comtypes.CoInitialize", return_value=None),
+            mock.patch("controller_device.comtypes.CoUninitialize", return_value=None),
+        ):
+            controller._complete_handshake(controller._handshake_token)
+
+        self.assertTrue(controller._device_connected)
+        self.assertEqual(controller.serial.disconnect_calls, 0)
+        controller.on_device_ready.assert_called_once_with()
 
     def test_stale_handshake_generation_cannot_clear_new_handshake_flag(self):
         controller = LifecycleHarness()
