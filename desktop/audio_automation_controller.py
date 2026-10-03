@@ -52,14 +52,10 @@ class AudioAutomationController(MediaAppController):
             )
             self._automation_thread.start()
 
-    def stop(self):
-        self._automation_stop.set()
-        if self._automation_thread and self._automation_thread.is_alive():
-            self._automation_thread.join(timeout=2.0)
-        self._automation_thread = None
-
-        self._close_duck_meters()
+    def _cleanup_audio_automation_after_stop(self):
+        """Best-effort cleanup that is never allowed to block app shutdown."""
         try:
+            self._close_duck_meters()
             self.audio_automation.restore_all_ducked(time.monotonic())
         except Exception:
             log.exception("Failed to restore ducked volumes during shutdown")
@@ -68,6 +64,34 @@ class AudioAutomationController(MediaAppController):
                 self.audio_automation.clear_applied_routes(self._audio_policy_router)
             except Exception:
                 log.exception("Failed to clear app routes during shutdown")
+
+    def stop(self):
+        self._automation_stop.set()
+        automation_thread = self._automation_thread
+        if automation_thread and automation_thread.is_alive():
+            automation_thread.join(timeout=0.75)
+
+        automation_stopped = (
+            automation_thread is None or not automation_thread.is_alive()
+        )
+        if automation_stopped:
+            self._automation_thread = None
+            # Windows audio cleanup can itself enter a slow native COM call.
+            # Keep it daemonized so Disconnect/COM-port changes and app exit
+            # cannot freeze the Tk process while waiting for WASAPI.
+            threading.Thread(
+                target=self._cleanup_audio_automation_after_stop,
+                daemon=True,
+                name="AudioAutomationCleanup",
+            ).start()
+        else:
+            # Keep the reference. start() will not spawn a duplicate worker if
+            # this native call later returns during a controller restart.
+            log.warning(
+                "Audio automation worker did not stop promptly; "
+                "skipping synchronous COM cleanup"
+            )
+
         super().stop()
 
     @property
