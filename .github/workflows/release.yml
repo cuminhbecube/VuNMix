@@ -15,6 +15,12 @@ on:
         required: true
         type: string
 
+concurrency:
+  # New QA commits supersede older PR runs. Release/main builds are never
+  # cancelled so published assets always come from a complete workflow.
+  group: vunmix-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -22,6 +28,7 @@ jobs:
   prepare:
     name: Prepare version
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -72,6 +79,7 @@ jobs:
   firmware:
     name: ESP32-S3 firmware
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [prepare]
     env:
       PIO_ENV: esp32-s3-devkitc1-n16r8
@@ -162,6 +170,7 @@ jobs:
   desktop:
     name: Windows desktop app
     runs-on: windows-latest
+    timeout-minutes: 25
     needs: [prepare]
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -318,6 +327,7 @@ jobs:
   connection_stress:
     name: Connection/crash stress round ${{ matrix.round }}
     runs-on: windows-latest
+    timeout-minutes: 10
     needs: [prepare]
     strategy:
       fail-fast: false
@@ -351,6 +361,7 @@ jobs:
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [prepare, firmware, desktop, connection_stress]
     if: needs.prepare.outputs.is_release == 'true'
     permissions:
