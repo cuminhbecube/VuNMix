@@ -291,11 +291,18 @@ class SerialService:
         self._read_thread.start()
 
     def stop(self):
-        """Stop background read thread and disconnect."""
+        """Stop background read thread and disconnect.
+
+        stop() can be reached from a serial callback. Never join SerialRead
+        from inside itself: Python raises RuntimeError("cannot join current
+        thread"), which previously could escape through a callback and take
+        down the desktop app during teardown/reconnect races.
+        """
         self._running = False
-        if self._read_thread:
-            self._read_thread.join(timeout=2.0)
-            self._read_thread = None
+        read_thread = self._read_thread
+        self._read_thread = None
+        if read_thread and read_thread is not threading.current_thread():
+            read_thread.join(timeout=2.0)
         self.disconnect()
 
     def send_command(self, cmd: Command, payload: bytes = b'') -> bool:
