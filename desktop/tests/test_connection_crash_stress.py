@@ -12,8 +12,9 @@ sys.path.insert(0, str(DESKTOP_DIR))
 
 from app_controller import AppController
 from controller_device import DeviceLifecycleMixin
+from controller_state import HardwareStateMixin
 from gui import TrayApp
-from protocol import DisplayMode
+from protocol import DisplayMode, SessionData, SessionIndex, SessionInfo, VolumeData
 from serial_service import SerialService
 
 
@@ -350,6 +351,80 @@ class ResumeStormTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0].name, "ResumeSync")
         self.assertTrue(getattr(controller, "_resume_recovering", False))
+
+
+class _StateItem:
+    def __init__(self, item_id=1, name="Speakers"):
+        self.id = item_id
+        self.name = name
+        self.is_default = True
+
+    def to_session_data(self):
+        return SessionData(
+            name=self.name,
+            data=VolumeData(id=self.id, volume=42),
+        )
+
+
+class _StateAudio:
+    def __init__(self):
+        self.items = [_StateItem()]
+
+    def get_session_count(self, _mode):
+        return 1
+
+    def get_sessions_for_mode(self, _mode):
+        return list(self.items)
+
+
+class _StateSerial:
+    def __init__(self, fail_at=""):
+        self.fail_at = fail_at
+
+    def send_session_info(self, _info):
+        return self.fail_at != "info"
+
+    def send_mode_states(self, _states):
+        return self.fail_at != "modes"
+
+    def send_session(self, command, _session):
+        if self.fail_at == "current" and int(command) == 3:
+            return False
+        return True
+
+    def send_app_icon(self, *_args, **_kwargs):
+        return True
+
+
+class StateTransferHarness(HardwareStateMixin):
+    def __init__(self, fail_at=""):
+        self.audio = _StateAudio()
+        self.serial = _StateSerial(fail_at)
+        self._state_lock = threading.RLock()
+        self._selection_epoch = 0
+        self._selection_transitioning = False
+        self._session_info = SessionInfo(mode=DisplayMode.MODE_OUTPUT)
+        self._sessions = [SessionData() for _ in range(SessionIndex.INDEX_MAX)]
+        self._sent_icon_ids = set()
+
+
+class StateTransferStressTests(unittest.TestCase):
+    def test_required_handshake_frames_report_partial_write_failures_repeatedly(self):
+        for fail_at in ("info", "modes", "current"):
+            for cycle in range(40):
+                controller = StateTransferHarness(fail_at)
+                self.assertFalse(
+                    controller._push_full_state(DisplayMode.MODE_OUTPUT),
+                    (fail_at, cycle),
+                )
+
+    def test_complete_handshake_state_transfer_succeeds_repeatedly(self):
+        for cycle in range(100):
+            controller = StateTransferHarness()
+            self.assertTrue(
+                controller._push_full_state(DisplayMode.MODE_OUTPUT),
+                cycle,
+            )
 
 
 class CountingService:
