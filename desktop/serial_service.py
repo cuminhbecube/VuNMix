@@ -7,6 +7,7 @@ and only treats the configured COM number as a preference/manual fallback.
 """
 
 import logging
+import queue
 import threading
 import time
 from types import SimpleNamespace
@@ -56,6 +57,11 @@ class SerialService:
 
         self._serial: Optional[serial.Serial] = None
         self._read_thread: Optional[threading.Thread] = None
+        self._read_stop_event: Optional[threading.Event] = None
+        self._callback_thread: Optional[threading.Thread] = None
+        self._callback_stop_event: Optional[threading.Event] = None
+        self._callback_queue = queue.Queue(maxsize=256)
+        self._connection_generation = 0
         self._running = False
         self._write_lock = threading.Lock()
         self._icon_lock = threading.Lock()
@@ -229,6 +235,7 @@ class SerialService:
                 self._last_protocol_rx = 0.0
                 self._last_test_response = 0.0
                 self._last_ok_response = 0.0
+                self._connection_generation += 1
                 self._serial = connection
                 self._active_port = target_port
                 self._preferred_port = target_port
@@ -269,6 +276,8 @@ class SerialService:
             self._serial = None
             self._active_port = None
             self._current_port_info = None
+            if connection is not None:
+                self._connection_generation += 1
         if connection:
             try:
                 connection.close()
@@ -289,32 +298,92 @@ class SerialService:
                     # SerialRead and permanently stop automatic reconnect.
                     log.exception("Serial disconnected callback failed")
 
-    def start(self):
-        """Start background read/reconnect thread."""
-        if self._read_thread and self._read_thread.is_alive():
+    def _start_callback_dispatcher(self):
+        current = self._callback_thread
+        current_stop = self._callback_stop_event
+        if (
+            current is not None
+            and current.is_alive()
+            and current_stop is not None
+            and not current_stop.is_set()
+        ):
             return
+
+        stop_event = threading.Event()
+        self._callback_stop_event = stop_event
+        worker = threading.Thread(
+            target=self._callback_loop,
+            args=(stop_event,),
+            daemon=True,
+            name="SerialCallbacks",
+        )
+        self._callback_thread = worker
+        worker.start()
+
+    def start(self):
+        """Start background read/reconnect and ordered callback workers.
+
+        Every start owns a private stop event. This prevents an old SerialRead
+        thread that was slow to exit from being resurrected when a later
+        reconnect sets the service running again.
+        """
+        current = self._read_thread
+        current_stop = self._read_stop_event
+        if (
+            current is not None
+            and current.is_alive()
+            and current_stop is not None
+            and not current_stop.is_set()
+        ):
+            return
+
         self._running = True
-        self._read_thread = threading.Thread(
+        self._start_callback_dispatcher()
+        stop_event = threading.Event()
+        self._read_stop_event = stop_event
+        worker = threading.Thread(
             target=self._read_loop,
+            args=(stop_event,),
             daemon=True,
             name="SerialRead",
         )
-        self._read_thread.start()
+        self._read_thread = worker
+        worker.start()
 
     def stop(self):
-        """Stop background read thread and disconnect.
-
-        stop() can be reached from a serial callback. Never join SerialRead
-        from inside itself: Python raises RuntimeError("cannot join current
-        thread"), which previously could escape through a callback and take
-        down the desktop app during teardown/reconnect races.
-        """
+        """Stop transport workers without allowing stale threads to revive."""
         self._running = False
+
         read_thread = self._read_thread
+        read_stop = self._read_stop_event
         self._read_thread = None
-        if read_thread and read_thread is not threading.current_thread():
-            read_thread.join(timeout=2.0)
+        self._read_stop_event = None
+        if read_stop is not None:
+            read_stop.set()
+
+        callback_thread = self._callback_thread
+        callback_stop = self._callback_stop_event
+        self._callback_thread = None
+        self._callback_stop_event = None
+        if callback_stop is not None:
+            callback_stop.set()
+
+        # Close first so a pending Windows read is released before joins.
         self.disconnect()
+
+        current = threading.current_thread()
+        if read_thread and read_thread is not current:
+            read_thread.join(timeout=1.0)
+        if callback_thread and callback_thread is not current:
+            callback_thread.join(timeout=1.0)
+
+        # Messages belong to the old transport generation. Never replay them
+        # into a new COM connection after firmware update/reconnect.
+        try:
+            while True:
+                self._callback_queue.get_nowait()
+        except queue.Empty:
+            pass
 
     def send_command(self, cmd: Command, payload: bytes = b'') -> bool:
         """Send a command byte + optional payload to hardware."""
@@ -325,8 +394,11 @@ class SerialService:
                 connection = self._serial
                 if connection is None or not connection.is_open:
                     return False
+                # write_timeout bounds the only blocking transport operation.
+                # Serial.flush() can wait indefinitely for a disappearing USB
+                # CDC endpoint on Windows and used to freeze every sender that
+                # queued behind _write_lock.
                 connection.write(encode_frame(cmd, payload))
-                connection.flush()
                 return True
             except (serial.SerialException, OSError, ValueError) as e:
                 log.error("Write error: %s", e)
@@ -388,11 +460,47 @@ class SerialService:
     def send_media_info(self, info: MediaInfoData) -> bool:
         return self.send_command(Command.MEDIA_INFO, info.pack())
 
-    def _read_loop(self):
-        """Background thread: parse framed messages and auto-reconnect."""
+    def _enqueue_message(self, generation: int, cmd: Command, payload: bytes):
+        item = (generation, cmd, bytes(payload))
+        try:
+            self._callback_queue.put_nowait(item)
+            return
+        except queue.Full:
+            # A slow WASAPI callback must not stall SerialRead and therefore
+            # must not prevent TEST/ACK frames from being processed. Preserve
+            # recent user intent by dropping the oldest queued callback.
+            try:
+                self._callback_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._callback_queue.put_nowait(item)
+            except queue.Full:
+                log.warning("Dropped serial callback after dispatcher backlog")
+
+    def _callback_loop(self, stop_event: threading.Event):
+        while not stop_event.is_set():
+            try:
+                generation, cmd, payload = self._callback_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if stop_event.is_set():
+                break
+            if generation != self._connection_generation:
+                continue
+            callback = self.on_message
+            if callback is None:
+                continue
+            try:
+                callback(cmd, payload)
+            except Exception:
+                log.exception("Serial message callback failed for %s", cmd.name)
+
+    def _read_loop(self, stop_event: threading.Event):
+        """Parse frames quickly; heavy controller callbacks run separately."""
         reconnect_delay = 1.0
 
-        while self._running:
+        while self._running and not stop_event.is_set():
             if not self.is_connected:
                 if self.connect():
                     reconnect_delay = 1.0
@@ -447,7 +555,7 @@ class SerialService:
                         continue
 
                     if self.on_message:
-                        self.on_message(cmd, payload)
+                        self._enqueue_message(self._connection_generation, cmd, payload)
 
             except (serial.SerialException, OSError) as e:
                 log.error("Serial read error: %s", e, exc_info=True)
