@@ -67,38 +67,27 @@ class DeviceLifecycleMixin:
             worker.start()
 
     def _recover_after_resume(self) -> bool:
-        """Retry wake/state recovery while USB is settling after resume."""
+        """Restore transport promptly; audio state resync stays asynchronous."""
         deadline = time.monotonic() + 12.0
         while self._running and not self._is_sleeping and time.monotonic() < deadline:
             if not self.is_connected:
                 time.sleep(0.25)
                 continue
 
-            # OK is the explicit firmware host-wake signal. Do this before
-            # SETTINGS/state so stale telemetry cannot implicitly wake display.
             if not self.serial.send_command(Command.OK):
                 time.sleep(0.25)
                 continue
-
-            log.info("Pushing full state to recover device after sleep...")
-            comtypes.CoInitialize()
-            try:
-                if not self.serial.send_settings(self.config.device_settings):
-                    time.sleep(0.25)
-                    continue
-                time.sleep(0.1)
-                self.audio.refresh()
-                mode = self._session_info.mode
-                if mode == DisplayMode.MODE_SPLASH:
-                    mode = DisplayMode.MODE_OUTPUT
-                if not self._push_full_state(mode):
-                    raise ConnectionError("Failed to restore full state after resume")
-                return True
-            except Exception:
-                log.exception("Resume state recovery failed; retrying")
+            if not self.serial.send_settings(self.config.device_settings):
                 time.sleep(0.25)
-            finally:
-                comtypes.CoUninitialize()
+                continue
+
+            now = datetime.now()
+            self.serial.send_time_sync(now.hour, now.minute, now.second)
+
+            with self._connection_lock:
+                token = self._handshake_token
+            self._schedule_initial_state_sync(token)
+            return True
 
         if self._running and not self._is_sleeping:
             log.warning("VuNMix resume recovery timed out waiting for device")
