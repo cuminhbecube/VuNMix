@@ -117,7 +117,6 @@ class DeviceLifecycleMixin:
             return
 
         def handshake_watchdog():
-            time.sleep(10.0)
             with self._connection_lock:
                 timed_out = (
                     token == self._handshake_token
@@ -131,11 +130,15 @@ class DeviceLifecycleMixin:
                 log.warning("VuNMix handshake timed out; reconnecting")
                 self.serial.disconnect()
 
-        threading.Thread(
-            target=handshake_watchdog,
-            daemon=True,
-            name="HandshakeWatchdog",
-        ).start()
+        with self._connection_lock:
+            previous = getattr(self, "_handshake_watchdog_timer", None)
+            if previous is not None:
+                previous.cancel()
+            timer = threading.Timer(10.0, handshake_watchdog)
+            timer.daemon = True
+            timer.name = "HandshakeWatchdog"
+            self._handshake_watchdog_timer = timer
+            timer.start()
 
     def _schedule_initial_state_sync(self, token: int):
         """Sync Windows audio state without holding connection readiness hostage.
@@ -257,6 +260,10 @@ class DeviceLifecycleMixin:
                 self._device_connected = True
                 self._update_only_connected = True
                 self._handshake_in_progress = False
+                watchdog = getattr(self, "_handshake_watchdog_timer", None)
+                self._handshake_watchdog_timer = None
+                if watchdog is not None:
+                    watchdog.cancel()
 
             self._notify_connection_changed(True)
             self._schedule_initial_state_sync(token)
@@ -279,6 +286,10 @@ class DeviceLifecycleMixin:
             self._device_connected = False
             self._update_only_connected = False
             self._handshake_in_progress = False
+            watchdog = getattr(self, "_handshake_watchdog_timer", None)
+            self._handshake_watchdog_timer = None
+            if watchdog is not None:
+                watchdog.cancel()
             self._sent_icon_ids.clear()
             self._session_info = SessionInfo()
         self._notify_connection_changed(False)
