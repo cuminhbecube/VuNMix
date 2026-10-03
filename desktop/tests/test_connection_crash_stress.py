@@ -11,6 +11,8 @@ DESKTOP_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DESKTOP_DIR))
 
 from app_controller import AppController
+from audio_automation_controller import AudioAutomationController
+from media_controller import MediaAppController
 from controller_device import DeviceLifecycleMixin
 from controller_state import HardwareStateMixin
 from controller_workers import SyncWorkersMixin
@@ -786,6 +788,66 @@ class AppStartStopStressTests(unittest.TestCase):
             [t.name for t in created_threads],
             ["ProtocolHeartbeat", "AudioSync", "AudioMeter"],
         )
+
+
+class ShutdownHangRegressionTests(unittest.TestCase):
+    def test_audio_cleanup_cannot_block_controller_stop(self):
+        cleanup_started = threading.Event()
+        cleanup_release = threading.Event()
+
+        class BlockingAutomation:
+            def restore_all_ducked(self, _now):
+                cleanup_started.set()
+                cleanup_release.wait(2.0)
+                return 0
+
+            def clear_applied_routes(self, _router):
+                return None
+
+        controller = AudioAutomationController.__new__(AudioAutomationController)
+        controller._automation_stop = threading.Event()
+        controller._automation_thread = None
+        controller._duck_meters = {}
+        controller._duck_meter_names = {}
+        controller._duck_meter_signature = ()
+        controller.audio_automation = BlockingAutomation()
+        controller._audio_policy_router = None
+
+        with mock.patch.object(MediaAppController, "stop", return_value=None):
+            started = __import__("time").monotonic()
+            controller.stop()
+            elapsed = __import__("time").monotonic() - started
+
+        self.assertLess(elapsed, 0.5)
+        self.assertTrue(cleanup_started.wait(0.5))
+        cleanup_release.set()
+
+    def test_stuck_audio_worker_is_not_replaced_during_stop(self):
+        class StuckThread:
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                return None
+
+        controller = AudioAutomationController.__new__(AudioAutomationController)
+        controller._automation_stop = threading.Event()
+        stuck = StuckThread()
+        controller._automation_thread = stuck
+        controller._duck_meters = {}
+        controller._duck_meter_names = {}
+        controller._duck_meter_signature = ()
+        controller.audio_automation = mock.Mock()
+        controller._audio_policy_router = None
+
+        with (
+            mock.patch.object(MediaAppController, "stop", return_value=None),
+            mock.patch("audio_automation_controller.threading.Thread") as thread_cls,
+        ):
+            controller.stop()
+
+        self.assertIs(controller._automation_thread, stuck)
+        thread_cls.assert_not_called()
 
 
 class UiFreezeRegressionTests(unittest.TestCase):
