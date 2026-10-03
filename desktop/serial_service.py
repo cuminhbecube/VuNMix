@@ -63,6 +63,7 @@ class SerialService:
         self._parser = FrameParser()
         self._last_protocol_rx = 0.0
         self._last_test_response = 0.0
+        self._last_ok_response = 0.0
 
         # Callbacks
         self.on_connected: Optional[Callable] = None
@@ -108,6 +109,11 @@ class SerialService:
     def last_test_response(self) -> float:
         """Monotonic timestamp of the last TEST response from firmware."""
         return self._last_test_response
+
+    @property
+    def last_ok_response(self) -> float:
+        """Monotonic timestamp of the last firmware ACK."""
+        return self._last_ok_response
 
     def protocol_alive(self, max_age: float = 6.0) -> bool:
         """True only when the device has replied recently at protocol level."""
@@ -222,6 +228,7 @@ class SerialService:
                 self._parser.reset()
                 self._last_protocol_rx = 0.0
                 self._last_test_response = 0.0
+                self._last_ok_response = 0.0
                 self._serial = connection
                 self._active_port = target_port
                 self._preferred_port = target_port
@@ -265,6 +272,7 @@ class SerialService:
             self._parser.reset()
             self._last_protocol_rx = 0.0
             self._last_test_response = 0.0
+            self._last_ok_response = 0.0
             log.info("Disconnected from %s", active_port or self._preferred_port)
             self._set_status("Disconnected")
             if self.on_disconnected:
@@ -407,6 +415,7 @@ class SerialService:
                         continue
 
                     if cmd == Command.OK:
+                        self._last_ok_response = now
                         continue
 
                     expected_size = COMMAND_PAYLOAD_SIZE.get(cmd)
