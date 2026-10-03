@@ -73,6 +73,8 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._firmware_updating = False
         self._running = False
         self._power_monitor: Optional[PowerMonitor] = None
+        self._resume_recovery_thread: Optional[threading.Thread] = None
+        self._resume_recovering = False
 
         self.serial.on_connected = self._on_device_connected
         self.serial.on_disconnected = self._on_device_disconnected
