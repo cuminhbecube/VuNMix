@@ -15,7 +15,7 @@ from controller_device import DeviceLifecycleMixin
 from controller_state import HardwareStateMixin
 from controller_workers import SyncWorkersMixin
 from gui import TrayApp
-from protocol import DisplayMode, SessionData, SessionIndex, SessionInfo, VolumeData
+from protocol import Command, DisplayMode, SessionData, SessionIndex, SessionInfo, VolumeData, encode_frame
 from serial_service import SerialService
 
 
@@ -40,6 +40,8 @@ class FakeSerialConnection:
         self.rts = None
         self.is_open = False
         self.in_waiting = 0
+        self.writes = []
+        self.flush_calls = 0
 
     def open(self):
         self.is_open = True
@@ -54,10 +56,12 @@ class FakeSerialConnection:
         pass
 
     def write(self, data):
+        self.writes.append(bytes(data))
         return len(data)
 
     def flush(self):
-        pass
+        self.flush_calls += 1
+        raise RuntimeError("flush must never be used for live USB CDC")
 
     def read(self, _count):
         return b""
@@ -126,6 +130,42 @@ class SerialLifecycleStressTests(unittest.TestCase):
         self.assertFalse(service.is_connected)
         self.assertEqual(callback_count, 1)
 
+    def test_send_command_uses_bounded_write_without_serial_flush(self):
+        port = FakePort()
+        service = SerialService(
+            "COM77",
+            device_identity=None,
+            port_provider=lambda: [port],
+        )
+        service._device_identity = None
+
+        with (
+            mock.patch("serial_service.serial.Serial", side_effect=FakeSerialConnection),
+            mock.patch("serial_service.time.sleep", return_value=None),
+        ):
+            self.assertTrue(service.connect())
+            connection = service._serial
+            self.assertTrue(service.send_command(Command.OK))
+            self.assertEqual(len(connection.writes), 1)
+            self.assertEqual(connection.flush_calls, 0)
+            service.disconnect()
+
+    def test_stale_read_stop_event_stays_authoritative_after_new_start_generation(self):
+        service = SerialService(
+            "COM77",
+            device_identity=None,
+            port_provider=lambda: [],
+        )
+        old_stop = threading.Event()
+        old_stop.set()
+        service._running = True
+
+        worker = threading.Thread(target=service._read_loop, args=(old_stop,))
+        worker.start()
+        worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+
     def test_disconnect_callback_exception_does_not_escape_or_break_transport(self):
         port = FakePort()
         service = SerialService(
@@ -162,6 +202,65 @@ class SerialLifecycleStressTests(unittest.TestCase):
 
         self.assertFalse(service._running)
         self.assertIsNone(service._read_thread)
+
+
+class CallbackIsolationTests(unittest.TestCase):
+    def test_slow_controller_callback_does_not_block_protocol_ack_processing(self):
+        service = SerialService(
+            "COM77",
+            device_identity=None,
+            port_provider=lambda: [],
+        )
+        service._device_identity = None
+        service._running = True
+        service._connection_generation = 9
+
+        volume = VolumeData(id=1, volume=50).pack()
+        payload = (
+            encode_frame(Command.VOLUME_CURR_CHANGE, volume)
+            + encode_frame(Command.OK)
+        )
+
+        class ScriptedSerial:
+            def __init__(self):
+                self.is_open = True
+                self._payload = payload
+
+            @property
+            def in_waiting(self):
+                return len(self._payload)
+
+            def read(self, _count):
+                if not self._payload:
+                    service._running = False
+                    return b""
+                data = self._payload
+                self._payload = b""
+                return data
+
+            def close(self):
+                self.is_open = False
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_callback(_cmd, _payload):
+            started.set()
+            release.wait(1.0)
+
+        service._serial = ScriptedSerial()
+        service.on_message = slow_callback
+        service._start_callback_dispatcher()
+        stop_event = threading.Event()
+        reader = threading.Thread(target=service._read_loop, args=(stop_event,))
+        reader.start()
+
+        self.assertTrue(started.wait(1.0))
+        reader.join(timeout=1.0)
+        self.assertGreater(service.last_ok_response, 0.0)
+        release.set()
+        stop_event.set()
+        service.stop()
 
 
 class FakeLifecycleSerial:
