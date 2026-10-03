@@ -788,6 +788,23 @@ class AppStartStopStressTests(unittest.TestCase):
         )
 
 
+class UiFreezeRegressionTests(unittest.TestCase):
+    def test_connection_restart_is_dispatched_off_tk_thread(self):
+        source = (DESKTOP_DIR / "gui.py").read_text(encoding="utf-8")
+        self.assertIn('name="ConnectionRestart"', source)
+        self.assertIn('name="ControllerPortRestart"', source)
+        self.assertIn('name="SettingsStatePush"', source)
+
+    def test_audio_automation_worker_initializes_com_apartment(self):
+        source = (DESKTOP_DIR / "audio_automation_controller.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("    def _automation_loop(self):")
+        block = source[start:]
+        self.assertIn("comtypes.CoInitialize()", block)
+        self.assertIn("comtypes.CoUninitialize()", block)
+
+
 class FirmwareAutoUpdateStressTests(unittest.TestCase):
     def test_100_ready_events_coalesce_to_one_auto_firmware_worker(self):
         app = TrayApp.__new__(TrayApp)
