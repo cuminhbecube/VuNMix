@@ -622,7 +622,6 @@ class SyncWorkerFaultIsolationTests(unittest.TestCase):
             sleeps += 1
             if sleeps >= 2:
                 controller._running = False
-                controller._device_connected = False
 
         with (
             mock.patch("controller_workers.time.sleep", side_effect=fake_sleep),
@@ -637,6 +636,83 @@ class SyncWorkerFaultIsolationTests(unittest.TestCase):
 
         self.assertGreaterEqual(sleeps, 2)
         self.assertGreaterEqual(controller.audio.calls, 1)
+
+
+class HeartbeatIsolationTests(unittest.TestCase):
+    def test_audio_stall_cannot_stop_protocol_heartbeat(self):
+        controller = SyncWorkersMixin()
+        controller._running = True
+        controller._device_connected = True
+        controller._is_sleeping = False
+
+        now = [0.0]
+        sent = []
+
+        class HeartbeatSerial:
+            def __init__(self):
+                self.last_ok_response = 0.0
+                self.disconnect_calls = 0
+
+            def send_command(self, command):
+                sent.append(command)
+                self.last_ok_response = now[0] + 0.001
+                return True
+
+            def disconnect(self):
+                self.disconnect_calls += 1
+
+        controller.serial = HeartbeatSerial()
+
+        loops = [0]
+
+        def fake_sleep(seconds):
+            now[0] += max(float(seconds), 0.1)
+            loops[0] += 1
+            if loops[0] >= 65:
+                controller._running = False
+
+        with (
+            mock.patch("controller_workers.time.sleep", side_effect=fake_sleep),
+            mock.patch("controller_workers.time.monotonic", side_effect=lambda: now[0]),
+        ):
+            controller._heartbeat_loop()
+
+        self.assertGreaterEqual(sent.count(Command.OK), 2)
+        self.assertEqual(controller.serial.disconnect_calls, 0)
+
+    def test_heartbeat_timeout_disconnects_without_touching_audio(self):
+        controller = SyncWorkersMixin()
+        controller._running = True
+        controller._device_connected = True
+        controller._is_sleeping = False
+
+        now = [0.0]
+
+        class NoAckSerial:
+            def __init__(self):
+                self.last_ok_response = 0.0
+                self.disconnect_calls = 0
+
+            def send_command(self, _command):
+                return True
+
+            def disconnect(self):
+                self.disconnect_calls += 1
+                controller._device_connected = False
+                controller._running = False
+
+        controller.serial = NoAckSerial()
+
+        def fake_sleep(seconds):
+            now[0] += max(float(seconds), 0.1)
+
+        with (
+            mock.patch("controller_workers.time.sleep", side_effect=fake_sleep),
+            mock.patch("controller_workers.time.monotonic", side_effect=lambda: now[0]),
+        ):
+            controller._heartbeat_loop()
+
+        self.assertEqual(controller.serial.disconnect_calls, 1)
 
 
 class StateTransferStressTests(unittest.TestCase):
@@ -678,6 +754,7 @@ class AppStartStopStressTests(unittest.TestCase):
         controller.serial = CountingService()
         controller.weather_service = CountingService()
         controller.obs_service = CountingService()
+        controller._heartbeat_thread = None
         controller._sync_thread = None
         controller._meter_thread = None
 
@@ -705,7 +782,10 @@ class AppStartStopStressTests(unittest.TestCase):
         self.assertEqual(controller.serial.start_calls, 1)
         self.assertEqual(controller.weather_service.start_calls, 1)
         self.assertEqual(controller.obs_service.start_calls, 1)
-        self.assertEqual([t.name for t in created_threads], ["AudioSync", "AudioMeter"])
+        self.assertEqual(
+            [t.name for t in created_threads],
+            ["ProtocolHeartbeat", "AudioSync", "AudioMeter"],
+        )
 
 
 class FirmwareAutoUpdateStressTests(unittest.TestCase):
