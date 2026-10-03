@@ -388,7 +388,7 @@ class _StateSerial:
         return self.fail_at != "modes"
 
     def send_session(self, command, _session):
-        if self.fail_at == "current" and int(command) == 3:
+        if self.fail_at == "current" and int(command) == 5:
             return False
         return True
 
