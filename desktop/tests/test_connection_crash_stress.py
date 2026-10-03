@@ -447,6 +447,81 @@ class StateTransferHarness(HardwareStateMixin):
         self._sent_icon_ids = set()
 
 
+class _SyncFaultSerial:
+    def __init__(self):
+        self.last_ok_response = 0.0
+
+    def send_command(self, _command):
+        return True
+
+    def send_pc_stats(self, _stats):
+        return True
+
+    def send_media_info(self, _info):
+        return True
+
+
+class _SyncFaultAudio:
+    def __init__(self):
+        self.calls = 0
+
+    def get_sessions_for_mode(self, _mode):
+        self.calls += 1
+        raise RuntimeError("transient WASAPI enumeration failure")
+
+    def refresh(self):
+        pass
+
+
+class _SyncFaultMonitor:
+    def get_pc_stats(self):
+        return object()
+
+
+class _SyncFaultMedia:
+    def get_current_media_info(self):
+        return object()
+
+
+class SyncWorkerFaultIsolationTests(unittest.TestCase):
+    def test_full_audio_refresh_fault_does_not_kill_heartbeat_worker(self):
+        controller = SyncWorkersMixin()
+        controller.config = SimpleNamespace(update_interval_ms=1)
+        controller.serial = _SyncFaultSerial()
+        controller.audio = _SyncFaultAudio()
+        controller.system_monitor = _SyncFaultMonitor()
+        controller.media_service = _SyncFaultMedia()
+        controller._state_lock = threading.RLock()
+        controller._session_info = SessionInfo(mode=DisplayMode.MODE_OUTPUT)
+        controller._running = True
+        controller._device_connected = True
+        controller._is_sleeping = False
+        controller._resume_recovering = False
+
+        sleeps = 0
+
+        def fake_sleep(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps >= 2:
+                controller._running = False
+                controller._device_connected = False
+
+        with (
+            mock.patch("controller_workers.time.sleep", side_effect=fake_sleep),
+            mock.patch(
+                "controller_workers.time.monotonic",
+                side_effect=[0.0, 0.0, 0.0, 0.0, 10.0],
+            ),
+            mock.patch("controller_workers.comtypes.CoInitialize", return_value=None),
+            mock.patch("controller_workers.comtypes.CoUninitialize", return_value=None),
+        ):
+            controller._sync_loop()
+
+        self.assertGreaterEqual(sleeps, 2)
+        self.assertGreaterEqual(controller.audio.calls, 1)
+
+
 class StateTransferStressTests(unittest.TestCase):
     def test_required_handshake_frames_report_partial_write_failures_repeatedly(self):
         for fail_at in ("info", "modes", "current"):
