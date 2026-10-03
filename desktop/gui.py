@@ -1521,7 +1521,9 @@ class TrayApp:
         """Exit cleanly so Inno Setup can replace VuNMix.exe and restart it."""
         log.info("Closing VuNMix for desktop app update")
         self._update_stop.set()
-        self._ui_watchdog_stop.set()
+        watchdog_stop = getattr(self, "_ui_watchdog_stop", None)
+        if watchdog_stop is not None:
+            watchdog_stop.set()
         if self._settings_dialog is not None:
             self._settings_dialog.request_shutdown()
         if self._icon is not None:
