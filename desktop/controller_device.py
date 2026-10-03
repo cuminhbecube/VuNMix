@@ -137,6 +137,75 @@ class DeviceLifecycleMixin:
             name="HandshakeWatchdog",
         ).start()
 
+    def _schedule_initial_state_sync(self, token: int):
+        """Sync Windows audio state without holding connection readiness hostage.
+
+        TEST already proved a real round trip. Windows WASAPI enumeration can
+        occasionally stall for several seconds (or indefinitely on a broken
+        endpoint). Keeping that work outside the handshake prevents Connected
+        -> Waiting flaps and leaves the protocol heartbeat responsive.
+        """
+        with self._connection_lock:
+            if (
+                token != self._handshake_token
+                or not self._device_connected
+                or not self.serial.is_connected
+            ):
+                return
+            current = getattr(self, "_initial_sync_thread", None)
+            current_token = getattr(self, "_initial_sync_token", 0)
+            if (
+                current is not None
+                and current.is_alive()
+                and current_token == token
+            ):
+                return
+            self._initial_sync_token = token
+
+        def sync_once():
+            comtypes.CoInitialize()
+            try:
+                self.audio.refresh()
+                with self._connection_lock:
+                    current_link = (
+                        token == self._handshake_token
+                        and self._device_connected
+                        and self.serial.is_connected
+                    )
+                if not current_link:
+                    return
+
+                if not self._push_full_state(DisplayMode.MODE_OUTPUT):
+                    log.warning(
+                        "Initial audio state transfer incomplete; connection stays alive"
+                    )
+                    return
+
+                log.info(
+                    "Initial state sent: output=%d input=%d apps=%d",
+                    self.audio.get_session_count(DisplayMode.MODE_OUTPUT),
+                    self.audio.get_session_count(DisplayMode.MODE_INPUT),
+                    self.audio.get_session_count(DisplayMode.MODE_APPLICATION),
+                )
+            except Exception:
+                # Audio state is secondary to transport health. A bad/hung
+                # Windows endpoint must not tear down a verified USB link.
+                log.exception("Initial audio state sync failed")
+            finally:
+                comtypes.CoUninitialize()
+                with self._connection_lock:
+                    if getattr(self, "_initial_sync_token", 0) == token:
+                        self._initial_sync_token = 0
+
+        worker = threading.Thread(
+            target=sync_once,
+            daemon=True,
+            name="DeviceInitialSync",
+        )
+        with self._connection_lock:
+            self._initial_sync_thread = worker
+        worker.start()
+
     def _complete_handshake(self, token: int):
         def link_is_current() -> bool:
             with self._connection_lock:
@@ -153,15 +222,13 @@ class DeviceLifecycleMixin:
                 return True
 
         if not link_is_current():
-            # A stale handshake must never clear the in-progress flag owned by
-            # a newer reconnect generation.
             clear_if_current()
             return
 
         try:
-            # A reconnect while the PC is awake must explicitly release any
-            # host-sleep latch left in firmware. During actual PC sleep, keep
-            # the latch intact even if the COM port briefly re-enumerates.
+            # A valid TEST response is the end-to-end identity proof. Keep the
+            # remaining handshake limited to short serial writes; never block
+            # connection readiness on Windows audio/COM enumeration.
             if not self._is_sleeping:
                 if not self.serial.send_command(Command.OK):
                     raise ConnectionError("Failed to send wake command")
@@ -171,36 +238,17 @@ class DeviceLifecycleMixin:
 
             if not self.serial.send_settings(self.config.device_settings):
                 raise ConnectionError("Failed to send settings during handshake")
-            time.sleep(0.1)
+            time.sleep(0.05)
             if not link_is_current():
                 return
 
             now = datetime.now()
             if not self.serial.send_time_sync(now.hour, now.minute, now.second):
                 raise ConnectionError("Failed to send time sync during handshake")
-            time.sleep(0.05)
+            time.sleep(0.02)
             if not link_is_current():
                 return
 
-            comtypes.CoInitialize()
-            try:
-                self.audio.refresh()
-                if not link_is_current():
-                    return
-                if not self._push_full_state(DisplayMode.MODE_OUTPUT):
-                    raise ConnectionError("Failed to send full state during handshake")
-                log.info(
-                    "Initial state sent: output=%d input=%d apps=%d",
-                    self.audio.get_session_count(DisplayMode.MODE_OUTPUT),
-                    self.audio.get_session_count(DisplayMode.MODE_INPUT),
-                    self.audio.get_session_count(DisplayMode.MODE_APPLICATION),
-                )
-            finally:
-                comtypes.CoUninitialize()
-
-            # Do not expose Connected merely because Windows opened the COM
-            # port. We only reach this point after a valid TEST response and
-            # successful initial state transfer.
             with self._connection_lock:
                 if token != self._handshake_token or not self.serial.is_connected:
                     if token == self._handshake_token:
@@ -211,6 +259,7 @@ class DeviceLifecycleMixin:
                 self._handshake_in_progress = False
 
             self._notify_connection_changed(True)
+            self._schedule_initial_state_sync(token)
 
             if self.on_device_ready:
                 try:
