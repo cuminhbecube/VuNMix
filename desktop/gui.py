@@ -1104,6 +1104,7 @@ class TrayApp:
         self._firmware_release_client = FirmwareReleaseClient()
         self._firmware_auto_lock = threading.Lock()
         self._auto_firmware_attempted = set()
+        self._firmware_auto_thread = None
         self.controller.on_device_ready = self._on_device_ready
 
     def _create_settings_dialog(self):
@@ -1178,12 +1179,23 @@ class TrayApp:
         dialog.run_loop()
 
     def _on_device_ready(self):
-        """Check firmware only after the normal protocol handshake is complete."""
-        threading.Thread(
-            target=self._auto_firmware_update_worker,
-            daemon=True,
-            name="FirmwareAutoCheck",
-        ).start()
+        """Check firmware only after the normal protocol handshake is complete.
+
+        Connection flapping can emit several ready events in a few seconds.
+        Coalesce them into one delayed firmware check so reconnect storms do
+        not create dozens of sleeping FirmwareAutoCheck threads.
+        """
+        with self._firmware_auto_lock:
+            current = getattr(self, "_firmware_auto_thread", None)
+            if current is not None and current.is_alive():
+                return
+            worker = threading.Thread(
+                target=self._auto_firmware_update_worker,
+                daemon=True,
+                name="FirmwareAutoCheck",
+            )
+            self._firmware_auto_thread = worker
+            worker.start()
 
     def _auto_firmware_update_worker(self):
         if not getattr(self.config, "auto_firmware_update_enabled", True):
