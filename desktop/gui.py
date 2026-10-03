@@ -12,8 +12,10 @@ import math
 import os
 import queue
 import sys
+import time
 import threading
 import tkinter as tk
+import traceback
 from tkinter import ttk, messagebox, filedialog, colorchooser
 import customtkinter as ctk
 from typing import Optional
@@ -126,6 +128,9 @@ class SettingsDialog:
         self._drag_y = 0
         self._firmware_release_client = FirmwareReleaseClient()
         self._firmware_release_loading = False
+        self._connection_action_thread = None
+        self._favorite_loader_thread = None
+        self._last_ui_pump = time.monotonic()
 
     def initialize(self):
         """Create the single Tcl/Tk interpreter on the process main thread."""
@@ -476,6 +481,7 @@ class SettingsDialog:
 
     def _process_window_commands(self):
         """Drain UI work exclusively on the Tcl/Tk owning thread."""
+        self._last_ui_pump = time.monotonic()
         if self._ui_thread_id is not None and threading.get_ident() != self._ui_thread_id:
             raise RuntimeError("Tk command pump executed on the wrong thread")
 
@@ -891,18 +897,47 @@ class SettingsDialog:
     def _choose_favorite_apps(self):
         if not self._window or not self._window.winfo_exists():
             return
+        current = self._favorite_loader_thread
+        if current is not None and current.is_alive():
+            return
 
-        try:
-            self.controller.audio.refresh()
-        except Exception:
-            log.exception("Failed to refresh app list for favorites")
+        favorites = list(self.config.favorite_apps)
 
-        from protocol import DisplayMode
-        apps = self.controller.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
-        names = sorted({item.name.lower().removesuffix(".exe") for item in apps if item.name})
-        for existing in self.config.favorite_apps:
-            if existing not in names:
-                names.append(existing)
+        def load():
+            try:
+                self.controller.audio.refresh()
+            except Exception:
+                log.exception("Failed to refresh app list for favorites")
+
+            from protocol import DisplayMode
+            apps = self.controller.audio.get_sessions_for_mode(
+                DisplayMode.MODE_APPLICATION
+            )
+            names = sorted(
+                {
+                    item.name.lower().removesuffix(".exe")
+                    for item in apps
+                    if item.name
+                }
+            )
+            for existing in favorites:
+                if existing not in names:
+                    names.append(existing)
+            self._ui_call(
+                lambda loaded=names: self._show_favorite_apps_picker(loaded)
+            )
+
+        worker = threading.Thread(
+            target=load,
+            daemon=True,
+            name="FavoriteAppsLoad",
+        )
+        self._favorite_loader_thread = worker
+        worker.start()
+
+    def _show_favorite_apps_picker(self, names):
+        if not self._window or not self._window.winfo_exists():
+            return
 
         picker = ctk.CTkToplevel(self._window)
         picker.title("App Favorites")
@@ -915,11 +950,18 @@ class SettingsDialog:
         vars_by_name = {}
         selected = set(self.config.favorite_apps)
         if not names:
-            ctk.CTkLabel(frame, text="No active audio apps found.").pack(anchor="w", pady=4)
+            ctk.CTkLabel(
+                frame,
+                text="No active audio apps found.",
+            ).pack(anchor="w", pady=4)
         for name in names:
             var = tk.BooleanVar(value=name in selected)
             vars_by_name[name] = var
-            ctk.CTkCheckBox(frame, text=name, variable=var).pack(anchor="w", pady=3)
+            ctk.CTkCheckBox(
+                frame,
+                text=name,
+                variable=var,
+            ).pack(anchor="w", pady=3)
 
         buttons = ctk.CTkFrame(picker, fg_color="transparent")
         buttons.pack(fill="x", padx=10, pady=(0, 10))
@@ -932,8 +974,19 @@ class SettingsDialog:
             self._refresh_favorites_label()
             picker.destroy()
 
-        ctk.CTkButton(buttons, text="Apply", command=apply_selection, height=28).pack(side="right")
-        ctk.CTkButton(buttons, text="Cancel", command=picker.destroy, height=28, fg_color="#444444").pack(side="right", padx=6)
+        ctk.CTkButton(
+            buttons,
+            text="Apply",
+            command=apply_selection,
+            height=28,
+        ).pack(side="right")
+        ctk.CTkButton(
+            buttons,
+            text="Cancel",
+            command=picker.destroy,
+            height=28,
+            fg_color="#444444",
+        ).pack(side="right", padx=6)
 
     def _firmware_complete(
         self,
@@ -978,16 +1031,46 @@ class SettingsDialog:
     def _toggle_connect(self):
         if self.controller.firmware_updating:
             return
+        current = self._connection_action_thread
+        if current is not None and current.is_alive():
+            return
+
         if self.controller._device_connected:
-            self.controller.stop()
+            action = self.controller.stop
+            thread_name = "ConnectionStop"
         else:
             port = self._com_var.get().strip()
-            if port:
-                self.config.com_port = port
-                self.config.save()
+            if not port:
+                return
+            self.config.com_port = port
+            self.config.save()
+
+            def action():
                 self.controller.stop()
                 self.controller.serial.port = port
                 self.controller.start()
+
+            thread_name = "ConnectionRestart"
+
+        self.btn_toggle_conn.configure(state="disabled")
+
+        def worker():
+            try:
+                action()
+            except Exception:
+                log.exception("Connection lifecycle action failed")
+            finally:
+                self._ui_call(
+                    lambda: self.btn_toggle_conn.configure(state="normal")
+                )
+
+        thread = threading.Thread(
+            target=worker,
+            daemon=True,
+            name=thread_name,
+        )
+        self._connection_action_thread = thread
+        thread.start()
 
     def _choose_led_color(self, key):
         values = self._led_color_values.get(key)
@@ -1104,6 +1187,10 @@ class TrayApp:
         self._firmware_release_client = FirmwareReleaseClient()
         self._firmware_auto_lock = threading.Lock()
         self._auto_firmware_attempted = set()
+        self._firmware_auto_thread = None
+        self._controller_restart_thread = None
+        self._ui_watchdog_stop = threading.Event()
+        self._ui_watchdog_thread = None
         self.controller.on_device_ready = self._on_device_ready
 
     def _create_settings_dialog(self):
@@ -1124,6 +1211,52 @@ class TrayApp:
     def _dispatch_ui(self, callback):
         """Marshal tray/worker UI updates onto the Tk main thread."""
         self._ensure_settings_dialog()._ui_call(callback)
+
+    def _dump_thread_stacks(self, reason: str):
+        """Write one bounded all-thread snapshot to the normal VuNMix log."""
+        try:
+            frames = sys._current_frames()
+            names = {
+                thread.ident: thread.name
+                for thread in threading.enumerate()
+                if thread.ident is not None
+            }
+            log.error("Hang watchdog snapshot: %s", reason)
+            for ident, frame in frames.items():
+                name = names.get(ident, f"thread-{ident}")
+                stack = "".join(traceback.format_stack(frame))
+                if len(stack) > 12000:
+                    stack = stack[-12000:]
+                log.error("Thread %s (%s)\n%s", name, ident, stack)
+        except Exception:
+            log.exception("Failed to capture hang watchdog snapshot")
+
+    def _start_ui_hang_watchdog(self, dialog):
+        current = self._ui_watchdog_thread
+        if current is not None and current.is_alive():
+            return
+        self._ui_watchdog_stop.clear()
+
+        def watch():
+            reported = False
+            while not self._ui_watchdog_stop.wait(1.0):
+                last_pump = getattr(dialog, "_last_ui_pump", 0.0)
+                age = time.monotonic() - last_pump if last_pump else 0.0
+                if age >= 5.0 and not reported:
+                    reported = True
+                    self._dump_thread_stacks(
+                        f"Tk command pump stalled for {age:.1f}s"
+                    )
+                elif age < 2.0:
+                    reported = False
+
+        worker = threading.Thread(
+            target=watch,
+            daemon=True,
+            name="UiHangWatchdog",
+        )
+        self._ui_watchdog_thread = worker
+        worker.start()
 
     def run(self):
         """Start the tray application (blocking)."""
@@ -1160,6 +1293,7 @@ class TrayApp:
         # request Settings or enqueue other UI work.
         dialog = self._ensure_settings_dialog()
         dialog.initialize()
+        self._start_ui_hang_watchdog(dialog)
 
         self._icon = pystray.Icon('VuNMix', icon_image, status_text, menu)
 
@@ -1178,12 +1312,23 @@ class TrayApp:
         dialog.run_loop()
 
     def _on_device_ready(self):
-        """Check firmware only after the normal protocol handshake is complete."""
-        threading.Thread(
-            target=self._auto_firmware_update_worker,
-            daemon=True,
-            name="FirmwareAutoCheck",
-        ).start()
+        """Check firmware only after the normal protocol handshake is complete.
+
+        Connection flapping can emit several ready events in a few seconds.
+        Coalesce them into one delayed firmware check so reconnect storms do
+        not create dozens of sleeping FirmwareAutoCheck threads.
+        """
+        with self._firmware_auto_lock:
+            current = getattr(self, "_firmware_auto_thread", None)
+            if current is not None and current.is_alive():
+                return
+            worker = threading.Thread(
+                target=self._auto_firmware_update_worker,
+                daemon=True,
+                name="FirmwareAutoCheck",
+            )
+            self._firmware_auto_thread = worker
+            worker.start()
 
     def _auto_firmware_update_worker(self):
         if not getattr(self.config, "auto_firmware_update_enabled", True):
@@ -1376,6 +1521,9 @@ class TrayApp:
         """Exit cleanly so Inno Setup can replace VuNMix.exe and restart it."""
         log.info("Closing VuNMix for desktop app update")
         self._update_stop.set()
+        watchdog_stop = getattr(self, "_ui_watchdog_stop", None)
+        if watchdog_stop is not None:
+            watchdog_stop.set()
         if self._settings_dialog is not None:
             self._settings_dialog.request_shutdown()
         if self._icon is not None:
@@ -1408,15 +1556,44 @@ class TrayApp:
     def _on_settings_saved(self, port_changed: bool):
         log.info("Settings saved. Port changed: %s", port_changed)
         if port_changed:
-            self.controller.stop()
-            self.controller.serial.port = self.config.com_port
-            self.controller.start()
+            current = self._controller_restart_thread
+            if current is None or not current.is_alive():
+                target_port = self.config.com_port
+
+                def restart():
+                    try:
+                        self.controller.stop()
+                        self.controller.serial.port = target_port
+                        self.controller.start()
+                    except Exception:
+                        log.exception("Controller restart after COM change failed")
+
+                worker = threading.Thread(
+                    target=restart,
+                    daemon=True,
+                    name="ControllerPortRestart",
+                )
+                self._controller_restart_thread = worker
+                worker.start()
         else:
-            # Just push updated settings to hardware without resetting port
             from protocol import Command
-            if self.controller._device_connected:
-                self.controller.serial.send_command(Command.SETTINGS, self.config.device_settings.pack())
-                self.controller._push_updated_state()
+
+            def push_settings():
+                try:
+                    if self.controller._device_connected:
+                        self.controller.serial.send_command(
+                            Command.SETTINGS,
+                            self.config.device_settings.pack(),
+                        )
+                        self.controller._push_updated_state()
+                except Exception:
+                    log.exception("Settings state push failed")
+
+            threading.Thread(
+                target=push_settings,
+                daemon=True,
+                name="SettingsStatePush",
+            ).start()
 
         if self.config.auto_update_enabled:
             self._start_app_update_watcher()
@@ -1434,6 +1611,7 @@ class TrayApp:
     def _on_exit(self, icon, item):
         log.info("Exit requested")
         self._update_stop.set()
+        self._ui_watchdog_stop.set()
         if self._settings_dialog is not None:
             self._settings_dialog.request_shutdown()
         if self._icon is not None:

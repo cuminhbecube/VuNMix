@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+
+import comtypes
 import os
 import threading
 import time
@@ -50,14 +52,10 @@ class AudioAutomationController(MediaAppController):
             )
             self._automation_thread.start()
 
-    def stop(self):
-        self._automation_stop.set()
-        if self._automation_thread and self._automation_thread.is_alive():
-            self._automation_thread.join(timeout=2.0)
-        self._automation_thread = None
-
-        self._close_duck_meters()
+    def _cleanup_audio_automation_after_stop(self):
+        """Best-effort cleanup that is never allowed to block app shutdown."""
         try:
+            self._close_duck_meters()
             self.audio_automation.restore_all_ducked(time.monotonic())
         except Exception:
             log.exception("Failed to restore ducked volumes during shutdown")
@@ -66,6 +64,34 @@ class AudioAutomationController(MediaAppController):
                 self.audio_automation.clear_applied_routes(self._audio_policy_router)
             except Exception:
                 log.exception("Failed to clear app routes during shutdown")
+
+    def stop(self):
+        self._automation_stop.set()
+        automation_thread = self._automation_thread
+        if automation_thread and automation_thread.is_alive():
+            automation_thread.join(timeout=0.75)
+
+        automation_stopped = (
+            automation_thread is None or not automation_thread.is_alive()
+        )
+        if automation_stopped:
+            self._automation_thread = None
+            # Windows audio cleanup can itself enter a slow native COM call.
+            # Keep it daemonized so Disconnect/COM-port changes and app exit
+            # cannot freeze the Tk process while waiting for WASAPI.
+            threading.Thread(
+                target=self._cleanup_audio_automation_after_stop,
+                daemon=True,
+                name="AudioAutomationCleanup",
+            ).start()
+        else:
+            # Keep the reference. start() will not spawn a duplicate worker if
+            # this native call later returns during a controller restart.
+            log.warning(
+                "Audio automation worker did not stop promptly; "
+                "skipping synchronous COM cleanup"
+            )
+
         super().stop()
 
     @property
@@ -180,30 +206,38 @@ class AudioAutomationController(MediaAppController):
         return levels
 
     def _automation_loop(self):
-        next_routing = 0.0
-        next_recovery = 0.0
-        while not self._automation_stop.wait(DUCKING_TICK_SECONDS):
-            now = time.monotonic()
-            try:
-                if now >= next_recovery and self.audio_automation.has_pending_recovery():
-                    self.audio_automation.recover_pending()
-                    next_recovery = now + 1.0
+        # This worker creates/uses WASAPI meter COM interfaces directly.
+        # Initialize one COM apartment for the lifetime of the thread so native
+        # pycaw/comtypes calls cannot run on an uninitialized worker.
+        comtypes.CoInitialize()
+        try:
+            next_routing = 0.0
+            next_recovery = 0.0
+            while not self._automation_stop.wait(DUCKING_TICK_SECONDS):
+                now = time.monotonic()
+                try:
+                    if now >= next_recovery and self.audio_automation.has_pending_recovery():
+                        self.audio_automation.recover_pending()
+                        next_recovery = now + 1.0
 
-                if self.ducking_enabled and self.audio_automation.trigger_patterns():
-                    self._refresh_duck_meters()
-                    trigger_levels = self._read_trigger_levels()
-                else:
-                    if self._duck_meters:
-                        self._close_duck_meters()
-                    trigger_levels = {}
-                self.audio_automation.tick_ducking(trigger_levels, now)
+                    if self.ducking_enabled and self.audio_automation.trigger_patterns():
+                        self._refresh_duck_meters()
+                        trigger_levels = self._read_trigger_levels()
+                    else:
+                        if self._duck_meters:
+                            self._close_duck_meters()
+                        trigger_levels = {}
+                    self.audio_automation.tick_ducking(trigger_levels, now)
 
-                if now >= next_routing:
-                    next_routing = now + ROUTING_REFRESH_SECONDS
-                    if self._audio_policy_router is not None:
-                        self.audio_automation.apply_routing_rules(self._audio_policy_router)
-            except Exception:
-                # Audio automation is an optional layer. A broken rule or a
-                # transient endpoint/session must never take down mixer sync.
-                log.exception("Audio routing/ducking iteration failed")
-                self._close_duck_meters()
+                    if now >= next_routing:
+                        next_routing = now + ROUTING_REFRESH_SECONDS
+                        if self._audio_policy_router is not None:
+                            self.audio_automation.apply_routing_rules(self._audio_policy_router)
+                except Exception:
+                    # Audio automation is an optional layer. A broken rule or a
+                    # transient endpoint/session must never take down mixer sync.
+                    log.exception("Audio routing/ducking iteration failed")
+                    self._close_duck_meters()
+        finally:
+            self._close_duck_meters()
+            comtypes.CoUninitialize()

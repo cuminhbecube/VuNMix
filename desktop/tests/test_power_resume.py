@@ -39,6 +39,10 @@ class RecordingSerial:
         self.settings.append(settings)
         return True
 
+    def send_time_sync(self, hour, minute, second):
+        self.commands.append(("time", hour, minute, second))
+        return True
+
 
 class RecordingAudio:
     def __init__(self):
@@ -57,6 +61,9 @@ class PowerHarness(DeviceLifecycleMixin):
         self._running = True
         self._is_sleeping = False
         self._connected = True
+        self._connection_lock = __import__("threading").RLock()
+        self._handshake_token = 7
+        self.initial_sync_tokens = []
         self.pushed_modes = []
 
     @property
@@ -65,6 +72,11 @@ class PowerHarness(DeviceLifecycleMixin):
 
     def _push_full_state(self, mode):
         self.pushed_modes.append(mode)
+        return True
+
+    def _schedule_initial_state_sync(self, token):
+        self.initial_sync_tokens.append(token)
+        return True
 
 
 class ResumeRecoveryTests(unittest.TestCase):
@@ -76,7 +88,7 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertTrue(controller._is_sleeping)
         self.assertEqual(controller.serial.commands, [Command.SLEEP])
 
-    def test_resume_recovery_wakes_before_settings_and_full_state(self):
+    def test_resume_recovery_wakes_transport_and_defers_audio_state_sync(self):
         controller = PowerHarness()
 
         with mock.patch("controller_device.time.sleep", return_value=None):
@@ -85,8 +97,9 @@ class ResumeRecoveryTests(unittest.TestCase):
         self.assertTrue(recovered)
         self.assertEqual(controller.serial.commands[0], Command.OK)
         self.assertEqual(len(controller.serial.settings), 1)
-        self.assertEqual(controller.audio.refresh_calls, 1)
-        self.assertEqual(controller.pushed_modes, [DisplayMode.MODE_OUTPUT])
+        self.assertEqual(controller.audio.refresh_calls, 0)
+        self.assertEqual(controller.pushed_modes, [])
+        self.assertEqual(controller.initial_sync_tokens, [7])
 
     def test_resume_recovery_does_not_wake_during_new_suspend(self):
         controller = PowerHarness()

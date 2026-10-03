@@ -24,6 +24,22 @@ from protocol import MediaInfoData
 
 class MediaServiceTests(unittest.TestCase):
     @staticmethod
+    def _run_async_results(*results):
+        pending = iter(results)
+
+        def run(coro):
+            # refresh() constructs the real coroutine before calling _run_async.
+            # Close it in mocked tests so CI does not report false un-awaited
+            # coroutine warnings that can hide genuine thread/resource leaks.
+            try:
+                coro.close()
+            except AttributeError:
+                pass
+            return next(pending)
+
+        return run
+
+    @staticmethod
     def _png_bytes(color=(30, 120, 220)):
         image = Image.new("RGB", (64, 32), color)
         buffer = io.BytesIO()
@@ -55,7 +71,11 @@ class MediaServiceTests(unittest.TestCase):
 
         with (
             mock.patch.object(media_service, "MediaManager", object()),
-            mock.patch.object(service, "_run_async", side_effect=[result, result]),
+            mock.patch.object(
+                service,
+                "_run_async",
+                side_effect=self._run_async_results(result, result),
+            ),
             mock.patch.object(
                 service,
                 "_convert_artwork",
@@ -95,7 +115,11 @@ class MediaServiceTests(unittest.TestCase):
 
         with (
             mock.patch.object(media_service, "MediaManager", object()),
-            mock.patch.object(service, "_run_async", side_effect=[valid, empty]),
+            mock.patch.object(
+                service,
+                "_run_async",
+                side_effect=self._run_async_results(valid, empty),
+            ),
             mock.patch.object(media_service.time, "monotonic", side_effect=[100.0, 101.0]),
         ):
             first = service.refresh(force=True)

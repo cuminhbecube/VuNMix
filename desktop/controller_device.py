@@ -18,6 +18,21 @@ log = logging.getLogger(__name__)
 class DeviceLifecycleMixin:
     """Power transitions, serial verification and initial-state handshake."""
 
+    def _notify_connection_changed(self, connected: bool):
+        callback = self.on_connection_changed
+        if callback is None:
+            return
+        try:
+            callback(connected)
+        except Exception:
+            # UI/tray observers are not part of transport health. A transient
+            # UI exception must never turn a valid protocol handshake into a
+            # device disconnect or kill SerialRead during teardown.
+            log.exception(
+                "Connection-state callback failed: %s",
+                "connected" if connected else "disconnected",
+            )
+
     def _on_pc_sleep(self):
         log.info("PC entering sleep mode. Suspending VuNMix device.")
         self._is_sleeping = True
@@ -27,45 +42,52 @@ class DeviceLifecycleMixin:
         log.info("PC resuming from sleep. Waking VuNMix device.")
         self._is_sleeping = False
         # Best-effort immediate wake for systems whose USB CDC link survived
-        # suspend. _recover_after_resume retries after re-enumeration.
+        # suspend. The serialized recovery worker retries after re-enumeration.
         self.serial.send_command(Command.OK)
 
-        threading.Thread(
-            target=self._recover_after_resume,
-            daemon=True,
-            name="ResumeSync",
-        ).start()
+        with self._connection_lock:
+            current = getattr(self, "_resume_recovery_thread", None)
+            if current is not None and current.is_alive():
+                return
+            self._resume_recovering = True
+
+            def recover_once():
+                try:
+                    self._recover_after_resume()
+                finally:
+                    with self._connection_lock:
+                        self._resume_recovering = False
+
+            worker = threading.Thread(
+                target=recover_once,
+                daemon=True,
+                name="ResumeSync",
+            )
+            self._resume_recovery_thread = worker
+            worker.start()
 
     def _recover_after_resume(self) -> bool:
-        """Retry wake/state recovery while USB is settling after resume."""
+        """Restore transport promptly; audio state resync stays asynchronous."""
         deadline = time.monotonic() + 12.0
         while self._running and not self._is_sleeping and time.monotonic() < deadline:
             if not self.is_connected:
                 time.sleep(0.25)
                 continue
 
-            # OK is the explicit firmware host-wake signal. Do this before
-            # SETTINGS/state so stale telemetry cannot implicitly wake display.
             if not self.serial.send_command(Command.OK):
                 time.sleep(0.25)
                 continue
-
-            log.info("Pushing full state to recover device after sleep...")
-            comtypes.CoInitialize()
-            try:
-                self.serial.send_settings(self.config.device_settings)
-                time.sleep(0.1)
-                self.audio.refresh()
-                mode = self._session_info.mode
-                if mode == DisplayMode.MODE_SPLASH:
-                    mode = DisplayMode.MODE_OUTPUT
-                self._push_full_state(mode)
-                return True
-            except Exception:
-                log.exception("Resume state recovery failed; retrying")
+            if not self.serial.send_settings(self.config.device_settings):
                 time.sleep(0.25)
-            finally:
-                comtypes.CoUninitialize()
+                continue
+
+            now = datetime.now()
+            self.serial.send_time_sync(now.hour, now.minute, now.second)
+
+            with self._connection_lock:
+                token = self._handshake_token
+            self._schedule_initial_state_sync(token)
+            return True
 
         if self._running and not self._is_sleeping:
             log.warning("VuNMix resume recovery timed out waiting for device")
@@ -84,75 +106,156 @@ class DeviceLifecycleMixin:
             return
 
         def handshake_watchdog():
-            time.sleep(10.0)
             with self._connection_lock:
                 timed_out = (
                     token == self._handshake_token
                     and not self._device_connected
-                    and not self._update_only_connected
+                    and (
+                        not self._update_only_connected
+                        or self._handshake_in_progress
+                    )
                 )
             if timed_out:
                 log.warning("VuNMix handshake timed out; reconnecting")
                 self.serial.disconnect()
 
-        threading.Thread(
-            target=handshake_watchdog,
-            daemon=True,
-            name="HandshakeWatchdog",
-        ).start()
-
-    def _complete_handshake(self, token: int):
         with self._connection_lock:
-            valid_token = token == self._handshake_token
-        if not valid_token or not self.serial.is_connected:
-            with self._connection_lock:
-                self._handshake_in_progress = False
-            return
+            previous = getattr(self, "_handshake_watchdog_timer", None)
+            if previous is not None:
+                previous.cancel()
+            timer = threading.Timer(10.0, handshake_watchdog)
+            timer.daemon = True
+            timer.name = "HandshakeWatchdog"
+            self._handshake_watchdog_timer = timer
+            timer.start()
 
-        try:
-            # A reconnect while the PC is awake must explicitly release any
-            # host-sleep latch left in firmware. During actual PC sleep, keep
-            # the latch intact even if the COM port briefly re-enumerates.
-            if not self._is_sleeping:
-                if not self.serial.send_command(Command.OK):
-                    raise ConnectionError("Failed to send wake command")
-                time.sleep(0.02)
+    def _schedule_initial_state_sync(self, token: int):
+        """Sync Windows audio state without holding connection readiness hostage.
 
-            if not self.serial.send_settings(self.config.device_settings):
-                raise ConnectionError("Failed to send settings during handshake")
-            time.sleep(0.1)
+        TEST already proved a real round trip. Windows WASAPI enumeration can
+        occasionally stall for several seconds (or indefinitely on a broken
+        endpoint). Keeping that work outside the handshake prevents Connected
+        -> Waiting flaps and leaves the protocol heartbeat responsive.
+        """
+        with self._connection_lock:
+            if (
+                token != self._handshake_token
+                or not self._device_connected
+                or not self.serial.is_connected
+            ):
+                return
+            current = getattr(self, "_initial_sync_thread", None)
+            current_token = getattr(self, "_initial_sync_token", 0)
+            if (
+                current is not None
+                and current.is_alive()
+                and current_token == token
+            ):
+                return
+            self._initial_sync_token = token
 
-            now = datetime.now()
-            if not self.serial.send_time_sync(now.hour, now.minute, now.second):
-                raise ConnectionError("Failed to send time sync during handshake")
-            time.sleep(0.05)
-
+        def sync_once():
             comtypes.CoInitialize()
             try:
                 self.audio.refresh()
-                self._push_full_state(DisplayMode.MODE_OUTPUT)
+                with self._connection_lock:
+                    current_link = (
+                        token == self._handshake_token
+                        and self._device_connected
+                        and self.serial.is_connected
+                    )
+                if not current_link:
+                    return
+
+                if not self._push_full_state(DisplayMode.MODE_OUTPUT):
+                    log.warning(
+                        "Initial audio state transfer incomplete; connection stays alive"
+                    )
+                    return
+
                 log.info(
                     "Initial state sent: output=%d input=%d apps=%d",
                     self.audio.get_session_count(DisplayMode.MODE_OUTPUT),
                     self.audio.get_session_count(DisplayMode.MODE_INPUT),
                     self.audio.get_session_count(DisplayMode.MODE_APPLICATION),
                 )
+            except Exception:
+                # Audio state is secondary to transport health. A bad/hung
+                # Windows endpoint must not tear down a verified USB link.
+                log.exception("Initial audio state sync failed")
             finally:
                 comtypes.CoUninitialize()
+                with self._connection_lock:
+                    if getattr(self, "_initial_sync_token", 0) == token:
+                        self._initial_sync_token = 0
 
-            # Do not expose Connected merely because Windows opened the COM
-            # port. We only reach this point after a valid TEST response and
-            # successful initial state transfer.
+        worker = threading.Thread(
+            target=sync_once,
+            daemon=True,
+            name="DeviceInitialSync",
+        )
+        with self._connection_lock:
+            self._initial_sync_thread = worker
+        worker.start()
+
+    def _complete_handshake(self, token: int):
+        def link_is_current() -> bool:
+            with self._connection_lock:
+                return (
+                    token == self._handshake_token
+                    and self.serial.is_connected
+                )
+
+        def clear_if_current() -> bool:
+            with self._connection_lock:
+                if token != self._handshake_token:
+                    return False
+                self._handshake_in_progress = False
+                return True
+
+        if not link_is_current():
+            clear_if_current()
+            return
+
+        try:
+            # A valid TEST response is the end-to-end identity proof. Keep the
+            # remaining handshake limited to short serial writes; never block
+            # connection readiness on Windows audio/COM enumeration.
+            if not self._is_sleeping:
+                if not self.serial.send_command(Command.OK):
+                    raise ConnectionError("Failed to send wake command")
+                time.sleep(0.02)
+                if not link_is_current():
+                    return
+
+            if not self.serial.send_settings(self.config.device_settings):
+                raise ConnectionError("Failed to send settings during handshake")
+            time.sleep(0.05)
+            if not link_is_current():
+                return
+
+            now = datetime.now()
+            if not self.serial.send_time_sync(now.hour, now.minute, now.second):
+                raise ConnectionError("Failed to send time sync during handshake")
+            time.sleep(0.02)
+            if not link_is_current():
+                return
+
             with self._connection_lock:
                 if token != self._handshake_token or not self.serial.is_connected:
-                    self._handshake_in_progress = False
+                    if token == self._handshake_token:
+                        self._handshake_in_progress = False
                     return
                 self._device_connected = True
                 self._update_only_connected = True
                 self._handshake_in_progress = False
+                watchdog = getattr(self, "_handshake_watchdog_timer", None)
+                self._handshake_watchdog_timer = None
+                if watchdog is not None:
+                    watchdog.cancel()
 
-            if self.on_connection_changed:
-                self.on_connection_changed(True)
+            self._notify_connection_changed(True)
+            self._schedule_initial_state_sync(token)
 
             if self.on_device_ready:
                 try:
@@ -161,9 +264,7 @@ class DeviceLifecycleMixin:
                     log.exception("Device-ready callback failed")
         except Exception:
             log.exception("Failed to initialize device after handshake")
-            with self._connection_lock:
-                self._handshake_in_progress = False
-            if token == self._handshake_token:
+            if clear_if_current():
                 self.serial.disconnect()
 
     def _on_device_disconnected(self):
@@ -174,10 +275,13 @@ class DeviceLifecycleMixin:
             self._device_connected = False
             self._update_only_connected = False
             self._handshake_in_progress = False
+            watchdog = getattr(self, "_handshake_watchdog_timer", None)
+            self._handshake_watchdog_timer = None
+            if watchdog is not None:
+                watchdog.cancel()
             self._sent_icon_ids.clear()
             self._session_info = SessionInfo()
-        if self.on_connection_changed:
-            self.on_connection_changed(False)
+        self._notify_connection_changed(False)
 
     def _on_version(self, version: str):
         firmware_version, separator, protocol_value = version.rpartition(";P=")

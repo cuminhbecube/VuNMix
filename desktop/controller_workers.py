@@ -87,12 +87,65 @@ class SyncWorkersMixin:
             self.serial.send_volume(Command.VOLUME_CURR_CHANGE, vol)
             return True
 
-    def _sync_loop(self):
-        """Periodically refresh audio sessions and sync volume to hardware."""
-        interval = self.config.update_interval_ms / 1000.0
+    def _heartbeat_loop(self):
+        """Keep transport liveness independent from WASAPI/audio work.
+
+        Audio enumeration can occasionally stall inside Windows COM. Heartbeat
+        must keep running anyway, otherwise firmware resets host state after
+        five seconds and the desktop appears connected while the device has
+        already fallen back to standby.
+        """
         last_heartbeat = time.monotonic()
-        heartbeat_pending_since = 0.0
-        heartbeat_response_floor = 0.0
+        pending_since = 0.0
+        response_floor = 0.0
+
+        while self._running:
+            time.sleep(0.1)
+
+            if (
+                not self._device_connected
+                or self._is_sleeping
+            ):
+                pending_since = 0.0
+                response_floor = 0.0
+                last_heartbeat = time.monotonic()
+                continue
+
+            now = time.monotonic()
+            last_ack = getattr(self.serial, "last_ok_response", 0.0)
+
+            if pending_since:
+                if last_ack > response_floor:
+                    pending_since = 0.0
+                    response_floor = 0.0
+                elif now - pending_since >= 6.0:
+                    log.warning(
+                        "VuNMix protocol heartbeat timed out after %.1fs; reconnecting",
+                        now - pending_since,
+                    )
+                    pending_since = 0.0
+                    response_floor = 0.0
+                    self.serial.disconnect()
+                    continue
+
+            if not pending_since and now - last_heartbeat >= 2.0:
+                response_floor = last_ack
+                if not self.serial.send_command(Command.OK):
+                    log.warning("VuNMix heartbeat write failed; reconnecting")
+                    response_floor = 0.0
+                    self.serial.disconnect()
+                    last_heartbeat = now
+                    continue
+                pending_since = now
+                last_heartbeat = now
+
+    def _sync_loop(self):
+        """Periodically refresh audio sessions and sync volume to hardware.
+
+        Transport heartbeat deliberately lives in _heartbeat_loop so a slow or
+        wedged Windows audio call cannot make a healthy USB link flap.
+        """
+        interval = self.config.update_interval_ms / 1000.0
         last_full_refresh = time.monotonic()
         last_time_sync = time.monotonic()
         last_telemetry_sync = time.monotonic()
@@ -100,49 +153,14 @@ class SyncWorkersMixin:
         while self._running:
             time.sleep(interval)
 
-            if not self._device_connected or self._is_sleeping:
-                # A pending heartbeat belongs to the old link. Never carry its
-                # timeout across sleep/reconnect, or the fresh connection can
-                # be torn down immediately after it comes up.
-                heartbeat_pending_since = 0.0
-                heartbeat_response_floor = 0.0
+            if (
+                not self._device_connected
+                or self._is_sleeping
+                or getattr(self, "_resume_recovering", False)
+            ):
                 continue
 
             now = time.monotonic()
-            last_ack = getattr(self.serial, "last_ok_response", 0.0)
-
-            if heartbeat_pending_since:
-                if last_ack > heartbeat_response_floor:
-                    # Firmware ACKed traffic after this heartbeat was sent.
-                    # Clear the pending request before scheduling another one.
-                    heartbeat_pending_since = 0.0
-                    heartbeat_response_floor = 0.0
-                elif now - heartbeat_pending_since >= 6.0:
-                    log.warning(
-                        "VuNMix protocol heartbeat timed out after %.1fs; reconnecting",
-                        now - heartbeat_pending_since,
-                    )
-                    heartbeat_pending_since = 0.0
-                    heartbeat_response_floor = 0.0
-                    self.serial.disconnect()
-                    continue
-
-            if not heartbeat_pending_since and now - last_heartbeat >= 2.0:
-                # Use the protocol ACK path for health checks instead of TEST.
-                # TEST is reserved for identity/version handshake; using it as
-                # a periodic heartbeat made every 2-second tick look like a new
-                # firmware handshake and correlated with short connect/drop
-                # cycles on real hardware.
-                heartbeat_response_floor = last_ack
-                if not self.serial.send_command(Command.OK):
-                    log.warning("VuNMix heartbeat write failed; reconnecting")
-                    heartbeat_response_floor = 0.0
-                    self.serial.disconnect()
-                    last_heartbeat = now
-                    continue
-
-                heartbeat_pending_since = now
-                last_heartbeat = now
 
             if now - last_time_sync >= 30.0:
                 dt = datetime.now()
@@ -168,32 +186,35 @@ class SyncWorkersMixin:
                 continue
 
             if now - last_full_refresh >= 5.0:
-                comtypes.CoInitialize()
                 try:
-                    def get_sig():
-                        signature = []
-                        for mode in (
-                            DisplayMode.MODE_OUTPUT,
-                            DisplayMode.MODE_INPUT,
-                            DisplayMode.MODE_APPLICATION,
-                        ):
-                            signature.extend(
-                                (item.id, item.name, item.is_default)
-                                for item in self.audio.get_sessions_for_mode(mode)
+                    comtypes.CoInitialize()
+                    try:
+                        def get_sig():
+                            signature = []
+                            for mode in (
+                                DisplayMode.MODE_OUTPUT,
+                                DisplayMode.MODE_INPUT,
+                                DisplayMode.MODE_APPLICATION,
+                            ):
+                                signature.extend(
+                                    (item.id, item.name, item.is_default)
+                                    for item in self.audio.get_sessions_for_mode(mode)
+                                )
+                            return signature
+
+                        old_sig = get_sig()
+                        self.audio.refresh()
+                        new_sig = get_sig()
+
+                        if old_sig != new_sig:
+                            log.info(
+                                "Audio devices/apps changed in background. Pushing updated state."
                             )
-                        return signature
-
-                    old_sig = get_sig()
-                    self.audio.refresh()
-                    new_sig = get_sig()
-
-                    if old_sig != new_sig:
-                        log.info(
-                            "Audio devices/apps changed in background. Pushing updated state."
-                        )
-                        self._push_updated_state()
-                finally:
-                    comtypes.CoUninitialize()
+                            self._push_updated_state()
+                    finally:
+                        comtypes.CoUninitialize()
+                except Exception as exc:
+                    log.warning("Full audio refresh failed; keeping sync alive: %s", exc)
                 last_full_refresh = now
                 continue
 
@@ -254,6 +275,7 @@ class SyncWorkersMixin:
                 if (
                     not self._device_connected
                     or self._is_sleeping
+                    or getattr(self, "_resume_recovering", False)
                     or self._session_info.mode
                     in (DisplayMode.MODE_SPLASH, DisplayMode.MODE_HEALTH)
                 ):

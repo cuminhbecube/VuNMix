@@ -247,8 +247,13 @@ class HardwareStateMixin:
 
         return max(0, min(int(fallback), len(items) - 1))
 
-    def _push_full_state(self, mode: int):
-        """Send complete state for a display mode to hardware."""
+    def _push_full_state(self, mode: int) -> bool:
+        """Send complete state for a display mode to hardware.
+
+        Return False when any required protocol frame could not be written.
+        Handshake/resume callers use this to avoid exposing Connected after a
+        partial initial-state transfer.
+        """
         self._begin_selection_transition()
         try:
             n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
@@ -262,9 +267,10 @@ class HardwareStateMixin:
                         sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
                     )
                     self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
-                self.serial.send_session_info(self._session_info)
-                self.serial.send_mode_states(self._mode_states)
-                return
+                return bool(
+                    self.serial.send_session_info(self._session_info)
+                    and self.serial.send_mode_states(self._mode_states)
+                )
 
             items = self.audio.get_sessions_for_mode(mode)
             current_idx = self._preferred_index(mode, items)
@@ -276,13 +282,16 @@ class HardwareStateMixin:
                     sessions=[max(n_output, 1), max(n_input, 1), max(n_app, 1)],
                 )
                 self._mode_states = ModeStates(states=[0, 1, 1, 0, 0, 0])
-            self.serial.send_session_info(self._session_info)
-            self.serial.send_mode_states(self._mode_states)
-            self._push_sessions_for_mode(mode, current_idx)
+
+            if not self.serial.send_session_info(self._session_info):
+                return False
+            if not self.serial.send_mode_states(self._mode_states):
+                return False
+            return self._push_sessions_for_mode(mode, current_idx)
         finally:
             self._end_selection_transition()
 
-    def _push_updated_state(self):
+    def _push_updated_state(self) -> bool:
         """Re-push state after a refresh, preserving current item if possible."""
         self._begin_selection_transition()
         try:
@@ -299,9 +308,10 @@ class HardwareStateMixin:
                         max(n_input, 1),
                         max(n_app, 1),
                     ]
-                self.serial.send_session_info(self._session_info)
-                self.serial.send_mode_states(self._mode_states)
-                return
+                return bool(
+                    self.serial.send_session_info(self._session_info)
+                    and self.serial.send_mode_states(self._mode_states)
+                )
 
             items = self.audio.get_sessions_for_mode(mode)
             n_output = self.audio.get_session_count(DisplayMode.MODE_OUTPUT)
@@ -331,24 +341,25 @@ class HardwareStateMixin:
                 ]
                 self._session_info.current = current_idx
 
-            self.serial.send_session_info(self._session_info)
-            self.serial.send_mode_states(self._mode_states)
-            self._push_sessions_for_mode(mode, current_idx)
+            if not self.serial.send_session_info(self._session_info):
+                return False
+            if not self.serial.send_mode_states(self._mode_states):
+                return False
+            return self._push_sessions_for_mode(mode, current_idx)
         finally:
             self._end_selection_transition()
 
-    def _push_sessions_for_mode(self, mode: int, current_idx: int):
+    def _push_sessions_for_mode(self, mode: int, current_idx: int) -> bool:
         """Send current/previous/next sessions for a mode."""
         if mode == DisplayMode.MODE_HEALTH:
-            return
+            return True
 
         items = self.audio.get_sessions_for_mode(mode)
         if not items:
             empty = SessionData(name="No sessions")
             with self._state_lock:
                 self._sessions[SessionIndex.INDEX_CURRENT] = empty
-            self.serial.send_session(Command.CURRENT_SESSION, empty)
-            return
+            return bool(self.serial.send_session(Command.CURRENT_SESSION, empty))
 
         count = len(items)
         current_idx %= count
@@ -356,7 +367,8 @@ class HardwareStateMixin:
         cur = items[current_idx].to_session_data()
         with self._state_lock:
             self._sessions[SessionIndex.INDEX_CURRENT] = cur
-        self.serial.send_session(Command.CURRENT_SESSION, cur)
+        if not self.serial.send_session(Command.CURRENT_SESSION, cur):
+            return False
         self._send_app_icon_if_needed(mode, items[current_idx])
 
         if count > 1:
@@ -364,15 +376,19 @@ class HardwareStateMixin:
             prev = items[prev_idx].to_session_data()
             with self._state_lock:
                 self._sessions[SessionIndex.INDEX_PREVIOUS] = prev
-            self.serial.send_session(Command.PREVIOUS_SESSION, prev)
+            if not self.serial.send_session(Command.PREVIOUS_SESSION, prev):
+                return False
             self._send_app_icon_if_needed(mode, items[prev_idx])
 
             next_idx = (current_idx + 1) % count
             nxt = items[next_idx].to_session_data()
             with self._state_lock:
                 self._sessions[SessionIndex.INDEX_NEXT] = nxt
-            self.serial.send_session(Command.NEXT_SESSION, nxt)
+            if not self.serial.send_session(Command.NEXT_SESSION, nxt):
+                return False
             self._send_app_icon_if_needed(mode, items[next_idx])
+
+        return True
 
     def _send_app_icon_if_needed(self, mode: int, item):
         if mode not in (DisplayMode.MODE_APPLICATION, DisplayMode.MODE_GAME):

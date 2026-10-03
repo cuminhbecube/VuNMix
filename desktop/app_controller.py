@@ -55,6 +55,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._is_sleeping = False
         self._handshake_token = 0
         self._handshake_in_progress = False
+        self._handshake_watchdog_timer: Optional[threading.Timer] = None
         self._sent_icon_ids = set()
         self._connection_lock = threading.RLock()
 
@@ -67,12 +68,17 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._selection_transitioning = False
 
         # Worker/lifecycle state.
+        self._heartbeat_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
         self._meter_thread: Optional[threading.Thread] = None
         self._firmware_update_lock = threading.Lock()
         self._firmware_updating = False
         self._running = False
         self._power_monitor: Optional[PowerMonitor] = None
+        self._resume_recovery_thread: Optional[threading.Thread] = None
+        self._resume_recovering = False
+        self._initial_sync_thread: Optional[threading.Thread] = None
+        self._initial_sync_token = 0
 
         self.serial.on_connected = self._on_device_connected
         self.serial.on_disconnected = self._on_device_disconnected
@@ -84,6 +90,9 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
 
     def start(self):
         """Start serial transport and the normal synchronization workers."""
+        if self._running:
+            log.debug("AppController start ignored; already running")
+            return
         log.info("AppController starting...")
         # Mark the controller alive before subscribing to power events. A
         # resume broadcast can arrive immediately after monitor creation.
@@ -92,6 +101,12 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
             self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
         self.serial.start()
 
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            daemon=True,
+            name="ProtocolHeartbeat",
+        )
+        self._heartbeat_thread.start()
         self._sync_thread = threading.Thread(
             target=self._sync_loop,
             daemon=True,
@@ -110,13 +125,19 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
     def stop(self):
         """Stop all services and workers."""
         log.info("AppController stopping...")
+        # Stop controller-owned loops first so shutdown/restart cannot leave
+        # them blocked behind a transport or WASAPI call while new workers are
+        # starting for the next connection generation.
+        self._running = False
         self.weather_service.stop()
         self.obs_service.stop()
         if self._power_monitor is not None:
             self._power_monitor.stop()
             self._power_monitor = None
-        self._running = False
         self.serial.stop()
+        if self._heartbeat_thread:
+            self._heartbeat_thread.join(timeout=1.0)
+            self._heartbeat_thread = None
         if self._sync_thread:
             self._sync_thread.join(timeout=3.0)
             self._sync_thread = None
