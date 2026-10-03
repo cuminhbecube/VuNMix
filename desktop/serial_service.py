@@ -508,7 +508,8 @@ class SerialService:
                     self._set_status(
                         f"Searching for VuNMix — retry in {reconnect_delay:.1f}s"
                     )
-                    time.sleep(reconnect_delay)
+                    if stop_event.wait(reconnect_delay):
+                        break
                     reconnect_delay = min(reconnect_delay * 1.5, 10.0)
                     continue
 
@@ -560,6 +561,7 @@ class SerialService:
             except (serial.SerialException, OSError) as e:
                 log.error("Serial read error: %s", e, exc_info=True)
                 self.disconnect()
-                time.sleep(0.5)
+                if stop_event.wait(0.5):
+                    break
             except Exception as e:
                 log.exception("Unexpected serial parser/callback error: %s", e)
