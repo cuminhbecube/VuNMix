@@ -126,6 +126,7 @@ class SettingsDialog:
         self._drag_y = 0
         self._firmware_release_client = FirmwareReleaseClient()
         self._firmware_release_loading = False
+        self._connection_action_thread = None
 
     def initialize(self):
         """Create the single Tcl/Tk interpreter on the process main thread."""
@@ -978,16 +979,46 @@ class SettingsDialog:
     def _toggle_connect(self):
         if self.controller.firmware_updating:
             return
+        current = self._connection_action_thread
+        if current is not None and current.is_alive():
+            return
+
         if self.controller._device_connected:
-            self.controller.stop()
+            action = self.controller.stop
+            thread_name = "ConnectionStop"
         else:
             port = self._com_var.get().strip()
-            if port:
-                self.config.com_port = port
-                self.config.save()
+            if not port:
+                return
+            self.config.com_port = port
+            self.config.save()
+
+            def action():
                 self.controller.stop()
                 self.controller.serial.port = port
                 self.controller.start()
+
+            thread_name = "ConnectionRestart"
+
+        self.btn_toggle_conn.configure(state="disabled")
+
+        def worker():
+            try:
+                action()
+            except Exception:
+                log.exception("Connection lifecycle action failed")
+            finally:
+                self._ui_call(
+                    lambda: self.btn_toggle_conn.configure(state="normal")
+                )
+
+        thread = threading.Thread(
+            target=worker,
+            daemon=True,
+            name=thread_name,
+        )
+        self._connection_action_thread = thread
+        thread.start()
 
     def _choose_led_color(self, key):
         values = self._led_color_values.get(key)
@@ -1105,6 +1136,7 @@ class TrayApp:
         self._firmware_auto_lock = threading.Lock()
         self._auto_firmware_attempted = set()
         self._firmware_auto_thread = None
+        self._controller_restart_thread = None
         self.controller.on_device_ready = self._on_device_ready
 
     def _create_settings_dialog(self):
@@ -1420,15 +1452,44 @@ class TrayApp:
     def _on_settings_saved(self, port_changed: bool):
         log.info("Settings saved. Port changed: %s", port_changed)
         if port_changed:
-            self.controller.stop()
-            self.controller.serial.port = self.config.com_port
-            self.controller.start()
+            current = self._controller_restart_thread
+            if current is None or not current.is_alive():
+                target_port = self.config.com_port
+
+                def restart():
+                    try:
+                        self.controller.stop()
+                        self.controller.serial.port = target_port
+                        self.controller.start()
+                    except Exception:
+                        log.exception("Controller restart after COM change failed")
+
+                worker = threading.Thread(
+                    target=restart,
+                    daemon=True,
+                    name="ControllerPortRestart",
+                )
+                self._controller_restart_thread = worker
+                worker.start()
         else:
-            # Just push updated settings to hardware without resetting port
             from protocol import Command
-            if self.controller._device_connected:
-                self.controller.serial.send_command(Command.SETTINGS, self.config.device_settings.pack())
-                self.controller._push_updated_state()
+
+            def push_settings():
+                try:
+                    if self.controller._device_connected:
+                        self.controller.serial.send_command(
+                            Command.SETTINGS,
+                            self.config.device_settings.pack(),
+                        )
+                        self.controller._push_updated_state()
+                except Exception:
+                    log.exception("Settings state push failed")
+
+            threading.Thread(
+                target=push_settings,
+                daemon=True,
+                name="SettingsStatePush",
+            ).start()
 
         if self.config.auto_update_enabled:
             self._start_app_update_watcher()
