@@ -172,32 +172,38 @@ class SyncWorkersMixin:
                 continue
 
             if now - last_full_refresh >= 5.0:
-                comtypes.CoInitialize()
                 try:
-                    def get_sig():
-                        signature = []
-                        for mode in (
-                            DisplayMode.MODE_OUTPUT,
-                            DisplayMode.MODE_INPUT,
-                            DisplayMode.MODE_APPLICATION,
-                        ):
-                            signature.extend(
-                                (item.id, item.name, item.is_default)
-                                for item in self.audio.get_sessions_for_mode(mode)
+                    comtypes.CoInitialize()
+                    try:
+                        def get_sig():
+                            signature = []
+                            for mode in (
+                                DisplayMode.MODE_OUTPUT,
+                                DisplayMode.MODE_INPUT,
+                                DisplayMode.MODE_APPLICATION,
+                            ):
+                                signature.extend(
+                                    (item.id, item.name, item.is_default)
+                                    for item in self.audio.get_sessions_for_mode(mode)
+                                )
+                            return signature
+
+                        old_sig = get_sig()
+                        self.audio.refresh()
+                        new_sig = get_sig()
+
+                        if old_sig != new_sig:
+                            log.info(
+                                "Audio devices/apps changed in background. Pushing updated state."
                             )
-                        return signature
-
-                    old_sig = get_sig()
-                    self.audio.refresh()
-                    new_sig = get_sig()
-
-                    if old_sig != new_sig:
-                        log.info(
-                            "Audio devices/apps changed in background. Pushing updated state."
-                        )
-                        self._push_updated_state()
-                finally:
-                    comtypes.CoUninitialize()
+                            self._push_updated_state()
+                    finally:
+                        comtypes.CoUninitialize()
+                except Exception as exc:
+                    # A transient WASAPI/COM enumeration failure must not kill
+                    # AudioSync. This worker also owns the protocol heartbeat;
+                    # if it dies, firmware eventually resets its host state.
+                    log.warning("Full audio refresh failed; keeping sync alive: %s", exc)
                 last_full_refresh = now
                 continue
 
