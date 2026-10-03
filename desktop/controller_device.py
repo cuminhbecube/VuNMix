@@ -18,6 +18,21 @@ log = logging.getLogger(__name__)
 class DeviceLifecycleMixin:
     """Power transitions, serial verification and initial-state handshake."""
 
+    def _notify_connection_changed(self, connected: bool):
+        callback = self.on_connection_changed
+        if callback is None:
+            return
+        try:
+            callback(connected)
+        except Exception:
+            # UI/tray observers are not part of transport health. A transient
+            # UI exception must never turn a valid protocol handshake into a
+            # device disconnect or kill SerialRead during teardown.
+            log.exception(
+                "Connection-state callback failed: %s",
+                "connected" if connected else "disconnected",
+            )
+
     def _on_pc_sleep(self):
         log.info("PC entering sleep mode. Suspending VuNMix device.")
         self._is_sleeping = True
@@ -195,8 +210,7 @@ class DeviceLifecycleMixin:
                 self._update_only_connected = True
                 self._handshake_in_progress = False
 
-            if self.on_connection_changed:
-                self.on_connection_changed(True)
+            self._notify_connection_changed(True)
 
             if self.on_device_ready:
                 try:
@@ -218,8 +232,7 @@ class DeviceLifecycleMixin:
             self._handshake_in_progress = False
             self._sent_icon_ids.clear()
             self._session_info = SessionInfo()
-        if self.on_connection_changed:
-            self.on_connection_changed(False)
+        self._notify_connection_changed(False)
 
     def _on_version(self, version: str):
         firmware_version, separator, protocol_value = version.rpartition(";P=")
