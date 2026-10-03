@@ -129,6 +129,7 @@ class SettingsDialog:
         self._firmware_release_client = FirmwareReleaseClient()
         self._firmware_release_loading = False
         self._connection_action_thread = None
+        self._favorite_loader_thread = None
         self._last_ui_pump = time.monotonic()
 
     def initialize(self):
@@ -896,18 +897,47 @@ class SettingsDialog:
     def _choose_favorite_apps(self):
         if not self._window or not self._window.winfo_exists():
             return
+        current = self._favorite_loader_thread
+        if current is not None and current.is_alive():
+            return
 
-        try:
-            self.controller.audio.refresh()
-        except Exception:
-            log.exception("Failed to refresh app list for favorites")
+        favorites = list(self.config.favorite_apps)
 
-        from protocol import DisplayMode
-        apps = self.controller.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
-        names = sorted({item.name.lower().removesuffix(".exe") for item in apps if item.name})
-        for existing in self.config.favorite_apps:
-            if existing not in names:
-                names.append(existing)
+        def load():
+            try:
+                self.controller.audio.refresh()
+            except Exception:
+                log.exception("Failed to refresh app list for favorites")
+
+            from protocol import DisplayMode
+            apps = self.controller.audio.get_sessions_for_mode(
+                DisplayMode.MODE_APPLICATION
+            )
+            names = sorted(
+                {
+                    item.name.lower().removesuffix(".exe")
+                    for item in apps
+                    if item.name
+                }
+            )
+            for existing in favorites:
+                if existing not in names:
+                    names.append(existing)
+            self._ui_call(
+                lambda loaded=names: self._show_favorite_apps_picker(loaded)
+            )
+
+        worker = threading.Thread(
+            target=load,
+            daemon=True,
+            name="FavoriteAppsLoad",
+        )
+        self._favorite_loader_thread = worker
+        worker.start()
+
+    def _show_favorite_apps_picker(self, names):
+        if not self._window or not self._window.winfo_exists():
+            return
 
         picker = ctk.CTkToplevel(self._window)
         picker.title("App Favorites")
@@ -920,11 +950,18 @@ class SettingsDialog:
         vars_by_name = {}
         selected = set(self.config.favorite_apps)
         if not names:
-            ctk.CTkLabel(frame, text="No active audio apps found.").pack(anchor="w", pady=4)
+            ctk.CTkLabel(
+                frame,
+                text="No active audio apps found.",
+            ).pack(anchor="w", pady=4)
         for name in names:
             var = tk.BooleanVar(value=name in selected)
             vars_by_name[name] = var
-            ctk.CTkCheckBox(frame, text=name, variable=var).pack(anchor="w", pady=3)
+            ctk.CTkCheckBox(
+                frame,
+                text=name,
+                variable=var,
+            ).pack(anchor="w", pady=3)
 
         buttons = ctk.CTkFrame(picker, fg_color="transparent")
         buttons.pack(fill="x", padx=10, pady=(0, 10))
@@ -937,8 +974,19 @@ class SettingsDialog:
             self._refresh_favorites_label()
             picker.destroy()
 
-        ctk.CTkButton(buttons, text="Apply", command=apply_selection, height=28).pack(side="right")
-        ctk.CTkButton(buttons, text="Cancel", command=picker.destroy, height=28, fg_color="#444444").pack(side="right", padx=6)
+        ctk.CTkButton(
+            buttons,
+            text="Apply",
+            command=apply_selection,
+            height=28,
+        ).pack(side="right")
+        ctk.CTkButton(
+            buttons,
+            text="Cancel",
+            command=picker.destroy,
+            height=28,
+            fg_color="#444444",
+        ).pack(side="right", padx=6)
 
     def _firmware_complete(
         self,
