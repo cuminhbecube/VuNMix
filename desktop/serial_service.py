@@ -247,7 +247,12 @@ class SerialService:
         if self.on_connected:
             def notify_connected():
                 if self._serial is connection and connection.is_open:
-                    self.on_connected()
+                    try:
+                        self.on_connected()
+                    except Exception:
+                        # A lifecycle observer must not kill the one-shot
+                        # notifier or leave an unreported thread exception.
+                        log.exception("Serial connected callback failed")
 
             threading.Thread(
                 target=notify_connected,
@@ -276,7 +281,13 @@ class SerialService:
             log.info("Disconnected from %s", active_port or self._preferred_port)
             self._set_status("Disconnected")
             if self.on_disconnected:
-                self.on_disconnected()
+                try:
+                    self.on_disconnected()
+                except Exception:
+                    # Transport teardown must remain authoritative even when a
+                    # higher-level observer fails. Letting this escape can kill
+                    # SerialRead and permanently stop automatic reconnect.
+                    log.exception("Serial disconnected callback failed")
 
     def start(self):
         """Start background read/reconnect thread."""
