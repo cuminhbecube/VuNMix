@@ -194,12 +194,14 @@ class LifecycleHarness(DeviceLifecycleMixin):
         self.on_connection_changed = mock.Mock()
         self.on_device_ready = mock.Mock()
         self.full_state_ok = True
+        self.full_state_calls = 0
 
     @property
     def is_connected(self):
         return self._device_connected
 
     def _push_full_state(self, _mode):
+        self.full_state_calls += 1
         return self.full_state_ok
 
 
@@ -282,6 +284,72 @@ class HandshakeStressTests(unittest.TestCase):
         self.assertEqual(controller.serial.disconnect_calls, 1)
         controller.on_connection_changed.assert_not_called()
         controller.on_device_ready.assert_not_called()
+
+
+    def test_stale_handshake_generation_cannot_clear_new_handshake_flag(self):
+        controller = LifecycleHarness()
+        controller._handshake_token = 20
+        controller._handshake_in_progress = True
+
+        with (
+            mock.patch("controller_device.time.sleep", return_value=None),
+            mock.patch("controller_device.comtypes.CoInitialize", return_value=None),
+            mock.patch("controller_device.comtypes.CoUninitialize", return_value=None),
+        ):
+            controller._complete_handshake(19)
+
+        self.assertTrue(controller._handshake_in_progress)
+        self.assertEqual(controller.serial.disconnect_calls, 0)
+        self.assertEqual(controller.full_state_calls, 0)
+
+    def test_old_handshake_aborts_before_writing_state_to_new_connection(self):
+        controller = LifecycleHarness()
+        controller._handshake_token = 30
+        controller._handshake_in_progress = True
+
+        def replace_connection_generation():
+            controller._handshake_token = 31
+            controller._handshake_in_progress = True
+
+        controller.audio.refresh = replace_connection_generation
+
+        with (
+            mock.patch("controller_device.time.sleep", return_value=None),
+            mock.patch("controller_device.comtypes.CoInitialize", return_value=None),
+            mock.patch("controller_device.comtypes.CoUninitialize", return_value=None),
+        ):
+            controller._complete_handshake(30)
+
+        self.assertEqual(controller.full_state_calls, 0)
+        self.assertTrue(controller._handshake_in_progress)
+        self.assertEqual(controller.serial.disconnect_calls, 0)
+
+
+class ResumeStormTests(unittest.TestCase):
+    def test_50_resume_events_coalesce_to_one_recovery_worker(self):
+        controller = LifecycleHarness()
+        created = []
+
+        class FakeThread:
+            def __init__(self, target=None, name=None, **_kwargs):
+                self.target = target
+                self.name = name
+                self._alive = False
+                created.append(self)
+
+            def start(self):
+                self._alive = True
+
+            def is_alive(self):
+                return self._alive
+
+        with mock.patch("controller_device.threading.Thread", FakeThread):
+            for _ in range(50):
+                controller._on_pc_resume()
+
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].name, "ResumeSync")
+        self.assertTrue(getattr(controller, "_resume_recovering", False))
 
 
 class CountingService:
