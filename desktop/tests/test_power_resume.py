@@ -39,6 +39,10 @@ class RecordingSerial:
         self.settings.append(settings)
         return True
 
+    def send_time_sync(self, hour, minute, second):
+        self.commands.append(("time", hour, minute, second))
+        return True
+
 
 class RecordingAudio:
     def __init__(self):
