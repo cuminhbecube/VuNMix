@@ -52,6 +52,25 @@ class AppUpdateIntegrationTests(unittest.TestCase):
         self.assertIn('name="FirmwareAutoCheck"', source)
         self.assertIn("should_auto_update_firmware(", source)
 
+    def test_auto_firmware_sync_waits_for_stable_verified_link(self):
+        source = (REPO_DIR / "desktop" / "gui.py").read_text(encoding="utf-8")
+
+        self.assertIn("self._update_stop.wait(10.0)", source)
+        self.assertIn("not self.controller.is_connected", source)
+        self.assertIn('text = "FW Update..."', (REPO_DIR / "desktop" / "connection_ui.py").read_text(encoding="utf-8"))
+
+    def test_periodic_heartbeat_uses_ack_not_repeated_test_handshake(self):
+        source = (REPO_DIR / "desktop" / "controller_workers.py").read_text(
+            encoding="utf-8"
+        )
+
+        sync_start = source.index("    def _sync_loop(self):")
+        sync_end = source.index("\n    @staticmethod", sync_start)
+        sync_source = source[sync_start:sync_end]
+        self.assertIn("last_ok_response", sync_source)
+        self.assertIn("send_command(Command.OK)", sync_source)
+        self.assertNotIn("send_test()", sync_source)
+
     def test_connection_tray_exposes_manual_update_check(self):
         source = (REPO_DIR / "desktop" / "connection_ui.py").read_text(
             encoding="utf-8"
