@@ -91,6 +91,8 @@ class SyncWorkersMixin:
         """Periodically refresh audio sessions and sync volume to hardware."""
         interval = self.config.update_interval_ms / 1000.0
         last_heartbeat = time.monotonic()
+        heartbeat_pending_since = 0.0
+        heartbeat_response_floor = 0.0
         last_full_refresh = time.monotonic()
         last_time_sync = time.monotonic()
         last_telemetry_sync = time.monotonic()
@@ -99,30 +101,50 @@ class SyncWorkersMixin:
             time.sleep(interval)
 
             if not self._device_connected or self._is_sleeping:
+                # A pending heartbeat belongs to the old link. Never carry its
+                # timeout across sleep/reconnect, or the fresh connection can
+                # be torn down immediately after it comes up.
+                heartbeat_pending_since = 0.0
+                heartbeat_response_floor = 0.0
                 continue
 
             now = time.monotonic()
+            last_test = getattr(self.serial, "last_test_response", 0.0)
 
-            if now - last_heartbeat >= 2.0:
-                # TEST is a real round-trip heartbeat. A successful write only
-                # proves Windows accepted bytes into the COM driver; the TEST
-                # response proves the VuNMix firmware is actually reachable.
+            if heartbeat_pending_since:
+                if last_test > heartbeat_response_floor:
+                    # The firmware replied to the outstanding TEST. Clear the
+                    # pending request before scheduling another heartbeat.
+                    heartbeat_pending_since = 0.0
+                    heartbeat_response_floor = 0.0
+                elif now - heartbeat_pending_since >= 6.0:
+                    log.warning(
+                        "VuNMix protocol heartbeat timed out after %.1fs; reconnecting",
+                        now - heartbeat_pending_since,
+                    )
+                    heartbeat_pending_since = 0.0
+                    heartbeat_response_floor = 0.0
+                    self.serial.disconnect()
+                    continue
+
+            if not heartbeat_pending_since and now - last_heartbeat >= 2.0:
+                # TEST is a real round-trip heartbeat. Record the response
+                # baseline BEFORE sending, then wait up to 6 seconds for a
+                # newer TEST response. The previous implementation checked the
+                # old timestamp immediately after send_test(), so it could
+                # disconnect a healthy device milliseconds before its reply
+                # arrived, causing reconnect loops and eventually destabilizing
+                # the desktop app.
+                heartbeat_response_floor = last_test
                 if not self.serial.send_test():
                     log.warning("VuNMix heartbeat write failed; reconnecting")
+                    heartbeat_response_floor = 0.0
                     self.serial.disconnect()
                     last_heartbeat = now
                     continue
 
+                heartbeat_pending_since = now
                 last_heartbeat = now
-
-                last_test = getattr(self.serial, "last_test_response", 0.0)
-                if last_test > 0 and (now - last_test) > 6.0:
-                    log.warning(
-                        "VuNMix protocol heartbeat timed out (%.1fs); reconnecting",
-                        now - last_test,
-                    )
-                    self.serial.disconnect()
-                    continue
 
             if now - last_time_sync >= 30.0:
                 dt = datetime.now()
