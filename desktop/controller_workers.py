@@ -105,7 +105,6 @@ class SyncWorkersMixin:
             if (
                 not self._device_connected
                 or self._is_sleeping
-                or getattr(self, "_resume_recovering", False)
             ):
                 pending_since = 0.0
                 response_floor = 0.0
