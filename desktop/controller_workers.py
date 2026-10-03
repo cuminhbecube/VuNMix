@@ -100,7 +100,11 @@ class SyncWorkersMixin:
         while self._running:
             time.sleep(interval)
 
-            if not self._device_connected or self._is_sleeping:
+            if (
+                not self._device_connected
+                or self._is_sleeping
+                or getattr(self, "_resume_recovering", False)
+            ):
                 # A pending heartbeat belongs to the old link. Never carry its
                 # timeout across sleep/reconnect, or the fresh connection can
                 # be torn down immediately after it comes up.
@@ -254,6 +258,7 @@ class SyncWorkersMixin:
                 if (
                     not self._device_connected
                     or self._is_sleeping
+                    or getattr(self, "_resume_recovering", False)
                     or self._session_info.mode
                     in (DisplayMode.MODE_SPLASH, DisplayMode.MODE_HEALTH)
                 ):
