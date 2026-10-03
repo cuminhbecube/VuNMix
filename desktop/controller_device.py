@@ -27,14 +27,29 @@ class DeviceLifecycleMixin:
         log.info("PC resuming from sleep. Waking VuNMix device.")
         self._is_sleeping = False
         # Best-effort immediate wake for systems whose USB CDC link survived
-        # suspend. _recover_after_resume retries after re-enumeration.
+        # suspend. The serialized recovery worker retries after re-enumeration.
         self.serial.send_command(Command.OK)
 
-        threading.Thread(
-            target=self._recover_after_resume,
-            daemon=True,
-            name="ResumeSync",
-        ).start()
+        with self._connection_lock:
+            current = getattr(self, "_resume_recovery_thread", None)
+            if current is not None and current.is_alive():
+                return
+            self._resume_recovering = True
+
+            def recover_once():
+                try:
+                    self._recover_after_resume()
+                finally:
+                    with self._connection_lock:
+                        self._resume_recovering = False
+
+            worker = threading.Thread(
+                target=recover_once,
+                daemon=True,
+                name="ResumeSync",
+            )
+            self._resume_recovery_thread = worker
+            worker.start()
 
     def _recover_after_resume(self) -> bool:
         """Retry wake/state recovery while USB is settling after resume."""
