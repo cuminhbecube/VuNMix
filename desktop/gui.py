@@ -141,8 +141,33 @@ class SettingsDialog:
         self.initialize()
         if threading.get_ident() != self._ui_thread_id:
             raise RuntimeError("VuNMix Tk mainloop must run on its owning thread")
-        log.info("Starting Tk UI loop on MainThread")
-        self._window.mainloop()
+
+        # Tk's mainloop can occasionally return after a Windows power/display
+        # transition even though VuNMix did not request shutdown. Treat that as
+        # a recoverable loop exit so sleeping the PC cannot silently terminate
+        # the desktop companion.
+        while self._window is not None:
+            window = self._window
+            log.info("Starting Tk UI loop on MainThread")
+            window.mainloop()
+
+            if self._window is None:
+                break
+
+            try:
+                window_exists = bool(window.winfo_exists())
+            except tk.TclError:
+                window_exists = False
+
+            if not window_exists:
+                log.error("Tk root was destroyed without a VuNMix shutdown request")
+                self._window = None
+                break
+
+            log.warning(
+                "Tk UI loop returned without shutdown; restarting after power/display event"
+            )
+
         log.info("Tk UI loop stopped")
 
     def show(self):

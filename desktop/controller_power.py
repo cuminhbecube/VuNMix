@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import win32api
 import win32con
 import win32gui
+
+
+log = logging.getLogger(__name__)
 
 
 class PowerMonitor:
@@ -34,29 +38,59 @@ class PowerMonitor:
         except win32gui.error:
             pass
 
-        self.hwnd = win32gui.CreateWindow(
-            "VuNMixPowerMonitor",
-            "VuNMix Power Monitor",
-            0,
-            0,
-            0,
-            win32con.CW_USEDEFAULT,
-            win32con.CW_USEDEFAULT,
-            0,
-            0,
-            wc.hInstance,
-            None,
-        )
-        win32gui.PumpMessages()
+        try:
+            self.hwnd = win32gui.CreateWindow(
+                "VuNMixPowerMonitor",
+                "VuNMix Power Monitor",
+                0,
+                0,
+                0,
+                win32con.CW_USEDEFAULT,
+                win32con.CW_USEDEFAULT,
+                0,
+                0,
+                wc.hInstance,
+                None,
+            )
+            win32gui.PumpMessages()
+        except Exception:
+            # A power-notification helper must never take down the desktop app.
+            log.exception("Power monitor message loop failed")
+        finally:
+            self.hwnd = None
+
+    def _dispatch(self, callback, event_name: str):
+        """Run power callbacks outside the Win32 window procedure.
+
+        Windows expects WM_POWERBROADCAST handlers to return promptly. Serial
+        I/O or USB teardown during suspend can otherwise block/re-enter the
+        window procedure and destabilize the tray/Tk process.
+        """
+        if callback is None:
+            return
+
+        def invoke():
+            try:
+                callback()
+            except Exception:
+                log.exception("Power callback failed: %s", event_name)
+
+        threading.Thread(
+            target=invoke,
+            daemon=True,
+            name=f"Power-{event_name}",
+        ).start()
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
         if msg == win32con.WM_POWERBROADCAST:
             if wparam == win32con.PBT_APMSUSPEND:
-                if self.on_sleep:
-                    self.on_sleep()
-            elif wparam == win32con.PBT_APMRESUMEAUTOMATIC:
-                if self.on_resume:
-                    self.on_resume()
+                self._dispatch(self.on_sleep, "Suspend")
+            elif wparam in {
+                win32con.PBT_APMRESUMEAUTOMATIC,
+                getattr(win32con, "PBT_APMRESUMESUSPEND", 0x0007),
+                getattr(win32con, "PBT_APMRESUMECRITICAL", 0x0006),
+            }:
+                self._dispatch(self.on_resume, "Resume")
         elif msg == win32con.WM_CLOSE:
             win32gui.DestroyWindow(hwnd)
             return 0

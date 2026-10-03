@@ -84,9 +84,11 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
     def start(self):
         """Start serial transport and the normal synchronization workers."""
         log.info("AppController starting...")
+        # Mark the controller alive before subscribing to power events. A
+        # resume broadcast can arrive immediately after monitor creation.
+        self._running = True
         if self._power_monitor is None:
             self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
-        self._running = True
         self.serial.start()
 
         self._sync_thread = threading.Thread(

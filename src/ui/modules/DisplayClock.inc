@@ -77,9 +77,17 @@
                 lv_obj_align(s_clockBrand, LV_ALIGN_TOP_MID, 0, 16);
             } else if (clockStyle == 2) {
                 // Split-flap inspired layout, adapted to a small 320x240 TFT.
+                // The 90px DSEG font advances about 73px per digit, so a
+                // two-digit label needs ~147px. Keep each card wide enough to
+                // contain the full glyphs instead of letting them bleed into
+                // the colon / neighboring card.
+                constexpr lv_coord_t kFlipCardWidth = 148;
+                constexpr lv_coord_t kFlipCardHeight = 126;
+                constexpr lv_coord_t kFlipCardOffset = 78;
+
                 lv_obj_t* hourCard = lv_obj_create(s_clockPanel);
-                lv_obj_set_size(hourCard, 118, 126);
-                lv_obj_align(hourCard, LV_ALIGN_CENTER, -66, -4);
+                lv_obj_set_size(hourCard, kFlipCardWidth, kFlipCardHeight);
+                lv_obj_align(hourCard, LV_ALIGN_CENTER, -kFlipCardOffset, -4);
                 lv_obj_set_style_bg_color(hourCard, lv_color_hex(0x1B1B1E), LV_PART_MAIN);
                 lv_obj_set_style_bg_opa(hourCard, LV_OPA_COVER, LV_PART_MAIN);
                 lv_obj_set_style_border_width(hourCard, 1, LV_PART_MAIN);
@@ -89,8 +97,8 @@
                 lv_obj_clear_flag(hourCard, LV_OBJ_FLAG_SCROLLABLE);
 
                 lv_obj_t* minuteCard = lv_obj_create(s_clockPanel);
-                lv_obj_set_size(minuteCard, 118, 126);
-                lv_obj_align(minuteCard, LV_ALIGN_CENTER, 66, -4);
+                lv_obj_set_size(minuteCard, kFlipCardWidth, kFlipCardHeight);
+                lv_obj_align(minuteCard, LV_ALIGN_CENTER, kFlipCardOffset, -4);
                 lv_obj_set_style_bg_color(minuteCard, lv_color_hex(0x1B1B1E), LV_PART_MAIN);
                 lv_obj_set_style_bg_opa(minuteCard, LV_OPA_COVER, LV_PART_MAIN);
                 lv_obj_set_style_border_width(minuteCard, 1, LV_PART_MAIN);
@@ -112,7 +120,7 @@
                 lv_obj_t* flipCards[2] = {hourCard, minuteCard};
                 for (uint8_t i = 0; i < 2; ++i) {
                     lv_obj_t* split = lv_obj_create(flipCards[i]);
-                    lv_obj_set_size(split, 112, 2);
+                    lv_obj_set_size(split, kFlipCardWidth - 6, 2);
                     lv_obj_center(split);
                     lv_obj_set_style_bg_color(split, lv_color_hex(0x08080A), LV_PART_MAIN);
                     lv_obj_set_style_bg_opa(split, LV_OPA_COVER, LV_PART_MAIN);
