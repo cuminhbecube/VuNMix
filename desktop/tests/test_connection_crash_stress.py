@@ -863,7 +863,7 @@ class UiFreezeRegressionTests(unittest.TestCase):
         source = (DESKTOP_DIR / "audio_automation_controller.py").read_text(
             encoding="utf-8"
         )
-        start = source.index("    def _automation_loop(self):")
+        start = source.index("    def _automation_loop(")
         block = source[start:]
         self.assertIn("comtypes.CoInitialize()", block)
         self.assertIn("comtypes.CoUninitialize()", block)
