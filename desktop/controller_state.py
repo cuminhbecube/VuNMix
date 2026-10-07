@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 from app_icon import app_icon_rgb565
@@ -404,7 +405,30 @@ class HardwareStateMixin:
         self._sent_icon_ids.add(app_id)
         order.append(app_id)
         if len(order) > 8:
-            self._sent_icon_ids.discard(order.pop(0))
+            evicted = order.pop(0)
+            self._sent_icon_ids.discard(evicted)
+            if evicted == getattr(self, "_last_artwork_target", 0):
+                self._last_artwork_key = ""
+
+    def _clear_sent_icons(self):
+        self._sent_icon_ids.clear()
+        getattr(self, "_sent_icon_order", []).clear()
+        if hasattr(self, "_last_artwork_key"):
+            self._last_artwork_key = ""
+
+    def _send_cached_icon(self, app_id, data, *, only_if_missing=False):
+        lock = getattr(self, "_icon_cache_lock", None)
+        if lock is None:
+            lock = self._icon_cache_lock = threading.RLock()
+        # Include bookkeeping in the serialized wire transaction, so artwork
+        # and normal icon senders cannot disagree about FIFO insertion order.
+        with lock:
+            if only_if_missing and app_id in self._sent_icon_ids:
+                return True
+            if not self.serial.send_app_icon(app_id, data):
+                return False
+            self._remember_sent_icon(app_id)
+            return True
 
     def _send_app_icon_if_needed(self, mode: int, item):
         if mode not in (DisplayMode.MODE_APPLICATION, DisplayMode.MODE_GAME):
@@ -413,7 +437,6 @@ class HardwareStateMixin:
             return
         try:
             data = app_icon_rgb565(item.name, getattr(item, "_process_path", ""))
-            if self.serial.send_app_icon(item.id, data):
-                self._remember_sent_icon(item.id)
+            self._send_cached_icon(item.id, data, only_if_missing=True)
         except Exception:
             log.debug("Failed to send app icon for %s", item.name, exc_info=True)

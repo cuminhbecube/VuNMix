@@ -255,8 +255,14 @@ class DeviceLifecycleMixin:
             self._handshake_watchdog_timer = None
             if watchdog is not None:
                 watchdog.cancel()
-            self._sent_icon_ids.clear()
             self._session_info = SessionInfo()
+        # Avoid connection-lock -> icon-lock inversion during a failed write.
+        lock = getattr(self, "_icon_cache_lock", None)
+        if lock is not None:
+            with lock:
+                self._clear_sent_icons()
+        else:
+            self._sent_icon_ids.clear()
         self._notify_connection_changed(False)
 
     def _on_version(self, version: str):

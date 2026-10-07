@@ -87,6 +87,17 @@ class MediaControllerTests(unittest.TestCase):
             backend="smtc",
         )
 
+    def test_unchanged_artwork_is_resent_after_fifo_eviction(self):
+        controller = self._controller(self._snapshot())
+        self.assertTrue(controller._send_artwork_once())
+        for identifier in range(1, 9):
+            controller._send_cached_icon(identifier, b"process-icon")
+        self.assertNotIn(42, controller._sent_icon_ids)
+        controller._last_artwork_send_at = -1e12
+        self.assertTrue(controller._send_artwork_once())
+        self.assertEqual(controller.serial.calls[-1][0], 42)
+        self.assertEqual(controller.serial.calls[-1][1], controller.media_service.snapshot.artwork_rgb565)
+
     def test_artwork_targets_media_app_and_same_digest_is_not_resent(self):
         controller = self._controller(self._snapshot())
 

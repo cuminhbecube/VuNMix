@@ -57,6 +57,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._handshake_in_progress = False
         self._handshake_watchdog_timer: Optional[threading.Timer] = None
         self._sent_icon_ids = set()
+        self._icon_cache_lock = threading.RLock()
         self._connection_lock = threading.RLock()
 
         # SESSION_INFO and CURRENT_SESSION are one logical selection. SerialRead

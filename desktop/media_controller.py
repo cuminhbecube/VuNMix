@@ -98,8 +98,7 @@ class MediaAppController(ProfileAppController):
             if not item:
                 return
             data = app_icon_rgb565(item.name, getattr(item, "_process_path", ""))
-            if self.serial.send_app_icon(app_id, data):
-                self._remember_sent_icon(app_id)
+            self._send_cached_icon(app_id, data)
         except Exception:
             log.debug("Failed to restore process icon id=%d", app_id, exc_info=True)
 
@@ -132,7 +131,7 @@ class MediaAppController(ProfileAppController):
         # SerialService.send_app_icon limits chunks to 60 bytes and serializes
         # the complete metadata+chunk transaction. 512 bytes means nine chunk
         # frames, and only a new artwork digest/target reaches this path.
-        if not self.serial.send_app_icon(target, snapshot.artwork_rgb565, width=16, height=16):
+        if not self._send_cached_icon(target, snapshot.artwork_rgb565):
             return False
 
         self._last_artwork_key = snapshot.artwork_key
@@ -141,7 +140,6 @@ class MediaAppController(ProfileAppController):
         self._artwork_send_count += 1
         # Prevent the normal app-icon sender from overwriting the fresh album
         # cover on the next periodic session refresh.
-        self._remember_sent_icon(target)
         log.info(
             "Sent media artwork target=%d source=%s bytes=%d key=%s",
             target,
