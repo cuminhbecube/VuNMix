@@ -217,6 +217,8 @@ class AudioAutomationController(MediaAppController):
                         if self._duck_meters:
                             self._close_duck_meters()
                         trigger_levels = {}
+                    if stop.is_set():
+                        break
                     self.audio_automation.tick_ducking(trigger_levels, now)
 
                     if now >= next_routing:
