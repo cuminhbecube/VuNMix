@@ -1,11 +1,10 @@
-
     // =========================================================
     // CLOCK STANDBY SCREEN
-    // Styles: Neon Digital / Minimal / Flip Cards / Analog
+    // Styles: Neon / Minimal / Flip / Analog / Orbit / Binary / Terminal / Retro LCD
     // =========================================================
 
     void ClockScreen(uint8_t hour, uint8_t minute, uint8_t second) {
-        uint8_t clockStyle = g_Settings.clockStyle <= 3 ? g_Settings.clockStyle : 0;
+        uint8_t clockStyle = g_Settings.clockStyle < CLOCK_STYLE_COUNT ? g_Settings.clockStyle : 0;
 
         // Rebuild the clock when entering standby or when Desktop changes the
         // selected style while the clock is already visible.
@@ -13,11 +12,12 @@
             FullReset();
             s_currentScreen = ScreenType::CLOCK;
             s_clockStyleBuilt = clockStyle;
-            s_lastClockSec = 255;
+            s_lastClockTime = UINT32_MAX;
         }
 
         if (!s_clockPanel) {
-            uint32_t bgColor = clockStyle == 0 ? 0x000000
+            uint32_t bgColor = clockStyle >= 4 ? ExtraClockBackground(clockStyle)
+                              : clockStyle == 0 ? 0x000000
                               : clockStyle == 2 ? 0x0B0B0D
                               : clockStyle == 3 ? 0x090B10
                                                 : COL_BG;
@@ -146,7 +146,7 @@
                 lv_obj_set_style_text_letter_space(s_clockBrand, 2, LV_PART_MAIN);
                 lv_label_set_text(s_clockBrand, "FLIP CLOCK");
                 lv_obj_align(s_clockBrand, LV_ALIGN_TOP_MID, 0, 12);
-            } else {
+            } else if (clockStyle == 3) {
                 // Analog face uses LVGL meter ticks/needles, so no bitmap assets
                 // or extra font memory is required.
                 s_clockMeter = lv_meter_create(s_clockPanel);
@@ -183,12 +183,15 @@
                 lv_obj_set_style_text_color(s_clockBrand, lv_color_hex(0x7D8590), LV_PART_MAIN);
                 lv_obj_set_style_text_letter_space(s_clockBrand, 2, LV_PART_MAIN);
                 lv_label_set_text(s_clockBrand, "VUNMIX  ANALOG");
-                lv_obj_align(s_clockBrand, LV_ALIGN_BOTTOM_MID, 0, -7);
+                lv_obj_align(s_clockBrand, LV_ALIGN_BOTTOM_MID, 0, -7);            } else {
+                BuildExtraClock(clockStyle);
+
             }
         }
 
-        if (second != s_lastClockSec) {
-            s_lastClockSec = second;
+        const uint32_t clockTime = uint32_t(hour) * 3600U + uint32_t(minute) * 60U + second;
+        if (clockTime != s_lastClockTime) {
+            s_lastClockTime = clockTime;
 
             char bufH[4];
             char bufM[4];
@@ -215,6 +218,8 @@
                 lv_label_set_text(s_clockSec, bufM);
                 snprintf(bufSecond, sizeof(bufSecond), "SECONDS  %02u", second);
                 lv_label_set_text(s_clockSecond, bufSecond);
+            } else if (clockStyle >= 4) {
+                UpdateExtraClock(clockStyle, hour, minute, second, bufHM);
             } else if (s_clockMeter && s_clockHourHand && s_clockMinuteHand && s_clockSecondHand) {
                 uint8_t hourValue = (uint8_t)(((hour % 12U) * 5U) + (minute / 12U));
                 lv_meter_set_indicator_value(s_clockMeter, s_clockHourHand, hourValue);

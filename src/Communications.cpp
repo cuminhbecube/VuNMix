@@ -124,7 +124,7 @@ namespace Communications
             memcpy(&settings, payload, sizeof(DeviceSettings));
             settings.accelerationPercentage = min((uint8_t)100, settings.accelerationPercentage);
             if (settings.standbyLedMode > 16) settings.standbyLedMode = 0;
-            if (settings.clockStyle > 3) settings.clockStyle = 0;
+            if (settings.clockStyle >= CLOCK_STYLE_COUNT) settings.clockStyle = 0;
             g_Settings = settings;
         }
         else if (command == Command::SESSION_INFO)

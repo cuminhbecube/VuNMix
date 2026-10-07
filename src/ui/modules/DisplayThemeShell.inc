@@ -12,7 +12,9 @@
     static lv_meter_indicator_t* s_clockMinuteHand = nullptr;
     static lv_meter_indicator_t* s_clockSecondHand = nullptr;
     static uint8_t   s_clockStyleBuilt = 255;
-    static uint8_t   s_lastClockSec = 255;
+    static uint32_t  s_lastClockTime = UINT32_MAX;
+    static lv_obj_t* s_clockProgress = nullptr;
+    static lv_obj_t* s_clockBinary[3][6] = {};
 
     // =========================================================
     // Helpers

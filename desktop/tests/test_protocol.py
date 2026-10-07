@@ -101,11 +101,30 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(unpacked.clock_style, int(ClockStyle.ANALOG))
         self.assertEqual(len(settings.pack()), 19)
 
+    def test_all_eight_clock_styles_roundtrip_without_changing_led_bits(self):
+        self.assertEqual(len(CLOCK_STYLE_NAMES), 8)
+        for style in ClockStyle:
+            for led in StandbyLedMode:
+                with self.subTest(style=style, led=led):
+                    settings = DeviceSettings(clock_style=int(style), standby_led_mode=int(led))
+                    packed = settings.pack()
+                    self.assertEqual(len(packed), 19)
+                    unpacked = DeviceSettings.unpack(packed)
+                    self.assertEqual(unpacked.clock_style, int(style))
+                    self.assertEqual(unpacked.standby_led_mode, int(led))
+        for style in ClockStyle:
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(pathlib.Path(directory) / "settings.json")
+                config = AppConfig()
+                config.device_settings.clock_style = int(style)
+                config.save(path)
+                self.assertEqual(AppConfig.load(path).device_settings.clock_style, int(style))
+
     def test_clock_style_defaults_and_clamps(self):
         self.assertEqual(CLOCK_STYLE_NAMES[0], "Neon Digital")
         self.assertEqual(DeviceSettings.from_config({}).clock_style, int(ClockStyle.NEON_DIGITAL))
         settings = DeviceSettings.from_config({"clock_style": 99})
-        self.assertEqual(settings.clock_style, int(ClockStyle.ANALOG))
+        self.assertEqual(settings.clock_style, int(ClockStyle.RETRO_LCD))
 
     def test_meter_levels_are_clamped(self):
         packed = MeterData(current=150, alternate=-4).pack()
