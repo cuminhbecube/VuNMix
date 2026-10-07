@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "release/v*"
+      - "fix/**"
     tags: ["v*"]
   pull_request:
     branches: [main]

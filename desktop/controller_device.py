@@ -145,58 +145,34 @@ class DeviceLifecycleMixin:
             ):
                 return
             current = getattr(self, "_initial_sync_thread", None)
-            current_token = getattr(self, "_initial_sync_token", 0)
-            if (
-                current is not None
-                and current.is_alive()
-                and current_token == token
-            ):
-                return
             self._initial_sync_token = token
+            if current is not None and current.is_alive():
+                return
 
-        def sync_once():
-            comtypes.CoInitialize()
-            try:
-                self.audio.refresh()
-                with self._connection_lock:
-                    current_link = (
-                        token == self._handshake_token
-                        and self._device_connected
-                        and self.serial.is_connected
-                    )
-                if not current_link:
-                    return
-
-                if not self._push_full_state(DisplayMode.MODE_OUTPUT):
-                    log.warning(
-                        "Initial audio state transfer incomplete; connection stays alive"
-                    )
-                    return
-
-                log.info(
-                    "Initial state sent: output=%d input=%d apps=%d",
-                    self.audio.get_session_count(DisplayMode.MODE_OUTPUT),
-                    self.audio.get_session_count(DisplayMode.MODE_INPUT),
-                    self.audio.get_session_count(DisplayMode.MODE_APPLICATION),
-                )
-            except Exception:
-                # Audio state is secondary to transport health. A bad/hung
-                # Windows endpoint must not tear down a verified USB link.
-                log.exception("Initial audio state sync failed")
-            finally:
-                comtypes.CoUninitialize()
-                with self._connection_lock:
-                    if getattr(self, "_initial_sync_token", 0) == token:
+            def sync_once():
+                comtypes.CoInitialize()
+                try:
+                    self.audio.refresh()
+                    # One blocked enumeration serves the latest connection.
+                    with self._connection_lock:
+                        current_link = (
+                            self._initial_sync_token == self._handshake_token
+                            and self._device_connected and self.serial.is_connected
+                        )
+                    if current_link:
+                        if not self._push_full_state(DisplayMode.MODE_OUTPUT):
+                            log.warning("Initial audio state transfer incomplete")
+                except Exception:
+                    log.exception("Initial audio state sync failed")
+                finally:
+                    comtypes.CoUninitialize()
+                    with self._connection_lock:
                         self._initial_sync_token = 0
+                        self._initial_sync_thread = None
 
-        worker = threading.Thread(
-            target=sync_once,
-            daemon=True,
-            name="DeviceInitialSync",
-        )
-        with self._connection_lock:
+            worker = threading.Thread(target=sync_once, daemon=True, name="DeviceInitialSync")
             self._initial_sync_thread = worker
-        worker.start()
+            worker.start()
 
     def _complete_handshake(self, token: int):
         def link_is_current() -> bool:
@@ -279,8 +255,14 @@ class DeviceLifecycleMixin:
             self._handshake_watchdog_timer = None
             if watchdog is not None:
                 watchdog.cancel()
-            self._sent_icon_ids.clear()
             self._session_info = SessionInfo()
+        # Avoid connection-lock -> icon-lock inversion during a failed write.
+        lock = getattr(self, "_icon_cache_lock", None)
+        if lock is not None:
+            with lock:
+                self._clear_sent_icons()
+        else:
+            self._sent_icon_ids.clear()
         self._notify_connection_changed(False)
 
     def _on_version(self, version: str):

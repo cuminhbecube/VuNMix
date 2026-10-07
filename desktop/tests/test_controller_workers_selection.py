@@ -40,7 +40,7 @@ class _Audio:
     def get_sessions_for_mode(self, mode):
         return list(self.items)
 
-    def read_current_volume(self, mode, index):
+    def read_current_volume(self, mode, index, *, expected_item=None):
         self.read_indices.append((mode, index))
         if self.on_read:
             self.on_read()

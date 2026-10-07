@@ -9,6 +9,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -117,6 +118,7 @@ class AudioAutomationService:
         self.audio = audio_service
         self.path = path or AUTOMATION_FILE
         self._lock = threading.RLock()
+        self._last_saved_payload = None
         self.routing_enabled = True
         self.ducking_enabled = True
         self.routing_rules: List[RoutingRule] = []
@@ -164,6 +166,8 @@ class AudioAutomationService:
                 pass
 
     def save(self) -> None:
+        # Serialize snapshots and atomic replacements; concurrent UI edits must
+        # never be overwritten by an older automation-worker snapshot.
         with self._lock:
             payload = {
                 "version": CONFIG_VERSION,
@@ -173,22 +177,21 @@ class AudioAutomationService:
                 "ducking_rules": [asdict(rule) for rule in self.ducking_rules],
                 "recovery": copy.deepcopy(self._recovery),
             }
-
-        directory = os.path.dirname(os.path.abspath(self.path))
-        os.makedirs(directory, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix="audio-automation-", suffix=".tmp", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, ensure_ascii=False, sort_keys=True)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, self.path)
-        finally:
-            if os.path.exists(tmp):
-                try:
+            if payload == self._last_saved_payload and os.path.exists(self.path):
+                return
+            directory = os.path.dirname(os.path.abspath(self.path))
+            os.makedirs(directory, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix="audio-automation-", suffix=".tmp", dir=directory)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, indent=2, ensure_ascii=False, sort_keys=True)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, self.path)
+                self._last_saved_payload = payload
+            finally:
+                if os.path.exists(tmp):
                     os.unlink(tmp)
-                except OSError:
-                    pass
 
     def set_routing_enabled(self, enabled: bool) -> None:
         with self._lock:
@@ -333,14 +336,46 @@ class AudioAutomationService:
         return f"app:{path or name}"
 
     def _write_recovery(self, state: _DuckTargetState) -> None:
+        record = {
+            "name": state.name,
+            "baseline_volume": state.baseline_volume,
+            "baseline_muted": state.baseline_muted,
+            "last_applied_volume": state.last_applied_volume,
+        }
         with self._lock:
-            self._recovery[state.key] = {
-                "name": state.name,
-                "baseline_volume": state.baseline_volume,
-                "baseline_muted": state.baseline_muted,
-                "last_applied_volume": state.last_applied_volume,
-            }
+            if self._recovery.get(state.key) == record:
+                return
+            self._recovery[state.key] = record
         self.save()
+
+    def _prune_missing_sessions(self, keys):
+        now = time.time()
+        changed = False
+        with self._lock:
+            for key in list(self._duck_states):
+                if key not in keys:
+                    self._duck_states.pop(key, None)
+            for key, record in list(self._recovery.items()):
+                if key in keys:
+                    if record.pop("missing_since", None) is not None:
+                        changed = True
+                    continue
+                if "missing_since" not in record:
+                    record["missing_since"] = now
+                    changed = True
+                since = record["missing_since"]
+                if now - float(since) >= 30.0:
+                    self._recovery.pop(key, None)
+                    changed = True
+            missing = sorted(
+                ((record.get("missing_since", now), key) for key, record in self._recovery.items()
+                 if key not in keys)
+            )
+            for _, key in missing[:-256]:
+                self._recovery.pop(key, None)
+                changed = True
+        if changed:
+            self.save()
 
     def _clear_recovery(self, key: str) -> None:
         with self._lock:
@@ -361,12 +396,15 @@ class AudioAutomationService:
         """
         apps = self.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
         by_key = {self._session_key(item): (index, item) for index, item in enumerate(apps)}
+        self._prune_missing_sessions(set(by_key))
         restored = 0
         changed = False
         with self._lock:
             recovery = copy.deepcopy(self._recovery)
 
         for key, record in recovery.items():
+            if key in self._duck_states:
+                continue
             found = by_key.get(key)
             if found is None:
                 continue
@@ -377,12 +415,10 @@ class AudioAutomationService:
                 baseline = _clamp_int(record.get("baseline_volume", current), 0, 100)
                 muted = bool(record.get("baseline_muted", getattr(item, "is_muted", False)))
                 try:
-                    self.audio.set_volume(
-                        DisplayMode.MODE_APPLICATION,
-                        index,
-                        baseline,
-                        muted,
-                    )
+                    if self.audio.set_volume(
+                        DisplayMode.MODE_APPLICATION, index, baseline, muted, expected_item=item,
+                    ) is False:
+                        continue
                     restored += 1
                 except Exception:
                     log.exception("Failed restoring duck recovery for %s", record.get("name", key))
@@ -455,6 +491,8 @@ class AudioAutomationService:
         )
 
     def tick_ducking(self, trigger_levels: Dict[str, float], now: float) -> int:
+        # A returning session must recover its old baseline before being ducked again.
+        self.recover_pending()
         apps = self.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
         with self._lock:
             rules = [copy.deepcopy(rule) for rule in self.ducking_rules if rule.enabled]
@@ -462,6 +500,7 @@ class AudioAutomationService:
         if not enabled:
             return self.restore_all_ducked(now)
 
+        self._prune_missing_sessions({self._session_key(item) for item in apps})
         changes = 0
         seen_keys = set()
         for index, item in enumerate(apps):
@@ -512,13 +551,20 @@ class AudioAutomationService:
                     now - state.phase_started_at,
                     state.phase_duration_s,
                 )
+                previous_applied = state.last_applied_volume
+                state.last_applied_volume = desired
+                self._write_recovery(state)
                 if int(getattr(item, "volume", desired)) != desired:
-                    self.audio.set_volume(
+                    if self.audio.set_volume(
                         DisplayMode.MODE_APPLICATION,
                         index,
                         desired,
                         bool(getattr(item, "is_muted", False)),
-                    )
+                        expected_item=item,
+                    ) is False:
+                        state.last_applied_volume = previous_applied
+                        self._write_recovery(state)
+                        continue
                     changes += 1
                 state.last_applied_volume = desired
                 self._write_recovery(state)
@@ -540,13 +586,20 @@ class AudioAutomationService:
                 now - state.phase_started_at,
                 state.phase_duration_s,
             )
+            previous_applied = state.last_applied_volume
+            state.last_applied_volume = desired
+            self._write_recovery(state)
             if int(getattr(item, "volume", desired)) != desired:
-                self.audio.set_volume(
+                if self.audio.set_volume(
                     DisplayMode.MODE_APPLICATION,
                     index,
                     desired,
                     state.baseline_muted,
-                )
+                    expected_item=item,
+                ) is False:
+                    state.last_applied_volume = previous_applied
+                    self._write_recovery(state)
+                    continue
                 changes += 1
             state.last_applied_volume = desired
             self._write_recovery(state)
@@ -558,14 +611,13 @@ class AudioAutomationService:
                 self._duck_states.pop(key, None)
                 self._clear_recovery(key)
 
-        # Sessions that disappear remain in the recovery journal. If they are
-        # still alive when VuNMix returns, recover_pending() restores only when
-        # their current volume still equals our last applied value.
+        # Missing sessions keep a bounded, short grace period for recovery.
         return changes
 
     def restore_all_ducked(self, now: float = 0.0) -> int:
         apps = self.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
         by_key = {self._session_key(item): (index, item) for index, item in enumerate(apps)}
+        self._prune_missing_sessions(set(by_key))
         restored = 0
         for key, state in list(self._duck_states.items()):
             found = by_key.get(key)
@@ -573,12 +625,11 @@ class AudioAutomationService:
                 continue
             index, item = found
             try:
-                self.audio.set_volume(
-                    DisplayMode.MODE_APPLICATION,
-                    index,
-                    state.baseline_volume,
-                    state.baseline_muted,
-                )
+                if self.audio.set_volume(
+                    DisplayMode.MODE_APPLICATION, index, state.baseline_volume,
+                    state.baseline_muted, expected_item=item,
+                ) is False:
+                    continue
                 restored += 1
                 self._duck_states.pop(key, None)
                 self._clear_recovery(key)

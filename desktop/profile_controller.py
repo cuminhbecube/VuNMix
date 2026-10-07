@@ -66,21 +66,14 @@ class ProfileAppController(DiagnosticAppController):
 
     def start(self):
         super().start()
-        self._profile_stop.clear()
-        if self._profile_thread is None or not self._profile_thread.is_alive():
-            self._profile_thread = threading.Thread(
-                target=self._profile_loop,
-                daemon=True,
-                name="AudioProfileSwitch",
-            )
-            self._profile_thread.start()
+        with self._worker_lock:
+            self._start_worker("_profile_thread", self._profile_loop, "AudioProfileSwitch")
 
     def stop(self):
         self._profile_stop.set()
-        if self._profile_thread and self._profile_thread.is_alive():
-            self._profile_thread.join(timeout=2.0)
-        self._profile_thread = None
         super().stop()
+        if self._profile_thread and self._profile_thread is not threading.current_thread():
+            self._profile_thread.join(timeout=2.0)
 
     @property
     def active_profile(self) -> str:
@@ -189,8 +182,9 @@ class ProfileAppController(DiagnosticAppController):
         except Exception:
             return []
 
-    def _profile_loop(self):
-        while not self._profile_stop.wait(0.75):
+    def _profile_loop(self, stop=None):
+        stop = stop or self._profile_stop
+        while not stop.wait(0.75):
             if not self.profile_service.auto_switch_enabled:
                 continue
             try:
@@ -201,7 +195,7 @@ class ProfileAppController(DiagnosticAppController):
                 )
                 now = time.monotonic()
                 ready = self._profile_debouncer.observe(candidate, now)
-                if ready and ready != self.active_profile:
+                if not stop.is_set() and ready and ready != self.active_profile:
                     if self.profile_service.apply_profile(ready, source="auto"):
                         self._profile_debouncer.mark_applied(ready, now)
             except Exception:

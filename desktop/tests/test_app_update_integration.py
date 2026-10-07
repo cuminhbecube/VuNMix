@@ -64,8 +64,8 @@ class AppUpdateIntegrationTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        heartbeat_start = source.index("    def _heartbeat_loop(self):")
-        heartbeat_end = source.index("\n    def _sync_loop(self):", heartbeat_start)
+        heartbeat_start = source.index("    def _heartbeat_loop(")
+        heartbeat_end = source.index("\n    def _sync_loop(", heartbeat_start)
         heartbeat_source = source[heartbeat_start:heartbeat_end]
         self.assertIn("last_ok_response", heartbeat_source)
         self.assertIn("send_command(Command.OK)", heartbeat_source)

@@ -314,6 +314,7 @@ class AudioProfileService:
             index,
             int(mix.get("volume", items[index].volume)),
             bool(mix.get("muted", items[index].is_muted)),
+            expected_item=items[index],
         )
 
     def apply_preset(self, name: str) -> bool:
@@ -340,6 +341,7 @@ class AudioProfileService:
                     index,
                     int(mix.get("volume", item.volume)),
                     bool(mix.get("muted", item.is_muted)),
+                    expected_item=item,
                 )
             with self._lock:
                 self.active_profile = name
