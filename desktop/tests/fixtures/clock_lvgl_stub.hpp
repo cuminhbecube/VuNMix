@@ -107,9 +107,9 @@ static void lv_obj_invalidate(lv_obj_t* o) { if(o->draw) { lv_event_t e{o}; o->d
 static void CheckDrawBounds(const lv_area_t* a) {
     assert(a->x1>=16 && a->x2<304 && a->y1>=42 && a->y2<198);
 }
-static void lv_draw_rect(const lv_area_t* a, lv_draw_ctx_t*, const lv_draw_rect_dsc_t*) { CheckDrawBounds(a); }
-static void lv_draw_label(const lv_area_t* a, lv_draw_ctx_t*, const lv_draw_label_dsc_t*, const char*, void*) { CheckDrawBounds(a); }
-static void lv_draw_line(const lv_point_t* a,const lv_point_t* b,lv_draw_ctx_t*,const lv_draw_line_dsc_t*) {
+static void lv_draw_rect(lv_draw_ctx_t*, const lv_draw_rect_dsc_t*, const lv_area_t* a) { CheckDrawBounds(a); }
+static void lv_draw_label(lv_draw_ctx_t*, const lv_draw_label_dsc_t*, const lv_area_t* a, const char*, void*) { CheckDrawBounds(a); }
+static void lv_draw_line(lv_draw_ctx_t*,const lv_draw_line_dsc_t*,const lv_point_t* a,const lv_point_t* b) {
     assert(a->x>=16 && a->x<304 && b->x>=16 && b->x<304);
     assert(a->y>=42 && a->y<198 && b->y>=42 && b->y<198);
 }

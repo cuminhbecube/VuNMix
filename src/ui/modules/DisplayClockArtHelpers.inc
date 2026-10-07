@@ -7,7 +7,7 @@
         lv_draw_rect_dsc_t dsc; lv_draw_rect_dsc_init(&dsc);
         dsc.bg_color = lv_color_hex(color); dsc.bg_opa = LV_OPA_COVER;
         dsc.radius = radius;
-        lv_draw_rect(&area, ctx, &dsc);
+        lv_draw_rect(ctx, &dsc, &area);
     }
     static void ClockText(lv_draw_ctx_t* ctx, const lv_area_t& base, int x, int y,
                           int width, const char* text, const lv_font_t* font, uint32_t color) {
@@ -15,7 +15,7 @@
                           lv_coord_t(base.x1+x+width-1), lv_coord_t(base.y1+y+font->line_height-1)};
         lv_draw_label_dsc_t dsc; lv_draw_label_dsc_init(&dsc);
         dsc.font = font; dsc.color = lv_color_hex(color); dsc.align = LV_TEXT_ALIGN_CENTER;
-        lv_draw_label(&area, ctx, &dsc, text, nullptr);
+        lv_draw_label(ctx, &dsc, &area, text, nullptr);
     }
     static void ClockLine(lv_draw_ctx_t* ctx, const lv_area_t& base, int x1, int y1,
                           int x2, int y2, uint32_t color, int width = 2) {
@@ -23,7 +23,7 @@
         lv_point_t b = {lv_coord_t(base.x1+x2), lv_coord_t(base.y1+y2)};
         lv_draw_line_dsc_t dsc; lv_draw_line_dsc_init(&dsc);
         dsc.color = lv_color_hex(color); dsc.width = width;
-        lv_draw_line(&a, &b, ctx, &dsc);
+        lv_draw_line(ctx, &dsc, &a, &b);
     }
     static const uint8_t kClockDigits[10][7] = {
         {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
