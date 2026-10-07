@@ -752,6 +752,8 @@ class AppStartStopStressTests(unittest.TestCase):
     def test_start_is_idempotent_and_does_not_duplicate_sync_workers(self):
         controller = AppController.__new__(AppController)
         controller._running = False
+        controller._worker_lock = threading.RLock()
+        controller._worker_stop = threading.Event()
         controller._power_monitor = None
         controller.serial = CountingService()
         controller.weather_service = CountingService()

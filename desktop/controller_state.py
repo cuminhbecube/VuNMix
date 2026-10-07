@@ -204,7 +204,10 @@ class HardwareStateMixin:
             return False
 
         mode, items, win_idx = resolved
-        self.audio.set_volume(mode, win_idx, vol.volume, vol.is_muted)
+        if self.audio.set_volume(
+            mode, win_idx, vol.volume, vol.is_muted, expected_item=items[win_idx]
+        ) is False:
+            return False
         log.info(
             "Applied vol=%s%% muted=%s to %s",
             vol.volume,
@@ -213,7 +216,7 @@ class HardwareStateMixin:
         )
 
         if vol.is_default and not items[win_idx].is_default:
-            self.audio.set_default_device(mode, win_idx)
+            self.audio.set_default_device(mode, win_idx, expected_item=items[win_idx])
             self._handle_session_info_from_hw(self._session_info)
 
         return True
@@ -390,6 +393,19 @@ class HardwareStateMixin:
 
         return True
 
+    def _remember_sent_icon(self, app_id):
+        order = getattr(self, "_sent_icon_order", None)
+        if order is None:
+            order = self._sent_icon_order = []
+        if not self._sent_icon_ids:
+            order.clear()
+        if app_id in self._sent_icon_ids:
+            return
+        self._sent_icon_ids.add(app_id)
+        order.append(app_id)
+        if len(order) > 8:
+            self._sent_icon_ids.discard(order.pop(0))
+
     def _send_app_icon_if_needed(self, mode: int, item):
         if mode not in (DisplayMode.MODE_APPLICATION, DisplayMode.MODE_GAME):
             return
@@ -398,6 +414,6 @@ class HardwareStateMixin:
         try:
             data = app_icon_rgb565(item.name, getattr(item, "_process_path", ""))
             if self.serial.send_app_icon(item.id, data):
-                self._sent_icon_ids.add(item.id)
+                self._remember_sent_icon(item.id)
         except Exception:
             log.debug("Failed to send app icon for %s", item.name, exc_info=True)

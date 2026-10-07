@@ -35,6 +35,24 @@ class EndpointMemoryTests(unittest.TestCase):
         volume.SetMute.assert_called_once_with(True, None)
         enumerator.GetDevice.return_value.Activate.return_value.QueryInterface.assert_called_with(IAudioEndpointVolume)
 
+    def test_volume_targets_captured_endpoint_after_list_reorder(self):
+        service = AudioService()
+        selected = AudioItem(1, "A", 80, False, _device_id="endpoint-A")
+        other = AudioItem(2, "B", 50, False, _device_id="endpoint-B")
+        service._output_devices = [other, selected]
+        volume = mock.Mock()
+        with mock.patch.object(service, "_endpoint_volume", return_value=volume) as endpoint:
+            self.assertTrue(service.set_volume(DisplayMode.MODE_OUTPUT, 0, 25, True, expected_item=selected))
+            endpoint.assert_called_once_with("endpoint-A")
+        self.assertEqual(other.volume, 50)
+        service._output_devices = [other]
+        with mock.patch.object(service, "_endpoint_volume") as endpoint:
+            self.assertFalse(service.set_volume(DisplayMode.MODE_OUTPUT, 0, 10, False, expected_item=selected))
+            self.assertIsNone(service.read_current_volume(DisplayMode.MODE_OUTPUT, 0, expected_item=selected))
+            self.assertIsNone(service.create_peak_meter(DisplayMode.MODE_OUTPUT, 0, expected_item=selected))
+            self.assertFalse(service.set_default_device(DisplayMode.MODE_OUTPUT, 0, expected_item=selected))
+            endpoint.assert_not_called()
+
     def test_output_meter_only_opens_selected_endpoint(self):
         service = AudioService()
         service._output_devices = [AudioItem(7, "Speaker", 0, False, _device_id="selected")]

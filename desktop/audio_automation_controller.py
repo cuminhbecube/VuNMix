@@ -43,14 +43,8 @@ class AudioAutomationController(MediaAppController):
 
     def start(self):
         super().start()
-        self._automation_stop.clear()
-        if self._automation_thread is None or not self._automation_thread.is_alive():
-            self._automation_thread = threading.Thread(
-                target=self._automation_loop,
-                daemon=True,
-                name="AudioRoutingDucking",
-            )
-            self._automation_thread.start()
+        with self._worker_lock:
+            self._start_worker("_automation_thread", self._automation_loop, "AudioRoutingDucking")
 
     def _cleanup_audio_automation_after_stop(self):
         """Best-effort cleanup that is never allowed to block app shutdown."""
@@ -68,31 +62,23 @@ class AudioAutomationController(MediaAppController):
     def stop(self):
         self._automation_stop.set()
         automation_thread = self._automation_thread
-        if automation_thread and automation_thread.is_alive():
-            automation_thread.join(timeout=0.75)
-
-        automation_stopped = (
-            automation_thread is None or not automation_thread.is_alive()
-        )
-        if automation_stopped:
-            self._automation_thread = None
-            # Windows audio cleanup can itself enter a slow native COM call.
-            # Keep it daemonized so Disconnect/COM-port changes and app exit
-            # cannot freeze the Tk process while waiting for WASAPI.
-            threading.Thread(
-                target=self._cleanup_audio_automation_after_stop,
-                daemon=True,
-                name="AudioAutomationCleanup",
-            ).start()
-        else:
-            # Keep the reference. start() will not spawn a duplicate worker if
-            # this native call later returns during a controller restart.
-            log.warning(
-                "Audio automation worker did not stop promptly; "
-                "skipping synchronous COM cleanup"
-            )
-
         super().stop()
+        if automation_thread is not None:
+            if automation_thread is not threading.current_thread():
+                automation_thread.join(timeout=0.75)
+            return
+        # Also support cleanup before start; coalesce repeated stop requests.
+        cleanup = getattr(self, "_automation_cleanup_thread", None)
+        if cleanup is None or not cleanup.is_alive():
+            def clean():
+                comtypes.CoInitialize()
+                try:
+                    self._cleanup_audio_automation_after_stop()
+                finally:
+                    comtypes.CoUninitialize()
+            cleanup = threading.Thread(target=clean, daemon=True, name="AudioAutomationCleanup")
+            self._automation_cleanup_thread = cleanup
+            cleanup.start()
 
     @property
     def routing_enabled(self) -> bool:
@@ -188,7 +174,7 @@ class AudioAutomationController(MediaAppController):
         for index, item in selected:
             key = self.audio_automation._session_key(item)
             try:
-                meter = self.audio.create_peak_meter(DisplayMode.MODE_APPLICATION, index)
+                meter = self.audio.create_peak_meter(DisplayMode.MODE_APPLICATION, index, expected_item=item)
             except Exception:
                 meter = None
             if meter is not None:
@@ -205,7 +191,11 @@ class AudioAutomationController(MediaAppController):
             levels[self._duck_meter_names.get(key, key)] = max(0.0, min(1.0, float(level)))
         return levels
 
-    def _automation_loop(self):
+    def _automation_loop(self, stop=None):
+        stop = stop or self._automation_stop
+        cleanup = getattr(self, "_automation_cleanup_thread", None)
+        if cleanup is not None and cleanup is not threading.current_thread():
+            cleanup.join()
         # This worker creates/uses WASAPI meter COM interfaces directly.
         # Initialize one COM apartment for the lifetime of the thread so native
         # pycaw/comtypes calls cannot run on an uninitialized worker.
@@ -213,7 +203,7 @@ class AudioAutomationController(MediaAppController):
         try:
             next_routing = 0.0
             next_recovery = 0.0
-            while not self._automation_stop.wait(DUCKING_TICK_SECONDS):
+            while not stop.wait(DUCKING_TICK_SECONDS):
                 now = time.monotonic()
                 try:
                     if now >= next_recovery and self.audio_automation.has_pending_recovery():
@@ -239,5 +229,5 @@ class AudioAutomationController(MediaAppController):
                     log.exception("Audio routing/ducking iteration failed")
                     self._close_duck_meters()
         finally:
-            self._close_duck_meters()
+            self._cleanup_audio_automation_after_stop()
             comtypes.CoUninitialize()

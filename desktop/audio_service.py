@@ -172,13 +172,25 @@ class AudioService:
         interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         return interface.QueryInterface(IAudioEndpointVolume)
 
-    def set_volume(self, mode: int, index: int, volume: int, is_muted: bool):
+    def _selected_item(self, mode, index, expected_item=None):
+        items = self.get_sessions_for_mode(mode)
+        if expected_item is None:
+            return items[index] if 0 <= index < len(items) else None
+        device_id = getattr(expected_item, "_device_id", "")
+        session_id = getattr(expected_item, "_session_identifier", "")
+        for item in items:
+            if device_id and item._device_id == device_id:
+                return item
+            if not device_id and session_id and item._session_identifier == session_id:
+                return item
+        return None
+
+    def set_volume(self, mode: int, index: int, volume: int, is_muted: bool, *, expected_item=None):
         """Apply volume change from hardware to Windows audio."""
         with self._com_scope():
-            items = self.get_sessions_for_mode(mode)
-            if index < 0 or index >= len(items):
-                return
-            item = items[index]
+            item = self._selected_item(mode, index, expected_item)
+            if item is None:
+                return False
             vol_float = max(0.0, min(1.0, volume / 100.0))
 
             from pycaw.pycaw import AudioUtilities
@@ -190,6 +202,7 @@ class AudioService:
                         endpoint_vol.SetMute(is_muted, None)
                         item.volume = volume
                         item.is_muted = is_muted
+                        return True
                 except Exception as e:
                     log.error(f"Failed to set endpoint volume: {e}")
             elif item._process_id:
@@ -204,22 +217,23 @@ class AudioService:
                                     vol_interface.SetMute(is_muted, None)
                                     item.volume = volume
                                     item.is_muted = is_muted
+                                    return True
                                 break
                         except Exception:
                             pass
                 except Exception as e:
                     log.error(f"Failed to set session volume: {e}")
 
-    def set_default_device(self, mode: int, index: int):
+        return False
+
+    def set_default_device(self, mode: int, index: int, *, expected_item=None):
         """Mark a device as default and apply to Windows."""
         succeeded = False
         selected = None
         with self._com_scope():
-            items = self.get_sessions_for_mode(mode)
-            if index < 0 or index >= len(items) or not items[index]._device_id:
-                return
-
-            selected = items[index]
+            selected = self._selected_item(mode, index, expected_item)
+            if selected is None or not selected._device_id:
+                return False
             try:
                 CLSID_PolicyConfigClient = GUID('{870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}')
                 policyConfig = CoCreateInstance(CLSID_PolicyConfigClient, IPolicyConfig, CLSCTX_ALL)
@@ -236,6 +250,8 @@ class AudioService:
                 target = self._output_devices if mode == DisplayMode.MODE_OUTPUT else self._input_devices
                 for item in target:
                     item.is_default = item._device_id == selected._device_id
+
+        return succeeded
 
     def _refresh_output_devices(self):
         """Enumerate output audio devices."""
@@ -382,13 +398,12 @@ class AudioService:
         except Exception as e:
             log.error(f"Failed to enumerate app sessions: {e}")
 
-    def read_current_volume(self, mode: int, index: int) -> Optional[VolumeData]:
+    def read_current_volume(self, mode: int, index: int, *, expected_item=None) -> Optional[VolumeData]:
         """Read the current volume from Windows for a specific session."""
         with self._com_scope():
-            items = self.get_sessions_for_mode(mode)
-            if index < 0 or index >= len(items):
+            item = self._selected_item(mode, index, expected_item)
+            if item is None:
                 return None
-            item = items[index]
 
             from pycaw.pycaw import AudioUtilities
             if item._device_id:
@@ -419,13 +434,12 @@ class AudioService:
 
             return item.to_session_data().data
 
-    def create_peak_meter(self, mode: int, index: int):
+    def create_peak_meter(self, mode: int, index: int, *, expected_item=None):
         """Create an IAudioMeterInformation interface in the calling thread."""
         with self._com_lock:
-            items = self.get_sessions_for_mode(mode)
-            if index < 0 or index >= len(items):
+            item = self._selected_item(mode, index, expected_item)
+            if item is None:
                 return None
-            item = items[index]
 
             if item._device_id:
                 if mode == DisplayMode.MODE_INPUT:

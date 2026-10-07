@@ -74,6 +74,8 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._firmware_update_lock = threading.Lock()
         self._firmware_updating = False
         self._running = False
+        self._worker_lock = threading.RLock()
+        self._worker_stop = threading.Event()
         self._power_monitor: Optional[PowerMonitor] = None
         self._resume_recovery_thread: Optional[threading.Thread] = None
         self._resume_recovering = False
@@ -101,24 +103,14 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
             self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
         self.serial.start()
 
-        self._heartbeat_thread = threading.Thread(
-            target=self._heartbeat_loop,
-            daemon=True,
-            name="ProtocolHeartbeat",
-        )
-        self._heartbeat_thread.start()
-        self._sync_thread = threading.Thread(
-            target=self._sync_loop,
-            daemon=True,
-            name="AudioSync",
-        )
-        self._sync_thread.start()
-        self._meter_thread = threading.Thread(
-            target=self._meter_loop,
-            daemon=True,
-            name="AudioMeter",
-        )
-        self._meter_thread.start()
+        with self._worker_lock:
+            self._worker_stop = threading.Event()
+            for slot, target, name in (
+                ("_heartbeat_thread", self._heartbeat_loop, "ProtocolHeartbeat"),
+                ("_sync_thread", self._sync_loop, "AudioSync"),
+                ("_meter_thread", self._meter_loop, "AudioMeter"),
+            ):
+                self._start_worker(slot, target, name)
         self.weather_service.start()
         self.obs_service.start()
 
@@ -129,21 +121,38 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         # them blocked behind a transport or WASAPI call while new workers are
         # starting for the next connection generation.
         self._running = False
+        self._worker_stop.set()
         self.weather_service.stop()
         self.obs_service.stop()
         if self._power_monitor is not None:
             self._power_monitor.stop()
             self._power_monitor = None
         self.serial.stop()
-        if self._heartbeat_thread:
-            self._heartbeat_thread.join(timeout=1.0)
-            self._heartbeat_thread = None
-        if self._sync_thread:
-            self._sync_thread.join(timeout=3.0)
-            self._sync_thread = None
-        if self._meter_thread:
-            self._meter_thread.join(timeout=3.0)
-            self._meter_thread = None
+        for slot, timeout in (("_heartbeat_thread", 1.0), ("_sync_thread", 3.0), ("_meter_thread", 3.0)):
+            worker = getattr(self, slot)
+            if worker and worker is not threading.current_thread():
+                worker.join(timeout=timeout)
+            # Retain blocked workers: their finalizer starts the next generation.
+
+    def _start_worker(self, slot, target, name):
+        current = getattr(self, slot, None)
+        if current is not None and current.is_alive():
+            return
+        stop = self._worker_stop
+
+        def run():
+            try:
+                target(stop)
+            finally:
+                with self._worker_lock:
+                    if getattr(self, slot) is threading.current_thread():
+                        setattr(self, slot, None)
+                    if self._running and self._worker_stop is not stop:
+                        self._start_worker(slot, target, name)
+
+        worker = threading.Thread(target=run, daemon=True, name=name)
+        setattr(self, slot, worker)
+        worker.start()
 
     @property
     def is_connected(self) -> bool:
