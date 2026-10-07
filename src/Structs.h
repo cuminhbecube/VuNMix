@@ -88,15 +88,17 @@ struct __attribute__((__packed__)) TimeData
 };
 static_assert(sizeof(TimeData) == 3, "Invalid Expected Message Size");
 
-// Matches desktop.protocol.ClockStyle; all eight values fit the existing 3 bits.
-static constexpr uint8_t CLOCK_STYLE_COUNT = 8;
+// Low three style bits remain at byte 4; bit 1 of byte 3 extends IDs to 0-15.
+static constexpr uint8_t CLOCK_STYLE_COUNT = 16;
 
 struct __attribute__((__packed__)) DeviceSettings
 {
     uint16_t sleepAfterSeconds;         // 16 Bits
     uint8_t accelerationPercentage : 7; // 7 Bits
     bool continuousScroll : 1;          // 1 Bit
-    bool sleepEnabled;                  // 8 Bits (bool)
+    bool sleepEnabled : 1;             // Byte 3 bit 0 (legacy bool values 0/1)
+    uint8_t clockStyleHigh : 1;         // Byte 3 bit 1, new in v0.4.21
+    uint8_t reservedSettings : 6;       // Byte 3 bits 2-7, always zero
     uint8_t standbyLedMode : 5;         // Low 5 bits (0=ColorWave,...,16=LED Test)
     uint8_t clockStyle : 3;              // 0=Neon,1=Minimal,2=Flip,3=Analog,4=Orbit,5=Binary,6=Terminal,7=RetroLCD
     Color volumeMinColor;               // 24 Bits
@@ -107,11 +109,15 @@ struct __attribute__((__packed__)) DeviceSettings
     uint8_t clockStandbyMinutes;        // 8 Bits (0=disabled, default=10)
     // 19 bytes
 
-    DeviceSettings() : sleepAfterSeconds(300), accelerationPercentage(60), continuousScroll(true), sleepEnabled(true), standbyLedMode(0), clockStyle(0),
+    DeviceSettings() : sleepAfterSeconds(300), accelerationPercentage(60), continuousScroll(true), sleepEnabled(true), clockStyleHigh(0), reservedSettings(0), standbyLedMode(0), clockStyle(0),
                  volumeMinColor(0, 0, 255), volumeMaxColor(255, 0, 0), mixChannelAColor(0, 0, 255), mixChannelBColor(255, 0, 255),
                  ledBrightness(96), clockStandbyMinutes(10) {}
 };
 static_assert(sizeof(DeviceSettings) == 19, "Invalid Expected Message Size");
+
+static inline uint8_t GetClockStyle(const DeviceSettings& settings) {
+    return settings.clockStyle | (settings.clockStyleHigh << 3);
+}
 
 struct __attribute__((__packed__)) ModeStates
 {

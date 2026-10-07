@@ -101,8 +101,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(unpacked.clock_style, int(ClockStyle.ANALOG))
         self.assertEqual(len(settings.pack()), 19)
 
-    def test_all_eight_clock_styles_roundtrip_without_changing_led_bits(self):
-        self.assertEqual(len(CLOCK_STYLE_NAMES), 8)
+    def test_all_sixteen_clock_styles_roundtrip_without_changing_led_bits(self):
+        self.assertEqual(len(CLOCK_STYLE_NAMES), 16)
         for style in ClockStyle:
             for led in StandbyLedMode:
                 with self.subTest(style=style, led=led):
@@ -120,11 +120,24 @@ class ProtocolTests(unittest.TestCase):
                 config.save(path)
                 self.assertEqual(AppConfig.load(path).device_settings.clock_style, int(style))
 
+    def test_extended_clock_bit_preserves_sleep_and_legacy_settings(self):
+        for style in ClockStyle:
+            for sleep in (False, True):
+                settings = DeviceSettings(clock_style=int(style), sleep_enabled=sleep)
+                wire = settings.pack()
+                self.assertEqual(wire[3] & 1, int(sleep))
+                self.assertEqual(wire[3] & 2, 2 if int(style) >= 8 else 0)
+                self.assertEqual(DeviceSettings.unpack(wire).sleep_enabled, sleep)
+                legacy = settings.pack(legacy_clock_styles=True)
+                self.assertIn(legacy[3], (0, 1))
+                self.assertEqual(DeviceSettings.unpack(legacy).clock_style, int(style) if int(style) < 8 else 0)
+        self.assertEqual(DeviceSettings(clock_style=0).pack()[3], 1)
+
     def test_clock_style_defaults_and_clamps(self):
         self.assertEqual(CLOCK_STYLE_NAMES[0], "Neon Digital")
         self.assertEqual(DeviceSettings.from_config({}).clock_style, int(ClockStyle.NEON_DIGITAL))
         settings = DeviceSettings.from_config({"clock_style": 99})
-        self.assertEqual(settings.clock_style, int(ClockStyle.RETRO_LCD))
+        self.assertEqual(settings.clock_style, int(ClockStyle.MATH_CLOCK))
 
     def test_meter_levels_are_clamped(self):
         packed = MeterData(current=150, alternate=-4).pack()

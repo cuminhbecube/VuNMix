@@ -112,7 +112,7 @@ def _init_selection_state(controller):
 class PreferredSessionTests(unittest.TestCase):
     def test_incompatible_firmware_is_update_only(self):
         controller = AppController.__new__(AppController)
-        controller.serial = object()
+        controller.serial = types.SimpleNamespace()
         controller._connection_lock = threading.RLock()
         controller._device_connected = False
         controller._update_only_connected = False
@@ -125,7 +125,7 @@ class PreferredSessionTests(unittest.TestCase):
 
     def test_valid_version_waits_for_full_handshake_before_connected(self):
         controller = AppController.__new__(AppController)
-        controller.serial = object()
+        controller.serial = types.SimpleNamespace()
         controller._connection_lock = threading.RLock()
         controller._device_connected = False
         controller._update_only_connected = False
@@ -141,6 +141,16 @@ class PreferredSessionTests(unittest.TestCase):
         self.assertTrue(controller._handshake_in_progress)
         controller.on_connection_changed.assert_not_called()
         thread_cls.assert_called_once()
+
+    def test_extended_clocks_require_supported_firmware(self):
+        controller = AppController.__new__(AppController)
+        controller.serial = types.SimpleNamespace()
+        controller._connection_lock = threading.RLock()
+        controller._device_connected = True
+        for version, supported in (("v0.4.21", True), ("v0.5.0", True),
+                                   ("v0.4.20", False), ("ci-development", False)):
+            controller._on_version(f"{version};P=1")
+            self.assertEqual(controller.serial.extended_clock_styles_supported, supported)
 
     def test_peak_meter_db_mapping(self):
         self.assertEqual(AppController._peak_to_level(0.0), 0)

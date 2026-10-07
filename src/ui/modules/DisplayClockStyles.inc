@@ -1,6 +1,10 @@
     // Extra styles allocate widgets only when entering/changing the screen.
     // Tick updates reuse those objects; FullReset owns all child destruction.
     static uint32_t ExtraClockBackground(uint8_t style) {
+        if (style >= 8) {
+            const uint32_t colors[8] = {0x100C08,0x10171D,0x090E29,0x060806,0x111820,0x090F14,0x080F19,0x101018};
+            return colors[style-8];
+        }
         return style == 4 ? 0x080D19 : style == 5 ? 0x0A1015
              : style == 6 ? 0x030A05 : 0x17211C;
     }

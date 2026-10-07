@@ -108,6 +108,14 @@ class ClockStyle(IntEnum):
     BINARY       = 5
     TERMINAL     = 6
     RETRO_LCD    = 7
+    NIXIE        = 8
+    WORD_CLOCK   = 9
+    PIXEL_ART    = 10
+    DOT_MATRIX   = 11
+    CLOCKCLOCK   = 12
+    BARCODE      = 13
+    POLYGON      = 14
+    MATH_CLOCK   = 15
 
 
 CLOCK_STYLE_NAMES = [
@@ -119,6 +127,14 @@ CLOCK_STYLE_NAMES = [
     "Binary",
     "Terminal",
     "Retro LCD",
+    "Nixie",
+    "Word Clock",
+    "Pixel Art",
+    "Dot Matrix",
+    "ClockClock",
+    "Barcode",
+    "Polygon",
+    "Math Clock",
 ]
 
 # Binary frame:
@@ -384,7 +400,7 @@ class DeviceSettings:
     19 bytes:
       sleepAfterSeconds:      uint16
       accelerationPercentage: 7 bits | continuousScroll: 1 bit (MSB)
-      sleepEnabled:           uint8 (bool)
+      sleepEnabled:           bit 0 | clockStyle high bit: bit 1 (since 0.4.21)
       settingsByte:           standbyLedMode(5 bits) | clockStyle(3 bits)
       volumeMinColor:         Color (3 bytes)
       volumeMaxColor:         Color (3 bytes)
@@ -406,13 +422,15 @@ class DeviceSettings:
     led_brightness: int = 96
     clock_standby_minutes: int = 10  # 0=disabled
 
-    def pack(self) -> bytes:
+    def pack(self, *, legacy_clock_styles: bool = False) -> bytes:
         sleep_seconds = _clamp_int(self.sleep_after_seconds, 0, 65535)
         acceleration = _clamp_int(self.acceleration_percentage, 0, 100)
         byte2 = (acceleration & 0x7F) | (0x80 if self.continuous_scroll else 0)
-        byte3 = 1 if self.sleep_enabled else 0
         standby_mode = _clamp_int(self.standby_led_mode, 0, 31)
-        clock_style = _clamp_int(self.clock_style, 0, 7)
+        clock_style = _clamp_int(self.clock_style, 0, len(CLOCK_STYLE_NAMES) - 1)
+        if legacy_clock_styles and clock_style >= 8:
+            clock_style = 0
+        byte3 = int(bool(self.sleep_enabled)) | ((clock_style >> 3) << 1)
         byte4 = (standby_mode & 0x1F) | ((clock_style & 0x07) << 5)
         return struct.pack('<HBBB', sleep_seconds, byte2, byte3, byte4) + \
                self.volume_min_color.pack() + \
@@ -429,9 +447,9 @@ class DeviceSettings:
             sleep_after_seconds=sleep_secs,
             acceleration_percentage=byte2 & 0x7F,
             continuous_scroll=bool(byte2 & 0x80),
-            sleep_enabled=bool(byte3),
+            sleep_enabled=bool(byte3 & 1),
             standby_led_mode=byte4 & 0x1F,
-            clock_style=min((byte4 >> 5) & 0x07, len(CLOCK_STYLE_NAMES) - 1),
+            clock_style=min(((byte4 >> 5) & 0x07) | ((byte3 & 2) << 2), len(CLOCK_STYLE_NAMES) - 1),
             volume_min_color=Color.unpack(data[5:8]),
             volume_max_color=Color.unpack(data[8:11]),
             mix_channel_a_color=Color.unpack(data[11:14]),

@@ -24,7 +24,7 @@ except ModuleNotFoundError:
     sys.modules["serial.tools.list_ports"] = list_ports_stub
 
 from device_discovery import DeviceIdentity
-from protocol import Command
+from protocol import Command, DeviceSettings
 from serial_service import SerialService
 
 
@@ -63,6 +63,22 @@ class FakeSerial:
 
 
 class SerialServiceTests(unittest.TestCase):
+    def test_extended_clocks_fall_back_without_changing_sleep_or_leds(self):
+        service = SerialService.__new__(SerialService)
+        service.send_command = mock.Mock(return_value=True)
+        settings = DeviceSettings(clock_style=15, standby_led_mode=16, sleep_enabled=False)
+        for supported, expected_style in ((False, 0), (True, 15), (False, 0)):
+            service.extended_clock_styles_supported = supported
+            self.assertTrue(service.send_settings(settings))
+            command, payload = service.send_command.call_args.args
+            self.assertEqual(command, Command.SETTINGS)
+            self.assertEqual(len(payload), 19)
+            decoded = DeviceSettings.unpack(payload)
+            self.assertEqual(decoded.clock_style, expected_style)
+            self.assertEqual(decoded.standby_led_mode, 16)
+            self.assertFalse(decoded.sleep_enabled)
+        self.assertEqual(settings.clock_style, 15)
+
     def test_time_sync_uses_three_wire_bytes(self):
         service = SerialService(
             "COM_TEST",

@@ -9,6 +9,7 @@ from datetime import datetime
 
 import comtypes
 
+from app_updater import version_tuple
 from protocol import Command, DisplayMode, PROTOCOL_VERSION, SessionInfo
 
 
@@ -289,6 +290,10 @@ class DeviceLifecycleMixin:
             with self._connection_lock:
                 self._update_only_connected = True
             return
+        parsed_version = version_tuple(firmware_version)
+        self.serial.extended_clock_styles_supported = (
+            parsed_version is not None and parsed_version >= (0, 4, 21)
+        )
         log.info(
             "Firmware version: %s (protocol %d)",
             firmware_version,

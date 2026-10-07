@@ -4,7 +4,7 @@
     // =========================================================
 
     void ClockScreen(uint8_t hour, uint8_t minute, uint8_t second) {
-        uint8_t clockStyle = g_Settings.clockStyle < CLOCK_STYLE_COUNT ? g_Settings.clockStyle : 0;
+        uint8_t clockStyle = GetClockStyle(g_Settings) < CLOCK_STYLE_COUNT ? GetClockStyle(g_Settings) : 0;
 
         // Rebuild the clock when entering standby or when Desktop changes the
         // selected style while the clock is already visible.
@@ -183,7 +183,10 @@
                 lv_obj_set_style_text_color(s_clockBrand, lv_color_hex(0x7D8590), LV_PART_MAIN);
                 lv_obj_set_style_text_letter_space(s_clockBrand, 2, LV_PART_MAIN);
                 lv_label_set_text(s_clockBrand, "VUNMIX  ANALOG");
-                lv_obj_align(s_clockBrand, LV_ALIGN_BOTTOM_MID, 0, -7);            } else {
+                lv_obj_align(s_clockBrand, LV_ALIGN_BOTTOM_MID, 0, -7);
+            } else if (clockStyle >= 8) {
+                BuildArtClock(clockStyle);
+            } else {
                 BuildExtraClock(clockStyle);
 
             }
@@ -218,6 +221,8 @@
                 lv_label_set_text(s_clockSec, bufM);
                 snprintf(bufSecond, sizeof(bufSecond), "SECONDS  %02u", second);
                 lv_label_set_text(s_clockSecond, bufSecond);
+            } else if (clockStyle >= 8) {
+                UpdateArtClock(hour, minute, second);
             } else if (clockStyle >= 4) {
                 UpdateExtraClock(clockStyle, hour, minute, second, bufHM);
             } else if (s_clockMeter && s_clockHourHand && s_clockMinuteHand && s_clockSecondHand) {

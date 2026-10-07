@@ -8,7 +8,7 @@
 #include <vector>
 using lv_coord_t = int16_t;
 using lv_color_t = uint32_t;
-struct lv_font_t { int size; };
+struct lv_font_t { int line_height; };
 constexpr lv_font_t lv_font_dseg_90_bpp1{90}, lv_font_montserrat_10{10},
     lv_font_montserrat_12{12}, lv_font_montserrat_14{14}, lv_font_montserrat_16{16},
     lv_font_montserrat_20{20}, lv_font_montserrat_36{36};
@@ -17,7 +17,9 @@ enum lv_align_t { LV_ALIGN_CENTER, LV_ALIGN_TOP_MID, LV_ALIGN_BOTTOM_MID,
 enum { LV_PART_MAIN, LV_PART_INDICATOR, LV_PART_KNOB, LV_OPA_TRANSP = 0,
     LV_OPA_COVER = 255, LV_RADIUS_CIRCLE = 32767, LV_OBJ_FLAG_SCROLLABLE = 1,
     LV_OBJ_FLAG_CLICKABLE = 2, LV_OBJ_FLAG_HIDDEN = 4 };
+struct lv_event_t;
 struct lv_obj_t {
+    void (*draw)(lv_event_t*) = nullptr;
     lv_obj_t* parent = nullptr;
     int w = 0, h = 0, x = 0, y = 0, flags = 0, value = 0;
     uint32_t bg = 0;
@@ -77,7 +79,37 @@ static lv_meter_indicator_t* lv_meter_add_needle_line(lv_obj_t*, lv_meter_scale_
 static void lv_meter_set_indicator_value(lv_obj_t*, lv_meter_indicator_t* i, int v) { i->value=v; }
 constexpr int SW=320, SH=240;
 constexpr uint32_t COL_BG=0x141218, COL_CYAN=0x06B6D4, COL_ON_SURFACE_V=0xCBC4D2;
-constexpr uint8_t CLOCK_STYLE_COUNT=8;
+constexpr uint8_t CLOCK_STYLE_COUNT=16;
 struct Settings { uint8_t clockStyle=0; } g_Settings;
+static uint8_t GetClockStyle(const Settings& settings) { return settings.clockStyle; }
 enum class ScreenType { NONE, CLOCK };
 static ScreenType s_currentScreen=ScreenType::NONE;
+
+struct lv_draw_ctx_t {};
+struct lv_area_t { lv_coord_t x1,y1,x2,y2; };
+struct lv_point_t { lv_coord_t x,y; };
+struct lv_event_t { lv_obj_t* target; };
+constexpr int LV_EVENT_DRAW_MAIN=1, LV_TEXT_ALIGN_CENTER=0;
+struct lv_draw_rect_dsc_t { uint32_t bg_color; int bg_opa,radius; };
+struct lv_draw_label_dsc_t { const lv_font_t* font; uint32_t color; int align; };
+struct lv_draw_line_dsc_t { uint32_t color; int width; };
+static void lv_draw_rect_dsc_init(lv_draw_rect_dsc_t* d) { *d={}; }
+static void lv_draw_label_dsc_init(lv_draw_label_dsc_t* d) { *d={}; }
+static void lv_draw_line_dsc_init(lv_draw_line_dsc_t* d) { *d={}; }
+static int lv_event_get_code(lv_event_t*) { return LV_EVENT_DRAW_MAIN; }
+static lv_obj_t* lv_event_get_target(lv_event_t* e) { return e->target; }
+static lv_draw_ctx_t* lv_event_get_draw_ctx(lv_event_t*) { static lv_draw_ctx_t ctx; return &ctx; }
+static void lv_obj_get_coords(lv_obj_t* o, lv_area_t* area) {
+    *area={lv_coord_t(o->x),lv_coord_t(o->y),lv_coord_t(o->x+o->w-1),lv_coord_t(o->y+o->h-1)};
+}
+static void lv_obj_add_event_cb(lv_obj_t* o, void (*cb)(lv_event_t*), int, void*) { o->draw=cb; }
+static void lv_obj_invalidate(lv_obj_t* o) { if(o->draw) { lv_event_t e{o}; o->draw(&e); } }
+static void CheckDrawBounds(const lv_area_t* a) {
+    assert(a->x1>=16 && a->x2<304 && a->y1>=42 && a->y2<198);
+}
+static void lv_draw_rect(const lv_area_t* a, lv_draw_ctx_t*, const lv_draw_rect_dsc_t*) { CheckDrawBounds(a); }
+static void lv_draw_label(const lv_area_t* a, lv_draw_ctx_t*, const lv_draw_label_dsc_t*, const char*, void*) { CheckDrawBounds(a); }
+static void lv_draw_line(const lv_point_t* a,const lv_point_t* b,lv_draw_ctx_t*,const lv_draw_line_dsc_t*) {
+    assert(a->x>=16 && a->x<304 && b->x>=16 && b->x<304);
+    assert(a->y>=42 && a->y<198 && b->y>=42 && b->y<198);
+}

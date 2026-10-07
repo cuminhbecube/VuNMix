@@ -410,7 +410,9 @@ class SerialService:
         return self.send_command(Command.TEST)
 
     def send_settings(self, settings: DeviceSettings) -> bool:
-        return self.send_command(Command.SETTINGS, settings.pack())
+        return self.send_command(Command.SETTINGS, settings.pack(
+            legacy_clock_styles=not getattr(self, "extended_clock_styles_supported", False)
+        ))
 
     def send_session_info(self, info: SessionInfo) -> bool:
         return self.send_command(Command.SESSION_INFO, info.pack())

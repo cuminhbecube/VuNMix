@@ -15,6 +15,8 @@
     static uint32_t  s_lastClockTime = UINT32_MAX;
     static lv_obj_t* s_clockProgress = nullptr;
     static lv_obj_t* s_clockBinary[3][6] = {};
+    static lv_obj_t* s_clockArt = nullptr;
+    static uint8_t s_artHour = 0, s_artMinute = 0, s_artSecond = 0;
 
     // =========================================================
     // Helpers
