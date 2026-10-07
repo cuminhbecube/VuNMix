@@ -16,6 +16,15 @@ from media_service import MediaService
 
 
 class ThumbnailResourceTests(unittest.TestCase):
+    def test_oversized_dimensions_rejected_before_pixel_decode(self):
+        opened = mock.Mock(width=4097, height=4096)
+        context = mock.MagicMock()
+        context.__enter__.return_value = opened
+        with mock.patch.object(media_service.Image, "open", return_value=context):
+            self.assertEqual(MediaService._convert_artwork(b"compressed"), b"")
+        opened.convert.assert_not_called()
+        context.__exit__.assert_called_once()
+
     def test_1000_reads_close_each_native_stream(self):
         service = MediaService()
         active = 0

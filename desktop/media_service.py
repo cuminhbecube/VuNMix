@@ -57,6 +57,7 @@ MEDIA_ACTION_STOP = 4
 MEDIA_ARTWORK_SIZE = 16
 MEDIA_ARTWORK_BYTES = MEDIA_ARTWORK_SIZE * MEDIA_ARTWORK_SIZE * 2
 MAX_SOURCE_ARTWORK_BYTES = 5 * 1024 * 1024
+MAX_SOURCE_ARTWORK_PIXELS = 4096 * 4096
 METADATA_GRACE_SECONDS = 5.0
 REFRESH_MIN_INTERVAL = 0.45
 ARTWORK_REFRESH_INTERVAL = 30.0
@@ -291,15 +292,21 @@ class MediaService:
             return b""
         try:
             with Image.open(io.BytesIO(raw)) as opened:
-                image = ImageOps.fit(
-                    opened.convert("RGB"),
-                    (MEDIA_ARTWORK_SIZE, MEDIA_ARTWORK_SIZE),
-                    method=Image.Resampling.LANCZOS,
-                )
-                encoded = bytearray()
-                for r, g, b in image.getdata():
-                    rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-                    encoded.extend((rgb565 & 0xFF, (rgb565 >> 8) & 0xFF))
+                # A small compressed PNG can expand into hundreds of MB.
+                # Check dimensions before decoding/converting its pixels.
+                if opened.width * opened.height > MAX_SOURCE_ARTWORK_PIXELS:
+                    return b""
+                opened.draft("RGB", (512, 512))
+                with opened.convert("RGB") as rgb:
+                    with ImageOps.fit(
+                        rgb,
+                        (MEDIA_ARTWORK_SIZE, MEDIA_ARTWORK_SIZE),
+                        method=Image.Resampling.LANCZOS,
+                    ) as image:
+                        encoded = bytearray()
+                        for r, g, b in image.getdata():
+                            rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+                            encoded.extend((rgb565 & 0xFF, (rgb565 >> 8) & 0xFF))
             return bytes(encoded) if len(encoded) == MEDIA_ARTWORK_BYTES else b""
         except Exception as exc:
             log.debug("Could not resize media artwork: %s", exc)
