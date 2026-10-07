@@ -88,6 +88,9 @@ struct __attribute__((__packed__)) TimeData
 };
 static_assert(sizeof(TimeData) == 3, "Invalid Expected Message Size");
 
+// Matches desktop.protocol.ClockStyle; all eight values fit the existing 3 bits.
+static constexpr uint8_t CLOCK_STYLE_COUNT = 8;
+
 struct __attribute__((__packed__)) DeviceSettings
 {
     uint16_t sleepAfterSeconds;         // 16 Bits
@@ -95,7 +98,7 @@ struct __attribute__((__packed__)) DeviceSettings
     bool continuousScroll : 1;          // 1 Bit
     bool sleepEnabled;                  // 8 Bits (bool)
     uint8_t standbyLedMode : 5;         // Low 5 bits (0=ColorWave,...,16=LED Test)
-    uint8_t clockStyle : 3;              // High 3 bits (0=Neon,1=Minimal,2=Flip,3=Analog)
+    uint8_t clockStyle : 3;              // 0=Neon,1=Minimal,2=Flip,3=Analog,4=Orbit,5=Binary,6=Terminal,7=RetroLCD
     Color volumeMinColor;               // 24 Bits
     Color volumeMaxColor;               // 24 Bits
     Color mixChannelAColor;             // 24 Bits

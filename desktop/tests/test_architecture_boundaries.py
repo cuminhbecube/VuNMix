@@ -39,6 +39,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "DisplayShellLifecycle.inc",
             "DisplayStandalone.inc",
             "DisplayHealth.inc",
+            "DisplayClockStyles.inc",
             "DisplayClock.inc",
             "DisplayClockSelect.inc",
             "DisplayMixerMedia.inc",

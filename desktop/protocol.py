@@ -104,6 +104,10 @@ class ClockStyle(IntEnum):
     MINIMAL      = 1
     FLIP_CARDS   = 2
     ANALOG       = 3
+    ORBIT        = 4
+    BINARY       = 5
+    TERMINAL     = 6
+    RETRO_LCD    = 7
 
 
 CLOCK_STYLE_NAMES = [
@@ -111,6 +115,10 @@ CLOCK_STYLE_NAMES = [
     "Minimal",
     "Flip Cards",
     "Analog",
+    "Orbit",
+    "Binary",
+    "Terminal",
+    "Retro LCD",
 ]
 
 # Binary frame:
