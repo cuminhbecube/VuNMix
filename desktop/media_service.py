@@ -59,6 +59,8 @@ MEDIA_ARTWORK_BYTES = MEDIA_ARTWORK_SIZE * MEDIA_ARTWORK_SIZE * 2
 MAX_SOURCE_ARTWORK_BYTES = 5 * 1024 * 1024
 METADATA_GRACE_SECONDS = 5.0
 REFRESH_MIN_INTERVAL = 0.45
+ARTWORK_REFRESH_INTERVAL = 30.0
+MEDIA_QUERY_TIMEOUT = 3.0
 
 
 @dataclass(frozen=True)
@@ -75,12 +77,16 @@ class MediaService:
 
     def __init__(self):
         self._lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
+        self._async_lock = threading.Lock()
         self._last_refresh_at = 0.0
         self._last_valid_at = 0.0
         self._last_snapshot = MediaSnapshot(MediaInfoData())
         self._artwork_source_key = ""
         self._artwork_rgb565 = b""
         self._artwork_key = ""
+        self._thumbnail_track = None
+        self._thumbnail_read_at = -1e12
 
     @staticmethod
     def _seconds(value) -> int:
@@ -109,26 +115,40 @@ class MediaService:
         except Exception:
             return False
 
-    @staticmethod
-    def _run_async(coro):
+    def _run_async(self, coro):
         """Run a small WinRT coroutine from VuNMix worker/tray threads."""
+        if not self._async_lock.acquire(blocking=False):
+            coro.close()
+            return None
+
+        async def bounded():
+            return await asyncio.wait_for(coro, timeout=MEDIA_QUERY_TIMEOUT)
+
+        def run():
+            try:
+                return asyncio.run(bounded())
+            finally:
+                self._async_lock.release()
+
         try:
-            return asyncio.run(coro)
-        except RuntimeError as exc:
-            if "running event loop" not in str(exc).lower():
-                raise
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return run()
+        else:
             result = []
             error = []
 
             def runner():
                 try:
-                    result.append(asyncio.run(coro))
+                    result.append(run())
                 except Exception as inner:
                     error.append(inner)
 
             thread = threading.Thread(target=runner, daemon=True, name="MediaWinRT")
             thread.start()
-            thread.join(timeout=5.0)
+            # If native WinRT cancellation stalls, the lock remains owned by
+            # this worker. Later calls skip instead of accumulating threads.
+            thread.join(timeout=MEDIA_QUERY_TIMEOUT + 1.0)
             if error:
                 raise error[0]
             return result[0] if result else None
@@ -136,18 +156,27 @@ class MediaService:
     async def _read_thumbnail(self, thumbnail_ref) -> bytes:
         if not thumbnail_ref or Buffer is None or InputStreamOptions is None:
             return b""
+        stream = None
         try:
             stream = await thumbnail_ref.open_read_async()
             size = int(getattr(stream, "size", 0) or 0)
             if size <= 0:
                 return b""
-            capacity = min(size, MAX_SOURCE_ARTWORK_BYTES)
+            if size > MAX_SOURCE_ARTWORK_BYTES:
+                return b""
+            capacity = size
             buffer = Buffer(capacity)
-            await stream.read_async(buffer, capacity, InputStreamOptions.READ_AHEAD)
-            return bytes(bytearray(buffer))[:MAX_SOURCE_ARTWORK_BYTES]
+            result = await stream.read_async(buffer, capacity, InputStreamOptions.READ_AHEAD)
+            return bytes(result)
         except Exception as exc:
             log.debug("Could not read media artwork: %s", exc)
             return b""
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    log.debug("Could not close media artwork stream", exc_info=True)
 
     async def _read_smtc(self):
         if MediaManager is None:
@@ -186,8 +215,15 @@ class MediaService:
             position = min(position, duration)
 
         thumbnail = b""
-        if props:
+        track = (source_app, title, artist)
+        now = time.monotonic()
+        if props and (
+            track != self._thumbnail_track
+            or now - self._thumbnail_read_at >= ARTWORK_REFRESH_INTERVAL
+        ):
             thumbnail = await self._read_thumbnail(getattr(props, "thumbnail", None))
+            self._thumbnail_track = track
+            self._thumbnail_read_at = now
 
         return {
             "info": MediaInfoData(
@@ -270,6 +306,16 @@ class MediaService:
             return b""
 
     def refresh(self, *, force: bool = False) -> MediaSnapshot:
+        # AudioSync and MediaArtworkSync poll concurrently. One native query
+        # at a time; other callers can use the last complete snapshot.
+        if not self._refresh_lock.acquire(blocking=False):
+            return self.cached_snapshot()
+        try:
+            return self._refresh_once(force=force)
+        finally:
+            self._refresh_lock.release()
+
+    def _refresh_once(self, *, force: bool = False) -> MediaSnapshot:
         now = time.monotonic()
         with self._lock:
             if not force and now - self._last_refresh_at < REFRESH_MIN_INTERVAL:
@@ -295,6 +341,12 @@ class MediaService:
 
         with self._lock:
             previous = self._last_snapshot
+            if result and (source_app, info.title, info.artist) != (
+                previous.source_app, previous.info.title, previous.info.artist
+            ) and (info.title or info.artist):
+                self._artwork_source_key = ""
+                self._artwork_rgb565 = b""
+                self._artwork_key = ""
             if info.title or info.artist:
                 self._last_valid_at = now
             elif previous.info.title and now - self._last_valid_at <= METADATA_GRACE_SECONDS:

@@ -133,7 +133,7 @@ class AudioService:
             try:
                 # Check Output
                 default_out = AudioUtilities.GetSpeakers()
-                out_id = default_out.GetId() if default_out else None
+                out_id = default_out.id if default_out else None
                 with self._lock:
                     current_default_out = next((d._device_id for d in self._output_devices if d.is_default), None)
                 if out_id != current_default_out:
@@ -164,6 +164,14 @@ class AudioService:
     def get_session_count(self, mode: int) -> int:
         return len(self.get_sessions_for_mode(mode))
 
+    @staticmethod
+    def _endpoint_volume(device_id):
+        # Volume polling needs only one endpoint, not every device/property
+        # store in Windows. Do not cache COM pointers across worker threads.
+        device = AudioUtilities.GetDeviceEnumerator().GetDevice(device_id)
+        interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        return interface.QueryInterface(IAudioEndpointVolume)
+
     def set_volume(self, mode: int, index: int, volume: int, is_muted: bool):
         """Apply volume change from hardware to Windows audio."""
         with self._com_scope():
@@ -176,16 +184,12 @@ class AudioService:
             from pycaw.pycaw import AudioUtilities
             if item._device_id:
                 try:
-                    devices = AudioUtilities.GetAllDevices()
-                    for d in devices:
-                        if d.id == item._device_id:
-                            endpoint_vol = d.EndpointVolume
-                            if endpoint_vol:
-                                endpoint_vol.SetMasterVolumeLevelScalar(vol_float, None)
-                                endpoint_vol.SetMute(is_muted, None)
-                                item.volume = volume
-                                item.is_muted = is_muted
-                            break
+                    endpoint_vol = self._endpoint_volume(item._device_id)
+                    if endpoint_vol:
+                        endpoint_vol.SetMasterVolumeLevelScalar(vol_float, None)
+                        endpoint_vol.SetMute(is_muted, None)
+                        item.volume = volume
+                        item.is_muted = is_muted
                 except Exception as e:
                     log.error(f"Failed to set endpoint volume: {e}")
             elif item._process_id:
@@ -389,16 +393,10 @@ class AudioService:
             from pycaw.pycaw import AudioUtilities
             if item._device_id:
                 try:
-                    devices = AudioUtilities.GetAllDevices()
-                    for d in devices:
-                        if d.id == item._device_id:
-                            endpoint_vol = d.EndpointVolume
-                            if endpoint_vol:
-                                vol = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
-                                muted = bool(endpoint_vol.GetMute())
-                                item.volume = vol
-                                item.is_muted = muted
-                            break
+                    endpoint_vol = self._endpoint_volume(item._device_id)
+                    if endpoint_vol:
+                        item.volume = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
+                        item.is_muted = bool(endpoint_vol.GetMute())
                 except Exception:
                     pass
             elif item._process_id:
@@ -436,15 +434,9 @@ class AudioService:
                         device_index, channels, sample_rate = device
                         return InputPeakMeter(device_index, channels, sample_rate)
 
-                for device in AudioUtilities.GetAllDevices():
-                    if device.id == item._device_id:
-                        interface = device._dev.Activate(
-                            IAudioMeterInformation._iid_,
-                            CLSCTX_ALL,
-                            None,
-                        )
-                        return cast(interface, POINTER(IAudioMeterInformation))
-                return None
+                device = AudioUtilities.GetDeviceEnumerator().GetDevice(item._device_id)
+                interface = device.Activate(IAudioMeterInformation._iid_, CLSCTX_ALL, None)
+                return interface.QueryInterface(IAudioMeterInformation)
 
             for session in AudioUtilities.GetAllSessions():
                 if self._session_matches(session, item):

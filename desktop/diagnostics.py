@@ -146,6 +146,11 @@ def build_diagnostic_report(
     ]
     for key in sorted(serial_health):
         lines.append(f"  {key}: {_safe_value(serial_health[key])}")
+    from system_monitor import process_health_snapshot
+
+    lines.extend(["", "Process health:"])
+    for key, value in sorted(process_health_snapshot().items()):
+        lines.append(f"  {key}: {_safe_value(value)}")
     lines.extend(["", f"Main log: {MAIN_LOG_FILE}", f"Log folder: {LOG_DIR}"])
     return "\n".join(lines)
 
