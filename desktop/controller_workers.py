@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import math
 import time
+
+import psutil
 from datetime import datetime
 
 import comtypes
@@ -140,54 +142,75 @@ class SyncWorkersMixin:
                 last_heartbeat = now
 
     def _sync_loop(self):
-        """Periodically refresh audio sessions and sync volume to hardware.
+        """Sync hardware without continuously allocating Windows COM objects.
 
-        Transport heartbeat deliberately lives in _heartbeat_loop so a slow or
-        wedged Windows audio call cannot make a healthy USB link flap.
+        The configured 200/500ms tick is for inexpensive protocol work. COM
+        device enumeration is much heavier and has caused native GC faults on
+        some Windows builds; keep it on slower, independent schedules. Hold a
+        COM apartment for the whole worker lifetime rather than repeatedly
+        uninitializing it while pycaw wrappers may still be collected.
         """
-        interval = self.config.update_interval_ms / 1000.0
+        interval = max(0.05, self.config.update_interval_ms / 1000.0)
         last_full_refresh = time.monotonic()
-        last_time_sync = time.monotonic()
-        last_telemetry_sync = time.monotonic()
+        last_device_check = last_full_refresh
+        last_volume_sync = last_full_refresh
+        last_time_sync = last_full_refresh
+        last_telemetry_sync = last_full_refresh
+        last_memory_report = last_full_refresh
+        process = psutil.Process()
 
-        while self._running:
-            time.sleep(interval)
+        comtypes.CoInitialize()
+        try:
+            while self._running:
+                time.sleep(interval)
 
-            if (
-                not self._device_connected
-                or self._is_sleeping
-                or getattr(self, "_resume_recovering", False)
-            ):
-                continue
+                # Low-overhead, five-minute RSS samples expose regressions
+                # that cannot be diagnosed from COM exception logs alone.
+                now = time.monotonic()
+                if now - last_memory_report >= 300.0:
+                    try:
+                        rss_mib = process.memory_info().rss / (1024 * 1024)
+                        log.info(
+                            "VuNMix process memory: rss=%.1fMiB threads=%d",
+                            rss_mib, process.num_threads(),
+                        )
+                    except Exception as exc:
+                        log.debug("Process memory sample unavailable: %s", exc)
+                    last_memory_report = now
 
-            now = time.monotonic()
+                if (
+                    not self._device_connected
+                    or self._is_sleeping
+                    or getattr(self, "_resume_recovering", False)
+                ):
+                    continue
 
-            if now - last_time_sync >= 30.0:
-                dt = datetime.now()
-                self.serial.send_time_sync(dt.hour, dt.minute, dt.second)
-                last_time_sync = now
+                now = time.monotonic()
 
-            if now - last_telemetry_sync >= 1.0:
-                try:
-                    stats = self.system_monitor.get_pc_stats()
-                    self.serial.send_pc_stats(stats)
-                    media = self.media_service.get_current_media_info()
-                    self.serial.send_media_info(media)
-                except Exception as exc:
-                    log.warning("Failed to push telemetry: %s", exc)
-                last_telemetry_sync = now
+                if now - last_time_sync >= 30.0:
+                    dt = datetime.now()
+                    self.serial.send_time_sync(dt.hour, dt.minute, dt.second)
+                    last_time_sync = now
 
-            with self._state_lock:
-                current_mode = self._session_info.mode
-            if current_mode in (
-                DisplayMode.MODE_SPLASH,
-                DisplayMode.MODE_HEALTH,
-            ):
-                continue
+                if now - last_telemetry_sync >= 1.0:
+                    try:
+                        stats = self.system_monitor.get_pc_stats()
+                        self.serial.send_pc_stats(stats)
+                        media = self.media_service.get_current_media_info()
+                        self.serial.send_media_info(media)
+                    except Exception as exc:
+                        log.warning("Failed to push telemetry: %s", exc)
+                    last_telemetry_sync = now
 
-            if now - last_full_refresh >= 5.0:
-                try:
-                    comtypes.CoInitialize()
+                with self._state_lock:
+                    current_mode = self._session_info.mode
+                if current_mode in (
+                    DisplayMode.MODE_SPLASH,
+                    DisplayMode.MODE_HEALTH,
+                ):
+                    continue
+
+                if now - last_full_refresh >= 10.0:
                     try:
                         def get_sig():
                             signature = []
@@ -204,33 +227,34 @@ class SyncWorkersMixin:
 
                         old_sig = get_sig()
                         self.audio.refresh()
-                        new_sig = get_sig()
-
-                        if old_sig != new_sig:
+                        if old_sig != get_sig():
                             log.info(
                                 "Audio devices/apps changed in background. Pushing updated state."
                             )
                             self._push_updated_state()
-                    finally:
-                        comtypes.CoUninitialize()
-                except Exception as exc:
-                    log.warning("Full audio refresh failed; keeping sync alive: %s", exc)
-                last_full_refresh = now
-                continue
-
-            comtypes.CoInitialize()
-            try:
-                if self.audio.check_system_changes():
-                    log.info("System audio changes detected. Refreshing...")
-                    self.audio.refresh()
-                    self._push_updated_state()
+                    except Exception as exc:
+                        log.warning("Full audio refresh failed; keeping sync alive: %s", exc)
+                    last_full_refresh = now
+                    last_device_check = last_full_refresh
                     continue
 
-                self._sync_current_volume_once()
-            except Exception as exc:
-                log.debug("Sync error: %s", exc)
-            finally:
-                comtypes.CoUninitialize()
+                try:
+                    if now - last_device_check >= 2.0:
+                        last_device_check = now
+                        if self.audio.check_system_changes():
+                            log.info("System audio changes detected. Refreshing...")
+                            self.audio.refresh()
+                            self._push_updated_state()
+                            last_full_refresh = now
+                            continue
+
+                    if now - last_volume_sync >= 0.75:
+                        last_volume_sync = now
+                        self._sync_current_volume_once()
+                except Exception as exc:
+                    log.debug("Sync error: %s", exc)
+        finally:
+            comtypes.CoUninitialize()
 
     @staticmethod
     def _peak_to_level(peak: float) -> int:
