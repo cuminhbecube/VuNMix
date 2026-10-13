@@ -63,6 +63,23 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
 - `gui.py`: giao diện settings và firmware update.
 - `firmware_updater.py`: kiểm tra và nạp firmware ESP32-S3 application image.
 
+## VuNMix Windows Control Center
+
+Ứng dụng Windows có sáu khu vực cấu hình: **Overview**, **Audio**, **Clock**,
+**Device**, **Updates** và **Settings**. Mở từ biểu tượng VuNMix ở system tray.
+
+- Overview hiển thị tình trạng kết nối, firmware, clock đang chọn và RAM app.
+- Audio cung cấp tổng quan output/input/application; điều khiển âm lượng vẫn
+  do thiết bị và hệ thống worker quản lý, không chỉnh COM trực tiếp từ UI.
+- Clock có toàn bộ 16 kiểu đồng hồ với phần xem trước dạng tên/thời gian;
+  cần firmware >= v0.4.21 cho các kiểu số 8–15.
+- Updates hiển thị phiên bản tương thích và giữ các thao tác tải/cập nhật
+  Desktop hoặc firmware với cơ chế kiểm SHA-256.
+- Nút **Save Settings** luôn ở chân cửa sổ, các khu vực cấu hình cuộn riêng.
+
+Chi tiết: [Stability & Control Center](docs/stability-control-center.md).
+Các bài thử cần board thật: [Hardware QA Matrix](docs/hardware-qa-matrix.md).
+
 ## Chế độ sử dụng
 
 ### 1. Output
@@ -165,7 +182,7 @@ VuNMix có cơ chế tiết kiệm điện và hiệu ứng chờ:
 - Có nhiều hiệu ứng LED chờ, chọn trong VuNMix Desktop Settings.
 - Có thể bật/tắt Auto Sleep.
 - Có thể cấu hình Clock Standby để hiển thị đồng hồ khi không có hoạt động âm thanh trong một khoảng thời gian.
-- Clock Standby có 4 giao diện chọn từ VuNMix Desktop: **Neon Digital**, **Minimal**, **Flip Cards** và **Analog**.
+- Clock Standby có **16 kiểu đồng hồ** (Neon Digital, Minimal, Flip Cards, Analog, Orbit, Binary, Terminal, Retro LCD, Nixie, Word Clock, Pixel Art, Dot Matrix, ClockClock, Barcode, Polygon, Math Clock). Xem [danh sách và hướng dẫn tương thích](docs/standby-clock-styles.md).
 - Khi PC sleep, desktop app gửi lệnh để thiết bị chuyển trạng thái nghỉ; khi PC resume, app đẩy lại state để đồng bộ.
 
 ## Phần cứng yêu cầu
@@ -314,7 +331,7 @@ Firmware và desktop dùng frame nhị phân có marker và CRC để tránh l�
 Các nhóm dữ liệu chính:
 
 - `TEST`: handshake và đọc version firmware.
-- `SETTINGS`: cấu hình sleep, LED, clock standby và clock style. Clock style dùng 3 bit cao của byte standby LED để giữ nguyên payload `DeviceSettings` 19 byte.
+- `SETTINGS`: cấu hình sleep, LED, clock standby và clock style với payload `DeviceSettings` 19 byte. Ba bit thấp của clock ID nằm trong byte 4 (chia sẻ với LED mode), bit thứ tư nằm ở byte 3 bit 1; firmware >= v0.4.21 mới hỗ trợ kiểu 8–15.
 - `SESSION_INFO`: mode hiện tại, index đang chọn, số lượng session.
 - `CURRENT_SESSION`, `ALTERNATE_SESSION`, `PREVIOUS_SESSION`, `NEXT_SESSION`: thông tin các mục quanh vị trí hiện tại.
 - `VOLUME_*_CHANGE`: thay đổi volume/mute/default.
@@ -453,6 +470,9 @@ VuNMix/
 ## Ghi chú phát triển
 
 - Khi đổi protocol, luôn sửa cả firmware và desktop.
+- Kiểm tra đủ **16 clock**, mọi mode audio và tính năng của release trước bằng `python scripts/verify_feature_contracts.py` trước khi phát hành.
+- Không phát hành từ mã nguồn không chứa phiên bản release mới nhất; không ghi đè tag hoặc artifact đã công bố.
+- Các bài kiểm thử cần ESP32-S3 thật được ghi rõ trong [ma trận QA phần cứng](docs/hardware-qa-matrix.md).
 - Khi thêm struct mới, kiểm tra size và thứ tự field ở cả C++ và Python.
 - Không gửi meter quá nhanh; hiện desktop gửi khoảng 15Hz để UI mượt mà nhưng không nghẽn USB.
 - Các lệnh từ firmware được rate-limit để tránh spam serial khi giữ phím.

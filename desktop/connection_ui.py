@@ -90,6 +90,7 @@ class ConnectionSettingsDialog(SettingsDialog):
                     f"FW {current_fw} · PC {APP_VERSION}"
                 )
 
+        self._refresh_control_center()
         self._window.after(500, self._update_status_loop)
 
 
