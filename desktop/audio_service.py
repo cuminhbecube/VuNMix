@@ -121,10 +121,20 @@ class AudioService:
         return (0 if name in self._favorite_apps else 1, name)
 
     def refresh(self):
-        """Refresh all audio devices and sessions from Windows."""
+        """Refresh audio state using a single shared Windows endpoint snapshot."""
         with self._com_scope():
-            self._refresh_output_devices()
-            self._refresh_input_devices()
+            try:
+                devices = AudioUtilities.GetAllDevices()
+            except Exception as exc:
+                # Do not discard the last usable device list on a COM failure.
+                log.warning("Could not enumerate Windows audio devices: %s", exc)
+            else:
+                try:
+                    self._refresh_output_devices(devices)
+                    self._refresh_input_devices(devices)
+                finally:
+                    # Only plain AudioItem values outlive this COM enumeration.
+                    del devices
             self._refresh_app_sessions()
 
     def check_system_changes(self) -> bool:
@@ -233,19 +243,17 @@ class AudioService:
                 for item in target:
                     item.is_default = item._device_id == selected._device_id
 
-    def _refresh_output_devices(self):
-        """Enumerate output audio devices."""
-        with self._lock:
-            self._output_devices.clear()
+    def _refresh_output_devices(self, devices=None):
+        """Create an output snapshot and replace it atomically."""
         try:
-            from pycaw.pycaw import AudioUtilities
+            if devices is None:
+                devices = AudioUtilities.GetAllDevices()
             
             default_id = None
             default_speaker = AudioUtilities.GetSpeakers()
             if default_speaker:
                 default_id = default_speaker.id
 
-            devices = AudioUtilities.GetAllDevices()
             temp_devices = []
             for d in devices:
                 if str(d.state) == 'AudioDeviceState.Active' and d.id.startswith('{0.0.0.'):
@@ -274,23 +282,21 @@ class AudioService:
             self._assign_protocol_ids(temp_devices, lambda item: item._device_id)
             
             with self._lock:
-                self._output_devices.extend(temp_devices)
+                self._output_devices = temp_devices
         except Exception as e:
             log.error(f"Failed to enumerate output devices: {e}")
 
-    def _refresh_input_devices(self):
-        """Enumerate input (microphone) devices."""
-        with self._lock:
-            self._input_devices.clear()
+    def _refresh_input_devices(self, devices=None):
+        """Create an input snapshot and replace it atomically."""
         try:
-            from pycaw.pycaw import AudioUtilities
+            if devices is None:
+                devices = AudioUtilities.GetAllDevices()
             
             default_id = None
             default_mic = AudioUtilities.GetMicrophone()
             if default_mic:
                 default_id = default_mic.GetId()
 
-            devices = AudioUtilities.GetAllDevices()
             temp_devices = []
             for d in devices:
                 if str(d.state) == 'AudioDeviceState.Active' and d.id.startswith('{0.0.1.'):
@@ -319,14 +325,12 @@ class AudioService:
             self._assign_protocol_ids(temp_devices, lambda item: item._device_id)
             
             with self._lock:
-                self._input_devices.extend(temp_devices)
+                self._input_devices = temp_devices
         except Exception as e:
             log.error(f"Failed to enumerate input devices: {e}")
 
     def _refresh_app_sessions(self):
         """Enumerate per-application audio sessions."""
-        with self._lock:
-            self._app_sessions.clear()
         try:
             sessions = AudioUtilities.GetAllSessions()
             temp_sessions = []
@@ -374,7 +378,7 @@ class AudioService:
             temp_sessions.sort(key=self._app_sort_key)
             self._assign_protocol_ids(temp_sessions, lambda item: item._session_identifier)
             with self._lock:
-                self._app_sessions.extend(temp_sessions)
+                self._app_sessions = temp_sessions
         except Exception as e:
             log.error(f"Failed to enumerate app sessions: {e}")
 
