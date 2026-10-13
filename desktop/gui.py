@@ -24,6 +24,12 @@ import serial.tools.list_ports
 from PIL import Image, ImageDraw
 
 from build_info import APP_VERSION
+from fluent_theme import (
+    BG, SURFACE, CARD, BORDER, TEXT, MUTED, ONLINE, ACCENT, DANGER,
+    SECTIONS, calculate_geometry, MINIMUM_SIZE,
+)
+from fluent_views import FluentViewsMixin
+from fluent_audio import AudioActionDispatcher
 from app_updater import AppUpdater, UpdateInfo, version_tuple
 from firmware_release import (
     FirmwareReleaseClient,
@@ -104,7 +110,7 @@ def create_tray_icon(connected: bool) -> Image.Image:
     return img
 
 
-class SettingsDialog:
+class SettingsDialog(FluentViewsMixin):
     """Simple tkinter settings dialog."""
 
     def __init__(
@@ -135,6 +141,9 @@ class SettingsDialog:
         self._last_overview_snapshot = 0.0
         self._last_audio_snapshot = 0.0
         self._audio_render_signature = None
+        self._audio_dispatcher = AudioActionDispatcher(controller.audio)
+        self._audio_slider_jobs = {}
+        self._last_audio_interaction = 0.0
 
     def initialize(self):
         """Create the single Tcl/Tk interpreter on the process main thread."""
@@ -191,67 +200,55 @@ class SettingsDialog:
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self._window = ctk.CTk(fg_color="#0b1220")
-        self._window.overrideredirect(True)
-
-        # Responsive Control Center, while keeping the persistent Tk interpreter.
-        screen_width = self._window.winfo_screenwidth()
-        screen_height = self._window.winfo_screenheight()
-        window_width = min(820, max(480, screen_width - 40))
-        window_height = min(680, max(450, screen_height - 100))
-        x = max(0, (screen_width - window_width) // 2)
-        y = max(0, (screen_height - window_height) // 2)
-        self._window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        # Use native Windows chrome for real minimize/resize/maximize behavior.
+        # A single CTk interpreter remains alive across tray show/hide cycles.
+        self._window = ctk.CTk(fg_color=BG)
+        self._window.title(f"VuNMix · Desktop {APP_VERSION}")
+        geometry = calculate_geometry(
+            self._window.winfo_screenwidth(),
+            self._window.winfo_screenheight(),
+        )
+        self._window.geometry(
+            f"{geometry.width}x{geometry.height}+{geometry.x}+{geometry.y}"
+        )
+        if (self._window.winfo_screenwidth() >= MINIMUM_SIZE[0] + 40
+                and self._window.winfo_screenheight() >= MINIMUM_SIZE[1] + 100):
+            self._window.minsize(*MINIMUM_SIZE)
         self._window.attributes('-topmost', False)
-
-        # Use Win32 API to clip window to rounded rectangle (no dark corners)
-        self._window.update_idletasks()
-        try:
-            import ctypes
-            from ctypes import wintypes
-            hwnd = ctypes.windll.user32.GetParent(self._window.winfo_id())
-            rect = wintypes.RECT()
-            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            w = rect.right - rect.left
-            h = rect.bottom - rect.top
-            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, 24, 24)
-            ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
-        except Exception:
-            pass
 
         # Handle window close to notify TrayApp
         self._window.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         # Main container
         main_frame = ctk.CTkFrame(
-            self._window, fg_color="#101b29", corner_radius=14,
-            border_width=1, border_color="#2b4059",
+            self._window, fg_color=SURFACE, corner_radius=10,
+            border_width=1, border_color=BORDER,
         )
         main_frame.pack(fill='both', expand=True)
 
-        header = ctk.CTkFrame(main_frame, fg_color="transparent", height=48)
-        header.pack(fill='x', padx=16, pady=(10, 2))
+        header = ctk.CTkFrame(main_frame, fg_color="transparent", height=42)
+        header.pack(fill="x", padx=12, pady=(5, 3))
         header.pack_propagate(False)
         title_lbl = ctk.CTkLabel(
-            header, text="VuNMix  /  CONTROL CENTER",
-            font=ctk.CTkFont(size=19, weight="bold"), text_color="#eaf4fc",
+            header, text="◈  VuNMix", text_color=TEXT,
+            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
         )
-        title_lbl.pack(side='left')
-        
-        close_btn = ctk.CTkButton(header, text="✕", width=26, height=24, fg_color="transparent", 
-                                  hover_color="#dc3545", font=ctk.CTkFont(size=14), command=self._on_window_close)
-        close_btn.pack(side='right')
-
-        # Bind drag events on header and title
-        for widget in (header, title_lbl):
-            widget.bind("<Button-1>", self._start_drag)
-            widget.bind("<B1-Motion>", self._do_drag)
+        title_lbl.pack(side="left", padx=(3, 12))
+        self._header_status_var = tk.StringVar(value="Disconnected")
+        ctk.CTkLabel(
+            header, textvariable=self._header_status_var, text_color=ONLINE,
+            font=ctk.CTkFont(size=11, weight="bold")
+        ).pack(side="left", padx=6)
+        ctk.CTkLabel(
+            header, text=f"ESP32-S3   ·   PC {APP_VERSION}",
+            text_color=MUTED, font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=10)
 
         # Connection row: COM Port + dropdown + Connect/Disconnect
-        conn_row = ctk.CTkFrame(main_frame, fg_color="#17283b", corner_radius=10, height=44)
-        conn_row.pack(fill='x', padx=16, pady=(2, 5))
+        conn_row = ctk.CTkFrame(main_frame, fg_color=CARD, corner_radius=8, height=38)
+        conn_row.pack(fill="x", padx=12, pady=(1, 5))
         conn_row.pack_propagate(False)
-        ctk.CTkLabel(conn_row, text="DEVICE / USB COM", font=ctk.CTkFont(size=12, weight="bold")).pack(side='left', padx=12)
+        ctk.CTkLabel(conn_row, text="USB / COM", font=ctk.CTkFont(size=11, weight="bold"), text_color=MUTED).pack(side="left", padx=10)
         
         self._com_var = tk.StringVar(value=self.config.com_port)
         ports = [port.device for port in serial.tools.list_ports.comports()]
@@ -275,16 +272,22 @@ class SettingsDialog:
         )
         save_btn.pack(side='bottom', fill='x', padx=12, pady=(4, 8))
 
-        # Each section scrolls independently, with Save pinned to the footer.
+        # Fluent sidebar mirrors the approved mockup. Keep the six CTkTabview
+        # destinations internally so all existing navigation stays compatible.
+        shell = ctk.CTkFrame(main_frame, fg_color="transparent")
+        shell.pack(fill="both", expand=True, padx=10, pady=(0, 4))
         self._tabs = ctk.CTkTabview(
-            main_frame, fg_color="#101b29", border_width=0,
-            segmented_button_fg_color="#1b2d40",
-            segmented_button_selected_color="#176788",
-            segmented_button_selected_hover_color="#2086aa",
+            shell, fg_color=SURFACE, border_width=0,
+            segmented_button_fg_color=CARD,
+            segmented_button_selected_color=ACCENT,
         )
-        self._tabs.pack(fill='both', expand=True, padx=12, pady=(0, 3))
-        for name in ("Overview", "Audio", "Clock", "Device", "Updates", "Settings"):
+        for name in SECTIONS:
             self._tabs.add(name)
+        self._tabs.set("Overview")
+        self._build_fluent_sidebar(shell)
+        self._tabs.pack(side="left", fill="both", expand=True, padx=(0, 2))
+        # Replace the visible top tab strip with our compact left navigation.
+        self._tabs._segmented_button.grid_forget()
 
         content = ctk.CTkScrollableFrame(
             self._tabs.tab("Device"), fg_color="transparent"
@@ -380,6 +383,7 @@ class SettingsDialog:
         ))
 
         self._build_clock_preview(clock_content)
+        self.build_fluent_clock_gallery(self._updates_gallery_area)
 
         # Continuous Scroll
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
@@ -437,7 +441,7 @@ class SettingsDialog:
         ).pack(fill='x', padx=8, pady=(0, 3))
 
         # Desktop app update
-        update_frame = ctk.CTkFrame(self._tabs.tab("Updates"), fg_color="#17283b", corner_radius=10)
+        update_frame = ctk.CTkFrame(self._updates_left, fg_color=CARD, corner_radius=10)
         update_frame.pack(fill='x', padx=10, pady=(10, 4))
         update_top = ctk.CTkFrame(update_frame, fg_color="transparent")
         update_top.pack(fill='x', padx=8, pady=(4, 0))
@@ -464,7 +468,7 @@ class SettingsDialog:
         ).pack(fill='x', padx=8, pady=(0, 3))
 
         # Firmware update
-        firmware_frame = ctk.CTkFrame(self._tabs.tab("Updates"), fg_color="#17283b", corner_radius=10)
+        firmware_frame = ctk.CTkFrame(self._updates_left, fg_color=CARD, corner_radius=10)
         firmware_frame.pack(fill='x', padx=10, pady=(4, 4))
         firmware_top = ctk.CTkFrame(firmware_frame, fg_color="transparent")
         firmware_top.pack(fill='x', padx=8, pady=(4, 0))
@@ -510,207 +514,33 @@ class SettingsDialog:
         # Keep the interpreter alive from process start, but do not show
         # Settings until the tray callback asks for it.  This avoids creating
         # or destroying Tcl interpreters from worker/pystray threads.
-        self._tabs.set("Overview")
+        self.build_fluent_update_actions()
+        self.build_fluent_updates_settings()
+        self._fluent_highlight_nav()
         self._window.withdraw()
         self._update_status_loop()
         self._process_window_commands()
 
     def _build_overview_tab(self, parent):
-        """Read-only overview and clear navigation; never mutate Windows volume."""
-        body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=4, pady=4)
-        ctk.CTkLabel(
-            body, text="Your device at a glance",
-            font=ctk.CTkFont(size=21, weight="bold"), anchor="w",
-        ).pack(fill="x", padx=10, pady=(10, 1))
-        ctk.CTkLabel(
-            body, text="Connection, firmware, resources and shortcuts",
-            text_color="#91a7bb", anchor="w",
-        ).pack(fill="x", padx=10, pady=(0, 12))
-
-        self._overview_connection_var = tk.StringVar(value="Disconnected")
-        self._overview_firmware_var = tk.StringVar(value="Not verified")
-        self._overview_clock_var = tk.StringVar(
-            value="Clock: " + self._clock_style_name()
-        )
-        self._overview_memory_var = tk.StringVar(value="Collecting resource data...")
-
-        grid = ctk.CTkFrame(body, fg_color="transparent")
-        grid.pack(fill="x", padx=8)
-        grid.grid_columnconfigure(0, weight=1)
-        grid.grid_columnconfigure(1, weight=1)
-
-        def tile(row, col, heading, variable):
-            frame = ctk.CTkFrame(grid, corner_radius=12, fg_color="#17283b")
-            frame.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
-            ctk.CTkLabel(
-                frame, text=heading.upper(), text_color="#7facc5",
-                font=ctk.CTkFont(size=11, weight="bold"),
-            ).pack(anchor="w", padx=14, pady=(10, 1))
-            ctk.CTkLabel(
-                frame, textvariable=variable, anchor="w", justify="left",
-                wraplength=240, font=ctk.CTkFont(size=14, weight="bold"),
-            ).pack(fill="x", padx=14, pady=(0, 12))
-
-        tile(0, 0, "USB connection", self._overview_connection_var)
-        tile(0, 1, "Firmware", self._overview_firmware_var)
-        tile(1, 0, "Clock selection", self._overview_clock_var)
-        tile(1, 1, "Windows memory", self._overview_memory_var)
-        ctk.CTkLabel(
-            body, text="QUICK ACTIONS", text_color="#7facc5",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        ).pack(anchor="w", padx=14, pady=(17, 6))
-        actions = ctk.CTkFrame(body, fg_color="transparent")
-        actions.pack(fill="x", padx=12, pady=(0, 10))
-        for name, target in (
-            ("Audio mixer", "Audio"),
-            ("Clock gallery", "Clock"),
-            ("Update Center", "Updates"),
-        ):
-            ctk.CTkButton(
-                actions, text=name, height=38, corner_radius=10,
-                command=lambda destination=target: self._tabs.set(destination),
-            ).pack(side="left", fill="x", expand=True, padx=3)
-        ctk.CTkLabel(
-            body,
-            text="Volume controls and OBS actions remain available on the device and system tray.",
-            text_color="#91a7bb", anchor="w", wraplength=600,
-        ).pack(anchor="w", padx=12, pady=(2, 8))
+        self.build_fluent_overview(parent)
 
     def _build_audio_tab(self, parent):
-        ctk.CTkLabel(
-            parent, text="Windows Audio Sessions",
-            font=ctk.CTkFont(size=19, weight="bold"), anchor="w",
-        ).pack(fill="x", padx=12, pady=(12, 3))
-        ctk.CTkLabel(
-            parent,
-            text="Read-only live overview. Use VuNMix controls to adjust volume safely.",
-            text_color="#91a7bb", anchor="w", wraplength=600,
-        ).pack(fill="x", padx=12, pady=(0, 5))
-        self._audio_list = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        self._audio_list.pack(fill="both", expand=True, padx=10, pady=2)
+        self.build_fluent_audio(parent)
 
     def _build_update_heading(self, parent):
-        ctk.CTkLabel(
-            parent, text="Update Center",
-            font=ctk.CTkFont(size=19, weight="bold"), anchor="w",
-        ).pack(fill="x", padx=14, pady=(12, 2))
-        self._update_center_var = tk.StringVar(value="Waiting for verified firmware version")
-        ctk.CTkLabel(
-            parent, textvariable=self._update_center_var,
-            text_color="#9ac6dc", justify="left",
-            anchor="w", wraplength=620,
-        ).pack(fill="x", padx=14, pady=(1, 5))
-        ctk.CTkLabel(
-            parent,
-            text="All downloads use official GitHub releases and SHA-256 verification. "
-                 "Manual flashing is explicit. Automatic sync follows the Auto FW Update preference.",
-            text_color="#91a7bb", anchor="w", justify="left", wraplength=620,
-        ).pack(fill="x", padx=14, pady=(1, 4))
+        self.build_fluent_update_heading(parent)
 
     def _clock_style_name(self):
         from protocol import CLOCK_STYLE_NAMES
-        index = max(0, min(len(CLOCK_STYLE_NAMES) - 1,
-                           int(self.config.device_settings.clock_style)))
-        return CLOCK_STYLE_NAMES[index]
+        return CLOCK_STYLE_NAMES[max(0, min(
+            len(CLOCK_STYLE_NAMES) - 1, int(self.config.device_settings.clock_style)
+        ))]
 
     def _build_clock_preview(self, parent):
-        frame = ctk.CTkFrame(parent, fg_color="#142d42", corner_radius=12)
-        frame.pack(fill="x", padx=4, pady=(12, 8))
-        ctk.CTkLabel(
-            frame, text="CLOCK GALLERY  /  16 STYLES",
-            text_color="#7fcfe9", font=ctk.CTkFont(size=12, weight="bold"),
-        ).pack(pady=(15, 4))
-        self._clock_preview_var = tk.StringVar()
-        label = ctk.CTkLabel(
-            frame, textvariable=self._clock_preview_var,
-            font=ctk.CTkFont(size=27, weight="bold"),
-            text_color="#9ceafa",
-        )
-        label.pack(pady=(2, 12))
-        ctk.CTkLabel(
-            parent, text="Select a clock above, then Save Settings. "
-                         "Your device must run compatible firmware for styles 8–15.",
-            text_color="#91a7bb", anchor="w", justify="left", wraplength=520,
-        ).pack(fill="x", padx=8, pady=(3, 8))
-
-        def update_preview(*_unused):
-            self._clock_preview_var.set(
-                self._clock_style_var.get() + "  |  " + time.strftime("%H:%M")
-            )
-        self._clock_style_var.trace_add("write", update_preview)
-        update_preview()
+        self.build_fluent_clock_gallery(parent, include_preview=True)
 
     def _refresh_control_center(self):
-        """Refresh visible status from Tk's main-thread timer only."""
-        if not hasattr(self, "_tabs"):
-            return
-        connected = bool(getattr(self.controller, "_device_connected", False))
-        fw = getattr(self.controller, "firmware_version", "unknown")
-        active_port = getattr(self.controller.serial, "port", "") or self._com_var.get()
-        self._overview_connection_var.set(
-            ("Connected · " + str(active_port)) if connected else "Disconnected"
-        )
-        self._overview_firmware_var.set(str(fw) if connected else "Not connected")
-        self._overview_clock_var.set("Clock: " + self._clock_style_var.get())
-        compatible = describe_device_update(APP_VERSION, str(fw), connected)
-        self._update_center_var.set(
-            f"Desktop {compatible.desktop_version}  /  Firmware "
-            f"{compatible.firmware_version}  —  {compatible.status}"
-        )
-
-        now = time.monotonic()
-        if now - self._last_overview_snapshot >= 5.0:
-            try:
-                import psutil
-                rss = psutil.Process().memory_info().rss / (1024 * 1024)
-                self._overview_memory_var.set(f"{rss:.1f} MiB RSS")
-            except Exception:
-                self._overview_memory_var.set("Unavailable")
-            self._last_overview_snapshot = now
-
-        if self._tabs.get() != "Audio" or now - self._last_audio_snapshot < 2.5:
-            return
-        self._last_audio_snapshot = now
-        try:
-            from protocol import DisplayMode
-            groups = []
-            for name, mode in (
-                ("OUTPUT", DisplayMode.MODE_OUTPUT),
-                ("INPUT", DisplayMode.MODE_INPUT),
-                ("APPLICATIONS", DisplayMode.MODE_APPLICATION),
-            ):
-                items = self.controller.audio.get_sessions_for_mode(mode)
-                groups.append((name, [(str(item.name), int(item.volume), bool(item.is_muted))
-                                      for item in items[:8]]))
-            signature = tuple((name, tuple(values)) for name, values in groups)
-            if signature == self._audio_render_signature:
-                return
-            self._audio_render_signature = signature
-            for child in self._audio_list.winfo_children():
-                child.destroy()
-            for heading, items in groups:
-                ctk.CTkLabel(
-                    self._audio_list, text=heading, text_color="#8cd9f5",
-                    font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
-                ).pack(fill="x", padx=6, pady=(9, 4))
-                if not items:
-                    ctk.CTkLabel(
-                        self._audio_list, text="No active sessions",
-                        text_color="#7f93a6", anchor="w",
-                    ).pack(fill="x", padx=8)
-                for name, volume, muted in items:
-                    row = ctk.CTkFrame(self._audio_list, fg_color="#17283b", corner_radius=8)
-                    row.pack(fill="x", padx=5, pady=2)
-                    ctk.CTkLabel(row, text=name, anchor="w").pack(
-                        side="left", fill="x", expand=True, padx=10, pady=7
-                    )
-                    ctk.CTkLabel(
-                        row, text="MUTED" if muted else f"{max(0,min(100,volume))}%",
-                        text_color="#ffae9a" if muted else "#85d9f6",
-                    ).pack(side="right", padx=12)
-        except Exception:
-            log.debug("Control Center audio snapshot unavailable", exc_info=True)
+        self.refresh_fluent_content()
 
     def _process_window_commands(self):
         """Drain UI work exclusively on the Tcl/Tk owning thread."""
@@ -749,6 +579,7 @@ class SettingsDialog:
         if window is None:
             return
         log.info("Destroying Tk UI on MainThread")
+        self._audio_dispatcher.close()
         try:
             window.quit()
         except tk.TclError:
