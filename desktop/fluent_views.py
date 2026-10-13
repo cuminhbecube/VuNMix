@@ -207,7 +207,8 @@ class FluentViewsMixin:
         self._fluent_header(tools, "Profiles · Automation")
         actions = ctk.CTkFrame(tools, fg_color="transparent")
         actions.pack(fill="x", padx=7, pady=(0, 8))
-        profile_names = list(self.controller.preset_service.get_preset_names())
+        preset_service = getattr(self.controller, "preset_service", None)
+        profile_names = list(preset_service.get_preset_names()) if preset_service else []
         self._profile_choice = tk.StringVar(value=profile_names[0] if profile_names else "None")
         ctk.CTkOptionMenu(
             actions, values=profile_names or ["None"],
@@ -245,7 +246,9 @@ class FluentViewsMixin:
                 command=lambda code=action: self._fluent_run_async(
                     "media", lambda: self.controller.media_service.execute_control(code)),
             ).pack(side="left", padx=3)
-        obs = self.controller.obs_service
+        obs = getattr(self.controller, "obs_service", None)
+        if obs is None:
+            return
         for label, handler in (
             ("OBS Stream", obs.toggle_streaming),
             ("OBS Record", obs.toggle_recording),
@@ -254,6 +257,35 @@ class FluentViewsMixin:
                 row, text=label, height=29, width=85, fg_color="#183D5E",
                 command=lambda fn=handler: self._fluent_run_async("OBS", fn),
             ).pack(side="left", padx=3)
+        row2 = ctk.CTkFrame(media, fg_color="transparent")
+        row2.pack(fill="x", padx=8, pady=(0, 7))
+        ctk.CTkButton(
+            row2, text="Mute OBS Mic", height=28, fg_color="#183D5E",
+            command=lambda: self._fluent_run_async(
+                "OBS mic", lambda: obs.toggle_input_mute(obs.mic_input)),
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            row2, text="Mute Desktop", height=28, fg_color="#183D5E",
+            command=lambda: self._fluent_run_async(
+                "OBS desktop", lambda: obs.toggle_input_mute(obs.desktop_input)),
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            row2, text="Next OBS Scene", height=28, fg_color="#183D5E",
+            command=self._fluent_next_obs_scene,
+        ).pack(side="left", padx=3)
+
+    def _fluent_next_obs_scene(self):
+        obs = self.controller.obs_service
+        scenes = list(obs.scenes)
+        if len(scenes) < 2:
+            return
+        try:
+            current_index = scenes.index(obs.current_scene)
+        except ValueError:
+            current_index = -1
+        next_scene = scenes[(current_index + 1) % len(scenes)]
+        self._fluent_run_async("OBS scene",
+                               lambda: obs.switch_scene(next_scene))
 
     def _fluent_apply_profile(self):
         name = self._profile_choice.get()
@@ -410,11 +442,13 @@ class FluentViewsMixin:
     def _render_fluent_audio(self, host, count):
         for child in host.winfo_children():
             child.destroy()
-        groups = (
+        groups = [
             ("Output", DisplayMode.MODE_OUTPUT),
             ("Input", DisplayMode.MODE_INPUT),
             ("Applications", DisplayMode.MODE_APPLICATION),
-        )
+        ]
+        if count > 2:
+            groups.append(("Game Mixer", DisplayMode.MODE_GAME))
         for n, (heading, mode) in enumerate(groups):
             card = self._fluent_card(host)
             card.grid(row=0, column=n, sticky="nsew", padx=3)
@@ -543,7 +577,8 @@ class FluentViewsMixin:
             # Read snapshots are guarded by AudioService's own state lock.
             snapshot = []
             for mode in (DisplayMode.MODE_OUTPUT, DisplayMode.MODE_INPUT,
-                         DisplayMode.MODE_APPLICATION):
+                         DisplayMode.MODE_APPLICATION,
+                         DisplayMode.MODE_GAME):
                 snapshot.extend(
                     (int(mode), item._device_id, item._session_identifier,
                      item.name, item.volume, item.is_muted, item.is_default)
