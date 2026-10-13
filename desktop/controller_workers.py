@@ -234,7 +234,7 @@ class SyncWorkersMixin:
                             self._push_updated_state()
                     except Exception as exc:
                         log.warning("Full audio refresh failed; keeping sync alive: %s", exc)
-                    last_full_refresh = time.monotonic()
+                    last_full_refresh = now
                     last_device_check = last_full_refresh
                     continue
 
@@ -245,7 +245,7 @@ class SyncWorkersMixin:
                             log.info("System audio changes detected. Refreshing...")
                             self.audio.refresh()
                             self._push_updated_state()
-                            last_full_refresh = time.monotonic()
+                            last_full_refresh = now
                             continue
 
                     if now - last_volume_sync >= 0.75:
