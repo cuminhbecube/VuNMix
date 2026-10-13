@@ -27,7 +27,14 @@ log = logging.getLogger(__name__)
 class SyncWorkersMixin:
     """Background workers that keep Windows audio and hardware state aligned."""
 
-    def _sync_current_volume_once(self) -> bool:
+    @staticmethod
+    def _worker_wait(stop, seconds):
+        if stop is not None:
+            return stop.wait(seconds)
+        time.sleep(seconds)
+        return False
+
+    def _sync_current_volume_once(self, stop=None) -> bool:
         """Push one Windows volume change only for a stable selected identity.
 
         SESSION_INFO and CURRENT_SESSION are delivered as separate protocol
@@ -58,7 +65,7 @@ class SyncWorkersMixin:
         if read_idx is None:
             return False
 
-        vol = self.audio.read_current_volume(mode, read_idx)
+        vol = self.audio.read_current_volume(mode, read_idx, expected_item=items[read_idx])
         if vol is None or int(vol.id) != expected_id:
             log.debug(
                 "Skipped periodic volume sync after identity mismatch: mode=%s expected=%s got=%s",
@@ -72,6 +79,7 @@ class SyncWorkersMixin:
             current = self._sessions[SessionIndex.INDEX_CURRENT]
             if (
                 self._selection_transitioning
+                or (stop is not None and stop.is_set())
                 or self._selection_epoch != epoch
                 or self._session_info.mode != mode
                 or int(current.data.id) != expected_id
@@ -89,7 +97,7 @@ class SyncWorkersMixin:
             self.serial.send_volume(Command.VOLUME_CURR_CHANGE, vol)
             return True
 
-    def _heartbeat_loop(self):
+    def _heartbeat_loop(self, stop=None):
         """Keep transport liveness independent from WASAPI/audio work.
 
         Audio enumeration can occasionally stall inside Windows COM. Heartbeat
@@ -101,8 +109,9 @@ class SyncWorkersMixin:
         pending_since = 0.0
         response_floor = 0.0
 
-        while self._running:
-            time.sleep(0.1)
+        while self._running and (stop is None or not stop.is_set()):
+            if self._worker_wait(stop, 0.1):
+                break
 
             if (
                 not self._device_connected
@@ -141,41 +150,41 @@ class SyncWorkersMixin:
                 pending_since = now
                 last_heartbeat = now
 
-    def _sync_loop(self):
-        """Sync hardware without continuously allocating Windows COM objects.
+    def _sync_loop(self, stop=None):
+        """Keep 0.2s transport ticks, but sharply limit native WASAPI calls.
 
-        The configured 200/500ms tick is for inexpensive protocol work. COM
-        device enumeration is much heavier and has caused native GC faults on
-        some Windows builds; keep it on slower, independent schedules. Hold a
-        COM apartment for the whole worker lifetime rather than repeatedly
-        uninitializing it while pycaw wrappers may still be collected.
+        Preserve the v0.4.22 worker stop event and generation isolation, while
+        keeping a COM apartment alive until the worker exits. Short-lived
+        CoInitialize/CoUninitialize around every poll can collect pycaw COM
+        proxies at unsafe times. All scans are independent of the fast tick.
         """
         interval = max(0.05, self.config.update_interval_ms / 1000.0)
         last_full_refresh = time.monotonic()
+        last_time_sync = time.monotonic()
+        last_telemetry_sync = time.monotonic()
         last_device_check = last_full_refresh
         last_volume_sync = last_full_refresh
-        last_time_sync = last_full_refresh
-        last_telemetry_sync = last_full_refresh
         last_memory_report = last_full_refresh
         process = psutil.Process()
 
         comtypes.CoInitialize()
         try:
-            while self._running:
-                time.sleep(interval)
-
-                # Low-overhead, five-minute RSS samples expose regressions
-                # that cannot be diagnosed from COM exception logs alone.
+            while self._running and (stop is None or not stop.is_set()):
+                if self._worker_wait(stop, interval):
+                    break
                 now = time.monotonic()
+
+                # Emit a bounded time-series for user-reported 1.8GB RSS growth.
+                # This is independent of USB connection/sleep state.
                 if now - last_memory_report >= 300.0:
                     try:
-                        rss_mib = process.memory_info().rss / (1024 * 1024)
                         log.info(
                             "VuNMix process memory: rss=%.1fMiB threads=%d",
-                            rss_mib, process.num_threads(),
+                            process.memory_info().rss / (1024 * 1024),
+                            process.num_threads(),
                         )
                     except Exception as exc:
-                        log.debug("Process memory sample unavailable: %s", exc)
+                        log.debug("Process memory measurement failed: %s", exc)
                     last_memory_report = now
 
                 if (
@@ -184,8 +193,6 @@ class SyncWorkersMixin:
                     or getattr(self, "_resume_recovering", False)
                 ):
                     continue
-
-                now = time.monotonic()
 
                 if now - last_time_sync >= 30.0:
                     dt = datetime.now()
@@ -227,7 +234,7 @@ class SyncWorkersMixin:
 
                         old_sig = get_sig()
                         self.audio.refresh()
-                        if old_sig != get_sig():
+                        if (stop is None or not stop.is_set()) and old_sig != get_sig():
                             log.info(
                                 "Audio devices/apps changed in background. Pushing updated state."
                             )
@@ -235,7 +242,7 @@ class SyncWorkersMixin:
                     except Exception as exc:
                         log.warning("Full audio refresh failed; keeping sync alive: %s", exc)
                     last_full_refresh = now
-                    last_device_check = last_full_refresh
+                    last_device_check = now
                     continue
 
                 try:
@@ -244,13 +251,14 @@ class SyncWorkersMixin:
                         if self.audio.check_system_changes():
                             log.info("System audio changes detected. Refreshing...")
                             self.audio.refresh()
-                            self._push_updated_state()
+                            if stop is None or not stop.is_set():
+                                self._push_updated_state()
                             last_full_refresh = now
                             continue
 
-                    if now - last_volume_sync >= 0.75:
+                    if (stop is None or not stop.is_set()) and now - last_volume_sync >= 0.75:
                         last_volume_sync = now
-                        self._sync_current_volume_once()
+                        self._sync_current_volume_once(stop)
                 except Exception as exc:
                     log.debug("Sync error: %s", exc)
         finally:
@@ -281,7 +289,7 @@ class SyncWorkersMixin:
             return min(target, shown + 18)
         return max(target, shown - 5)
 
-    def _meter_loop(self):
+    def _meter_loop(self, stop=None):
         """Send smoothed live peak levels without blocking volume sync."""
         current_meter = None
         alternate_meter = None
@@ -293,8 +301,9 @@ class SyncWorkersMixin:
 
         comtypes.CoInitialize()
         try:
-            while self._running:
-                time.sleep(1.0 / 15.0)
+            while self._running and (stop is None or not stop.is_set()):
+                if self._worker_wait(stop, 1.0 / 15.0):
+                    break
 
                 if (
                     not self._device_connected
@@ -325,7 +334,12 @@ class SyncWorkersMixin:
                         self._sessions[SessionIndex.INDEX_ALTERNATE],
                     )
 
-                key = (mode, current_idx, alternate_idx)
+                current_item = items[current_idx] if 0 <= current_idx < len(items) else None
+                alternate_item = items[alternate_idx] if alternate_idx is not None else None
+                def identity(item):
+                    return (getattr(item, "_device_id", ""), getattr(item, "_session_identifier", ""),
+                            getattr(item, "id", None), getattr(item, "name", None))
+                key = (mode, current_idx, alternate_idx, identity(current_item), identity(alternate_item))
                 now = time.monotonic()
                 if key != selection_key or (
                     current_meter is None and now >= next_retry
@@ -337,12 +351,12 @@ class SyncWorkersMixin:
                     selection_key = key
                     next_retry = now + 1.0
                     try:
-                        current_meter = self.audio.create_peak_meter(mode, current_idx)
+                        current_meter = self.audio.create_peak_meter(mode, current_idx, expected_item=current_item) if current_item is not None else None
                     except Exception:
                         current_meter = None
                     try:
                         alternate_meter = (
-                            self.audio.create_peak_meter(mode, alternate_idx)
+                            self.audio.create_peak_meter(mode, alternate_idx, expected_item=alternate_item)
                             if alternate_idx is not None
                             else None
                         )
@@ -379,7 +393,7 @@ class SyncWorkersMixin:
                     target_alternate,
                 )
                 levels = (shown_current, shown_alternate)
-                if levels != last_sent:
+                if (stop is None or not stop.is_set()) and levels != last_sent:
                     self.serial.send_meter(MeterData(*levels))
                     last_sent = levels
         finally:

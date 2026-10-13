@@ -52,12 +52,18 @@ class WeatherService:
     def start(self):
         if self._running:
             return
+        if self._thread is not None and self._thread.is_alive():
+            return
         self._running = True
+        self._stop = threading.Event()
         self._thread = threading.Thread(target=self._worker, name="WeatherServiceWorker", daemon=True)
         self._thread.start()
 
     def stop(self):
         self._running = False
+        if self._thread is not None:
+            self._stop.set()
+            self._thread.join(timeout=6.0)
 
     def get_weather(self) -> Tuple[int, int, str]:
         """Returns (temp_c, weather_code, city)."""
@@ -69,7 +75,8 @@ class WeatherService:
             if now - self._last_fetch >= 900 or self._last_fetch == 0:  # Every 15 minutes
                 self._fetch()
                 self._last_fetch = now
-            time.sleep(10)
+            if self._stop.wait(10):
+                break
 
     def _fetch(self):
         url = (

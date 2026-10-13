@@ -18,6 +18,21 @@ from protocol import PcStatsData
 log = logging.getLogger(__name__)
 
 
+def process_health_snapshot():
+    """Small, uncached process snapshot for diagnosing long-running builds."""
+    try:
+        process = psutil.Process()
+        memory = process.memory_info()
+        return {
+            "rss_mb": round(memory.rss / (1024 * 1024), 2),
+            "private_mb": round(getattr(memory, "private", memory.rss) / (1024 * 1024), 2),
+            "threads": process.num_threads(),
+            "handles": process.num_handles() if hasattr(process, "num_handles") else process.num_fds(),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 class SystemMonitor:
     """Collects PC performance metrics at 1Hz without blocking."""
 
@@ -26,6 +41,7 @@ class SystemMonitor:
         self._last_net_bytes = self._get_net_bytes()
         self._nvml_initialized = False
         self._nvml_handle = None
+        self._last_process_log = -1e12
         self._init_nvml()
         # Prime psutil cpu measurement
         psutil.cpu_percent(interval=None)
@@ -88,6 +104,9 @@ class SystemMonitor:
     def get_pc_stats(self) -> PcStatsData:
         """Capture a snapshot of system performance metrics."""
         now = time.monotonic()
+        if now - self._last_process_log >= 300.0:
+            self._last_process_log = now
+            log.info("VuNMix process health: %s", process_health_snapshot())
         dt = max(0.1, now - self._last_net_time)
 
         # CPU

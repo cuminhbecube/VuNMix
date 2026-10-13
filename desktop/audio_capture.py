@@ -22,7 +22,17 @@ class InputPeakMeter:
             latency="low",
             callback=self._on_audio,
         )
-        self._stream.start()
+        try:
+            self._stream.start()
+        except BaseException:
+            # PortAudio retains the callback (and therefore this meter) until
+            # close. A failed start is retried every second by AudioMeter.
+            stream, self._stream = self._stream, None
+            try:
+                stream.close()
+            except Exception:
+                pass
+            raise
 
     def _on_audio(self, indata, _frames, _time_info, _status):
         samples = array("h")

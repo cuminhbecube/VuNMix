@@ -1360,7 +1360,6 @@ class TrayApp:
         with self._firmware_auto_lock:
             if attempt_key in self._auto_firmware_attempted:
                 return
-            self._auto_firmware_attempted.add(attempt_key)
 
         try:
             info = self._firmware_release_client.get_version(APP_VERSION)
@@ -1374,6 +1373,7 @@ class TrayApp:
                         f"No firmware matches PC {APP_VERSION}"
                     )
                 )
+                self._schedule_firmware_retry()
                 return
 
             log.info(
@@ -1382,6 +1382,9 @@ class TrayApp:
                 APP_VERSION,
                 info.tag,
             )
+            with self._firmware_auto_lock:
+                self._auto_firmware_attempted.add(attempt_key)
+                self._firmware_retry_delay = 60.0
             self._dispatch_ui(
                 lambda found=info:
                     self._ensure_settings_dialog().start_firmware_release_update(
@@ -1391,12 +1394,32 @@ class TrayApp:
             )
         except Exception as exc:
             log.warning("Automatic firmware check failed: %s", exc)
+            self._schedule_firmware_retry()
             self._dispatch_ui(
                 lambda error=str(exc):
                     self._ensure_settings_dialog()._firmware_status_var.set(
                         f"Auto FW check failed: {error}"
                     )
             )
+
+    def _schedule_firmware_retry(self):
+        with self._firmware_auto_lock:
+            previous = getattr(self, "_firmware_retry_timer", None)
+            if previous is not None and previous.is_alive():
+                return
+            delay = getattr(self, "_firmware_retry_delay", 60.0)
+            self._firmware_retry_delay = min(delay * 2.0, 900.0)
+
+            def retry():
+                with self._firmware_auto_lock:
+                    self._firmware_retry_timer = None
+                if not self._update_stop.is_set() and self.controller.is_connected:
+                    self._on_device_ready()
+
+            timer = threading.Timer(delay, retry)
+            timer.daemon = True
+            self._firmware_retry_timer = timer
+            timer.start()
 
     def _start_app_update_watcher(self):
         if self._update_watcher_started:

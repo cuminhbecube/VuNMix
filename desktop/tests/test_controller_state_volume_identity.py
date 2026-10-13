@@ -52,10 +52,10 @@ class FakeAudio:
     def get_session_count(self, mode):
         return len(self.get_sessions_for_mode(mode))
 
-    def set_volume(self, mode, index, volume, is_muted):
+    def set_volume(self, mode, index, volume, is_muted, *, expected_item=None):
         self.volume_calls.append((mode, index, volume, is_muted))
 
-    def set_default_device(self, mode, index):
+    def set_default_device(self, mode, index, *, expected_item=None):
         self.default_calls.append((mode, index))
         items = self.items_by_mode.get(mode, [])
         for i, item in enumerate(items):

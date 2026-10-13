@@ -72,7 +72,7 @@ class _Audio:
             return list(self.apps)
         return []
 
-    def set_volume(self, mode, index, volume, muted):
+    def set_volume(self, mode, index, volume, muted, *, expected_item=None):
         self.volume_calls.append((mode, index, int(volume), bool(muted)))
         item = self.get_sessions_for_mode(mode)[index]
         item.volume = int(volume)
