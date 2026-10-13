@@ -158,6 +158,11 @@
         s_clockBrand = nullptr;
         s_clockPanel = nullptr;
         s_clockMeter = nullptr;
+        s_clockProgress = nullptr;
+        s_clockArt = nullptr;
+        for (auto& column : s_clockBinary)
+            for (auto& dot : column) dot = nullptr;
+        s_lastClockTime = UINT32_MAX;
         s_clockHourHand = nullptr;
         s_clockMinuteHand = nullptr;
         s_clockSecondHand = nullptr;
