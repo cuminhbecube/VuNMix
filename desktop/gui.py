@@ -515,6 +515,203 @@ class SettingsDialog:
         self._update_status_loop()
         self._process_window_commands()
 
+    def _build_overview_tab(self, parent):
+        """Read-only overview and clear navigation; never mutate Windows volume."""
+        body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=4, pady=4)
+        ctk.CTkLabel(
+            body, text="Your device at a glance",
+            font=ctk.CTkFont(size=21, weight="bold"), anchor="w",
+        ).pack(fill="x", padx=10, pady=(10, 1))
+        ctk.CTkLabel(
+            body, text="Connection, firmware, resources and shortcuts",
+            text_color="#91a7bb", anchor="w",
+        ).pack(fill="x", padx=10, pady=(0, 12))
+
+        self._overview_connection_var = tk.StringVar(value="Disconnected")
+        self._overview_firmware_var = tk.StringVar(value="Not verified")
+        self._overview_clock_var = tk.StringVar(
+            value="Clock: " + self._clock_style_name()
+        )
+        self._overview_memory_var = tk.StringVar(value="Collecting resource data...")
+
+        grid = ctk.CTkFrame(body, fg_color="transparent")
+        grid.pack(fill="x", padx=8)
+        grid.grid_columnconfigure(0, weight=1)
+        grid.grid_columnconfigure(1, weight=1)
+
+        def tile(row, col, heading, variable):
+            frame = ctk.CTkFrame(grid, corner_radius=12, fg_color="#17283b")
+            frame.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
+            ctk.CTkLabel(
+                frame, text=heading.upper(), text_color="#7facc5",
+                font=ctk.CTkFont(size=11, weight="bold"),
+            ).pack(anchor="w", padx=14, pady=(10, 1))
+            ctk.CTkLabel(
+                frame, textvariable=variable, anchor="w", justify="left",
+                wraplength=240, font=ctk.CTkFont(size=14, weight="bold"),
+            ).pack(fill="x", padx=14, pady=(0, 12))
+
+        tile(0, 0, "USB connection", self._overview_connection_var)
+        tile(0, 1, "Firmware", self._overview_firmware_var)
+        tile(1, 0, "Clock selection", self._overview_clock_var)
+        tile(1, 1, "Windows memory", self._overview_memory_var)
+        ctk.CTkLabel(
+            body, text="QUICK ACTIONS", text_color="#7facc5",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(17, 6))
+        actions = ctk.CTkFrame(body, fg_color="transparent")
+        actions.pack(fill="x", padx=12, pady=(0, 10))
+        for name, target in (
+            ("Audio mixer", "Audio"),
+            ("Clock gallery", "Clock"),
+            ("Update Center", "Updates"),
+        ):
+            ctk.CTkButton(
+                actions, text=name, height=38, corner_radius=10,
+                command=lambda destination=target: self._tabs.set(destination),
+            ).pack(side="left", fill="x", expand=True, padx=3)
+        ctk.CTkLabel(
+            body,
+            text="Volume controls and OBS actions remain available on the device and system tray.",
+            text_color="#91a7bb", anchor="w", wraplength=600,
+        ).pack(anchor="w", padx=12, pady=(2, 8))
+
+    def _build_audio_tab(self, parent):
+        ctk.CTkLabel(
+            parent, text="Windows Audio Sessions",
+            font=ctk.CTkFont(size=19, weight="bold"), anchor="w",
+        ).pack(fill="x", padx=12, pady=(12, 3))
+        ctk.CTkLabel(
+            parent,
+            text="Read-only live overview. Use VuNMix controls to adjust volume safely.",
+            text_color="#91a7bb", anchor="w", wraplength=600,
+        ).pack(fill="x", padx=12, pady=(0, 5))
+        self._audio_list = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        self._audio_list.pack(fill="both", expand=True, padx=10, pady=2)
+
+    def _build_update_heading(self, parent):
+        ctk.CTkLabel(
+            parent, text="Update Center",
+            font=ctk.CTkFont(size=19, weight="bold"), anchor="w",
+        ).pack(fill="x", padx=14, pady=(12, 2))
+        self._update_center_var = tk.StringVar(value="Waiting for verified firmware version")
+        ctk.CTkLabel(
+            parent, textvariable=self._update_center_var,
+            text_color="#9ac6dc", justify="left",
+            anchor="w", wraplength=620,
+        ).pack(fill="x", padx=14, pady=(1, 5))
+        ctk.CTkLabel(
+            parent,
+            text="All downloads use official GitHub releases and SHA-256 verification. "
+                 "Firmware flashing remains an explicit action in this tab.",
+            text_color="#91a7bb", anchor="w", justify="left", wraplength=620,
+        ).pack(fill="x", padx=14, pady=(1, 4))
+
+    def _clock_style_name(self):
+        from protocol import CLOCK_STYLE_NAMES
+        index = max(0, min(len(CLOCK_STYLE_NAMES) - 1,
+                           int(self.config.device_settings.clock_style)))
+        return CLOCK_STYLE_NAMES[index]
+
+    def _build_clock_preview(self, parent):
+        frame = ctk.CTkFrame(parent, fg_color="#142d42", corner_radius=12)
+        frame.pack(fill="x", padx=4, pady=(12, 8))
+        ctk.CTkLabel(
+            frame, text="CLOCK GALLERY  /  16 STYLES",
+            text_color="#7fcfe9", font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(pady=(15, 4))
+        self._clock_preview_var = tk.StringVar()
+        label = ctk.CTkLabel(
+            frame, textvariable=self._clock_preview_var,
+            font=ctk.CTkFont(size=27, weight="bold"),
+            text_color="#9ceafa",
+        )
+        label.pack(pady=(2, 12))
+        ctk.CTkLabel(
+            parent, text="Select a clock above, then Save Settings. "
+                         "Your device must run compatible firmware for styles 8–15.",
+            text_color="#91a7bb", anchor="w", justify="left", wraplength=520,
+        ).pack(fill="x", padx=8, pady=(3, 8))
+
+        def update_preview(*_unused):
+            self._clock_preview_var.set(
+                self._clock_style_var.get() + "  |  " + time.strftime("%H:%M")
+            )
+        self._clock_style_var.trace_add("write", update_preview)
+        update_preview()
+
+    def _refresh_control_center(self):
+        """Refresh visible status from Tk's main-thread timer only."""
+        if not hasattr(self, "_tabs"):
+            return
+        connected = bool(getattr(self.controller, "_device_connected", False))
+        fw = getattr(self.controller, "firmware_version", "unknown")
+        active_port = getattr(self.controller.serial, "port", "") or self._com_var.get()
+        self._overview_connection_var.set(
+            ("Connected · " + str(active_port)) if connected else "Disconnected"
+        )
+        self._overview_firmware_var.set(str(fw) if connected else "Not connected")
+        self._overview_clock_var.set("Clock: " + self._clock_style_var.get())
+        compatible = describe_device_update(APP_VERSION, str(fw), connected)
+        self._update_center_var.set(
+            f"Desktop {compatible.desktop_version}  /  Firmware "
+            f"{compatible.firmware_version}  —  {compatible.status}"
+        )
+
+        now = time.monotonic()
+        if now - self._last_overview_snapshot >= 5.0:
+            try:
+                import psutil
+                rss = psutil.Process().memory_info().rss / (1024 * 1024)
+                self._overview_memory_var.set(f"{rss:.1f} MiB RSS")
+            except Exception:
+                self._overview_memory_var.set("Unavailable")
+            self._last_overview_snapshot = now
+
+        if self._tabs.get() != "Audio" or now - self._last_audio_snapshot < 2.5:
+            return
+        self._last_audio_snapshot = now
+        try:
+            from protocol import DisplayMode
+            groups = []
+            for name, mode in (
+                ("OUTPUT", DisplayMode.MODE_OUTPUT),
+                ("INPUT", DisplayMode.MODE_INPUT),
+                ("APPLICATIONS", DisplayMode.MODE_APPLICATION),
+            ):
+                items = self.controller.audio.get_sessions_for_mode(mode)
+                groups.append((name, [(str(item.name), int(item.volume), bool(item.is_muted))
+                                      for item in items[:8]]))
+            signature = tuple((name, tuple(values)) for name, values in groups)
+            if signature == self._audio_render_signature:
+                return
+            self._audio_render_signature = signature
+            for child in self._audio_list.winfo_children():
+                child.destroy()
+            for heading, items in groups:
+                ctk.CTkLabel(
+                    self._audio_list, text=heading, text_color="#8cd9f5",
+                    font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+                ).pack(fill="x", padx=6, pady=(9, 4))
+                if not items:
+                    ctk.CTkLabel(
+                        self._audio_list, text="No active sessions",
+                        text_color="#7f93a6", anchor="w",
+                    ).pack(fill="x", padx=8)
+                for name, volume, muted in items:
+                    row = ctk.CTkFrame(self._audio_list, fg_color="#17283b", corner_radius=8)
+                    row.pack(fill="x", padx=5, pady=2)
+                    ctk.CTkLabel(row, text=name, anchor="w").pack(
+                        side="left", fill="x", expand=True, padx=10, pady=7
+                    )
+                    ctk.CTkLabel(
+                        row, text="MUTED" if muted else f"{max(0,min(100,volume))}%",
+                        text_color="#ffae9a" if muted else "#85d9f6",
+                    ).pack(side="right", padx=12)
+        except Exception:
+            log.debug("Control Center audio snapshot unavailable", exc_info=True)
+
     def _process_window_commands(self):
         """Drain UI work exclusively on the Tcl/Tk owning thread."""
         self._last_ui_pump = time.monotonic()
