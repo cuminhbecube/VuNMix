@@ -6,8 +6,9 @@ import logging
 import math
 import time
 
-import psutil
 from datetime import datetime
+
+from resource_monitor import ProcessResourceTracker
 
 import comtypes
 
@@ -165,7 +166,7 @@ class SyncWorkersMixin:
         last_device_check = last_full_refresh
         last_volume_sync = last_full_refresh
         last_memory_report = last_full_refresh
-        process = psutil.Process()
+        resource_tracker = ProcessResourceTracker()
 
         comtypes.CoInitialize()
         try:
@@ -178,11 +179,13 @@ class SyncWorkersMixin:
                 # This is independent of USB connection/sleep state.
                 if now - last_memory_report >= 300.0:
                     try:
-                        log.info(
-                            "VuNMix process memory: rss=%.1fMiB threads=%d",
-                            process.memory_info().rss / (1024 * 1024),
-                            process.num_threads(),
-                        )
+                        sample = resource_tracker.capture(now)
+                        log.info("%s", resource_tracker.format(sample))
+                        if resource_tracker.suspected_growth():
+                            log.warning(
+                                "Sustained VuNMix memory growth detected; "
+                                "collect log/handle count for profiling"
+                            )
                     except Exception as exc:
                         log.debug("Process memory measurement failed: %s", exc)
                     last_memory_report = now
