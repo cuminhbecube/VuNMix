@@ -25,16 +25,13 @@ class ControlCenterSmokeTests(unittest.TestCase):
         dialog = ConnectionSettingsDialog(AppConfig(), controller, on_save=lambda *_: None)
         try:
             dialog.initialize()
-            self.assertEqual(
-                list(dialog._tabs._tab_dict),
-                ["Overview", "Audio", "Clock", "Device", "Updates", "Settings"],
-            )
-            self.assertEqual(len(dialog._clock_style_var._root().tk.call(
-                "info", "exists", dialog._clock_style_var._name
-            )), 1)  # verify the GUI variable was installed
-            self.assertIn("16 STYLES", str(dialog._clock_preview_var.get())
-                          if "16 STYLES" in dialog._clock_preview_var.get() else
-                          "16 STYLES")
+            from protocol import CLOCK_STYLE_NAMES
+            self.assertEqual(len(CLOCK_STYLE_NAMES), 16)
+            for name in ("Overview", "Audio", "Clock", "Device", "Updates", "Settings"):
+                self.assertIsNotNone(dialog._tabs.tab(name))
+            self.assertEqual(dialog._clock_style_var.get(), CLOCK_STYLE_NAMES[0])
+            self.assertIn(CLOCK_STYLE_NAMES[0], dialog._clock_preview_var.get())
+            self.assertIn("disconnected", dialog._update_center_var.get().lower())
             self.assertTrue(dialog._window.winfo_exists())
         finally:
             dialog._shutdown_from_ui()
