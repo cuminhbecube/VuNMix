@@ -79,8 +79,9 @@ def validate() -> None:
     require("CLOCK_STYLE_NAMES" in gui, "Desktop clock selector missing")
     require("self._clock_style_var" in gui, "Desktop clock binding missing")
     source = (ROOT / "desktop/controller_workers.py").read_text(encoding="utf-8")
-    require("VuNMix process memory:" in source,
-            "Long-running RSS memory telemetry was removed")
+    monitor = (ROOT / "desktop/resource_monitor.py").read_text(encoding="utf-8")
+    require("ProcessResourceTracker" in source and "VuNMix process memory:" in monitor,
+            "Long-running bounded RSS memory telemetry was removed")
     print(f"Feature contracts PASS: {len(styles)} clock styles, "
           f"{len(REQUIRED_FILES)} source components, audio/firmware/update/health")
 
