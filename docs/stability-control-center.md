@@ -36,7 +36,7 @@ Based on released `v0.4.24`, preserving every published 16-clock style.
 - `desktop/update_center.py` provides independent compatibility guidance.
 - In the UI, firmware v0.4.21+ unlocks all 16 clock styles; older firmware
   exposes eight styles. Unknown/disconnected firmware is never called compatible.
-- Flash requires the existing explicit version/file action and connection gate.
+- Manual flash requires the existing explicit version/file action and connection gate.\n- Automatic firmware sync can run on connection when the saved `Auto FW Update` preference is enabled; this behavior is retained from previous versions.
 - Future follow-up: formal manifest with hardware id, protocol capabilities,
   signed releases and recovery verification.
 
