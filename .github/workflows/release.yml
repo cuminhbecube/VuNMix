@@ -119,7 +119,7 @@ jobs:
     name: ESP32-S3 firmware
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [prepare]
+    needs: [prepare, feature_contracts]
     env:
       PIO_ENV: esp32-s3-devkitc1-n16r8
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -210,7 +210,7 @@ jobs:
     name: Windows desktop app
     runs-on: windows-latest
     timeout-minutes: 25
-    needs: [prepare]
+    needs: [prepare, feature_contracts]
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -367,7 +367,7 @@ jobs:
     name: Connection/crash stress round ${{ matrix.round }}
     runs-on: windows-latest
     timeout-minutes: 10
-    needs: [prepare]
+    needs: [prepare, feature_contracts]
     strategy:
       fail-fast: false
       matrix:
