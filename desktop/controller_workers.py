@@ -148,7 +148,9 @@ class SyncWorkersMixin:
                     last_heartbeat = now
                     continue
                 pending_since = now
-                last_he    def _sync_loop(self, stop=None):
+                last_heartbeat = now
+
+    def _sync_loop(self, stop=None):
         """Keep 0.2s transport ticks, but sharply limit native WASAPI calls.
 
         Preserve the v0.4.22 worker stop event and generation isolation, while
@@ -261,8 +263,6 @@ class SyncWorkersMixin:
                     log.debug("Sync error: %s", exc)
         finally:
             comtypes.CoUninitialize()
-
-ninitialize()
 
     @staticmethod
     def _peak_to_level(peak: float) -> int:
