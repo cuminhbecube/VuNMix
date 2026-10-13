@@ -604,7 +604,7 @@ class SettingsDialog:
         ctk.CTkLabel(
             parent,
             text="All downloads use official GitHub releases and SHA-256 verification. "
-                 "Firmware flashing remains an explicit action in this tab.",
+                 "Manual flashing is explicit. Automatic sync follows the Auto FW Update preference.",
             text_color="#91a7bb", anchor="w", justify="left", wraplength=620,
         ).pack(fill="x", padx=14, pady=(1, 4))
 
