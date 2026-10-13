@@ -392,6 +392,52 @@ class FluentViewsMixin:
                 f"{self._clock_style_var.get()}   ·   {time.strftime('%H:%M')}"
             )
 
+    def build_fluent_update_actions(self):
+        row = ctk.CTkFrame(self._updates_left, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=(2, 8))
+        for label, callback in (
+            ("Changelog", self._fluent_changelog),
+            ("Backup Settings", self._fluent_backup_settings),
+            ("Open Logs", self._fluent_open_logs),
+        ):
+            ctk.CTkButton(
+                row, text=label, height=28,
+                fg_color="#183D5E", text_color=TEXT,
+                command=callback,
+            ).pack(side="left", fill="x", expand=True, padx=2)
+
+    def _fluent_changelog(self):
+        import webbrowser
+        webbrowser.open("https://github.com/cuminhbecube/VuNMix/releases/latest")
+
+    def _fluent_backup_settings(self):
+        """Export the existing persisted user config, never an invented backup."""
+        import pathlib
+        import shutil
+        from tkinter import filedialog, messagebox
+        from config import CONFIG_DIR
+        source = pathlib.Path(CONFIG_DIR) / "config.json"
+        if not source.is_file():
+            messagebox.showwarning(
+                "VuNMix", "No saved config.json found. Save Settings first.",
+                parent=self._window,
+            )
+            return
+        destination = filedialog.asksaveasfilename(
+            parent=self._window,
+            title="Export VuNMix settings",
+            initialfile="VuNMix-config-backup.json",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")],
+        )
+        if not destination:
+            return
+        try:
+            shutil.copy2(source, destination)
+        except OSError as exc:
+            messagebox.showerror("VuNMix", f"Backup failed: {exc}",
+                                 parent=self._window)
+
     def build_fluent_updates_settings(self):
         panel = self._fluent_card(self._updates_right)
         panel.pack(fill="x", padx=7, pady=(4, 8))
