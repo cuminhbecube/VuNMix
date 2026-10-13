@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import math
 import time
+
+import psutil
 from datetime import datetime
 
 import comtypes
@@ -154,11 +156,27 @@ class SyncWorkersMixin:
         last_volume_sync = last_full_refresh
         last_time_sync = last_full_refresh
         last_telemetry_sync = last_full_refresh
+        last_memory_report = last_full_refresh
+        process = psutil.Process()
 
         comtypes.CoInitialize()
         try:
             while self._running:
                 time.sleep(interval)
+
+                # Low-overhead, five-minute RSS samples expose regressions
+                # that cannot be diagnosed from COM exception logs alone.
+                now = time.monotonic()
+                if now - last_memory_report >= 300.0:
+                    try:
+                        rss_mib = process.memory_info().rss / (1024 * 1024)
+                        log.info(
+                            "VuNMix process memory: rss=%.1fMiB threads=%d",
+                            rss_mib, process.num_threads(),
+                        )
+                    except Exception as exc:
+                        log.debug("Process memory sample unavailable: %s", exc)
+                    last_memory_report = now
 
                 if (
                     not self._device_connected
