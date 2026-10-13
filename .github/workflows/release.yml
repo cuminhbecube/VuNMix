@@ -77,6 +77,44 @@ jobs:
           echo "TAG=${TAG:-<none>}"
           echo "IS_RELEASE=${IS_RELEASE}"
 
+      - name: Checkout source history for release baseline
+        if: steps.version.outputs.is_release == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate immutable release and previous published baseline
+        if: steps.version.outputs.is_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "::error::Release ${TAG} already exists. Never replace published artifacts; increment version."
+            exit 1
+          fi
+          previous="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [[ -n "${previous}" ]]; then
+            git fetch --force origin "refs/tags/${previous}:refs/tags/${previous}"
+            if ! git merge-base --is-ancestor "${previous}" "${GITHUB_SHA}"; then
+              echo "::error::Current commit does not contain previous release ${previous}."
+              echo "::error::Merge all published features before releasing. See v0.4.23 clock regression."
+              exit 1
+            fi
+          fi
+
+  feature_contracts:
+    name: Release feature and compatibility contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify clock, USB and UI feature inventory
+        run: python scripts/verify_feature_contracts.py
+
   firmware:
     name: ESP32-S3 firmware
     runs-on: ubuntu-latest
@@ -363,7 +401,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [prepare, firmware, desktop, connection_stress]
+    needs: [prepare, feature_contracts, firmware, desktop, connection_stress]
     if: needs.prepare.outputs.is_release == 'true'
     permissions:
       contents: write
@@ -403,47 +441,25 @@ jobs:
             > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Create or update GitHub Release
+      - name: Publish new immutable GitHub Release
         shell: bash
         run: |
           set -euo pipefail
-
-          ASSETS=(
-            "release-assets/VuNMix-Firmware-${VERSION}.bin"
-            "release-assets/VuNMix-Firmware-Full-${VERSION}.zip"
-            "release-assets/VuNMix-Windows-Portable-${VERSION}.zip"
-            "release-assets/VuNMix-Windows-Setup-${VERSION}.exe"
-            "release-assets/SHA256SUMS.txt"
-          )
-
-          printf '  %s\n' "${ASSETS[@]}"
-
+          # A published release is immutable. Never retarget a tag, even on a rerun.
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            # Rebuilding the same version is intentional for release hotfixes.
-            # Keep the Git tag aligned with the exact commit that produced the
-            # replacement assets instead of leaving source/tag and binaries
-            # pointing at different revisions.
-            gh api \
-              --method PATCH \
-              "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
-              -f sha="${GITHUB_SHA}" \
-              -F force=true \
-              >/dev/null
-
-            gh release upload \
-              "${TAG}" \
-              "${ASSETS[@]}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber
-          else
-            gh release create \
-              "${TAG}" \
-              "${ASSETS[@]}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "VuNMix ${TAG}" \
-              --generate-notes
+            echo "::error::${TAG} is already published. Create the next patch version."
+            exit 1
           fi
+          gh release create "${TAG}" \
+            "release-assets/VuNMix-Firmware-${VERSION}.bin" \
+            "release-assets/VuNMix-Firmware-Full-${VERSION}.zip" \
+            "release-assets/VuNMix-Windows-Portable-${VERSION}.zip" \
+            "release-assets/VuNMix-Windows-Setup-${VERSION}.exe" \
+            "release-assets/SHA256SUMS.txt" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "VuNMix ${TAG}" \
+            --generate-notes
 
       - name: Verify published release
         shell: bash
