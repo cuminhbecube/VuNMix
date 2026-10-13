@@ -1,3 +1,4 @@
+"""Verify the Control Center layout remains scrollable with an always-visible Save."""
 import pathlib
 import unittest
 
@@ -11,37 +12,37 @@ class SettingsLayoutTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = GUI_PATH.read_text(encoding="utf-8")
 
-    def test_save_button_is_reserved_at_bottom(self):
+    def test_save_button_is_reserved_at_bottom_before_tabs(self):
         self.assertIn(
             "save_btn.pack(side='bottom', fill='x', padx=12, pady=(4, 8))",
             self.source,
         )
         self.assertLess(
             self.source.index("save_btn.pack(side='bottom'"),
-            self.source.index("# Content rows stay compact"),
+            self.source.index("self._tabs = ctk.CTkTabview("),
         )
 
-    def test_settings_rows_do_not_expand_vertically(self):
-        self.assertIn("content.pack(fill='x', padx=12)", self.source)
-        self.assertIn(
-            'row = ctk.CTkFrame(parent, fg_color="transparent", height=26)',
-            self.source,
-        )
+    def test_sections_scroll_and_reuse_original_config_controls(self):
+        self.assertIn("ctk.CTkScrollableFrame(", self.source)
+        for name in ("Overview", "Audio", "Clock", "Device", "Updates", "Settings"):
+            self.assertIn(f'"{name}"', self.source)
+        self.assertIn('row = ctk.CTkFrame(parent, fg_color="transparent", height=26)', self.source)
         self.assertIn("row.pack(fill='x', pady=1)", self.source)
+        self.assertIn("self._clock_style_var", self.source)
+        self.assertIn("self._led_color_values", self.source)
 
-    def test_bottom_cards_use_compact_spacing(self):
-        self.assertIn(
-            "favorites_frame.pack(fill='x', padx=12, pady=(3, 1))",
-            self.source,
-        )
-        self.assertIn(
-            "update_frame.pack(fill='x', padx=12, pady=(3, 1))",
-            self.source,
-        )
-        self.assertIn(
-            "firmware_frame.pack(fill='x', padx=12, pady=(3, 1))",
-            self.source,
-        )
+    def test_long_sections_stay_in_their_own_tabs(self):
+        self.assertIn('favorites_frame = ctk.CTkFrame(self._tabs.tab("Audio")', self.source)
+        self.assertIn('update_frame = ctk.CTkFrame(self._tabs.tab("Updates")', self.source)
+        self.assertIn('firmware_frame = ctk.CTkFrame(self._tabs.tab("Updates")', self.source)
+        self.assertIn('add_row(clock_content, "Clock Style"', self.source)
+        self.assertIn('add_row(preferences_content, "Auto FW Update"', self.source)
+
+    def test_dashboard_sampling_and_tk_lifecycle_are_bounded(self):
+        self.assertIn("self._last_audio_snapshot < 2.5", self.source)
+        self.assertIn("items[:8]", self.source)
+        self.assertIn("self._last_overview_snapshot >= 5.0", self.source)
+        self.assertIn("self._window.withdraw()", self.source)
 
 
 if __name__ == "__main__":
