@@ -63,6 +63,23 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
 - `gui.py`: giao diện settings và firmware update.
 - `firmware_updater.py`: kiểm tra và nạp firmware ESP32-S3 application image.
 
+## VuNMix Windows Control Center
+
+Ứng dụng Windows có sáu khu vực cấu hình: **Overview**, **Audio**, **Clock**,
+**Device**, **Updates** và **Settings**. Mở từ biểu tượng VuNMix ở system tray.
+
+- Overview hiển thị tình trạng kết nối, firmware, clock đang chọn và RAM app.
+- Audio cung cấp tổng quan output/input/application; điều khiển âm lượng vẫn
+  do thiết bị và hệ thống worker quản lý, không chỉnh COM trực tiếp từ UI.
+- Clock có toàn bộ 16 kiểu đồng hồ với phần xem trước dạng tên/thời gian;
+  cần firmware >= v0.4.21 cho các kiểu số 8–15.
+- Updates hiển thị phiên bản tương thích và giữ các thao tác tải/cập nhật
+  Desktop hoặc firmware với cơ chế kiểm SHA-256.
+- Nút **Save Settings** luôn ở chân cửa sổ, các khu vực cấu hình cuộn riêng.
+
+Chi tiết: [Stability & Control Center](docs/stability-control-center.md).
+Các bài thử cần board thật: [Hardware QA Matrix](docs/hardware-qa-matrix.md).
+
 ## Chế độ sử dụng
 
 ### 1. Output
