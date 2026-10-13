@@ -368,15 +368,19 @@ class FluentViewsMixin:
                  "#49BDEB", "#4CD697", "#78E3A7", "#A6D87C",
                  "#F7AE72", "#E1DED0", "#7ACCF8", "#EFB56C",
                  "#CC87E9", "#F4EEE6", "#64B4EE", "#C4D7EE")
+        previews = ("10:24", "10:24", "10  24", "◷ 10:24",
+                    "◌ 10:24", "1010 0101", "> 10:24", "10:24",
+                    "10:24", "TEN TWENTY FOUR", "10:24", "● ● ●",
+                    "10:24", "||| 10:24 |||", "◈ 10:24", "∫ 10:24")
         for index, name in enumerate(CLOCK_STYLE_NAMES):
             frame = self._fluent_card(grid)
             frame.grid(row=index // 4, column=index % 4,
                        sticky="nsew", padx=3, pady=3)
             ctk.CTkButton(
-                frame, text="10:24", height=35, fg_color="#09131F",
+                frame, text=previews[index], height=35, fg_color="#09131F",
                 hover_color="#183D5E", text_color=tones[index],
-                font=ctk.CTkFont(size=17, weight="bold"),
-                command=lambda n=name: self._clock_style_var.set(n),
+                font=ctk.CTkFont(size=15, weight="bold"),
+                command=lambda i=index: self._fluent_choose_clock(i),
             ).pack(fill="x", padx=3, pady=(4, 0))
             ctk.CTkLabel(
                 frame, text=f"{index+1}. {name}", text_color=MUTED,
@@ -391,6 +395,24 @@ class FluentViewsMixin:
             self._clock_preview_var.set(
                 f"{self._clock_style_var.get()}   ·   {time.strftime('%H:%M')}"
             )
+
+    def _fluent_choose_clock(self, index):
+        if index >= len(CLOCK_STYLE_NAMES):
+            return
+        connected = bool(getattr(self.controller, "_device_connected", False))
+        firmware = str(getattr(self.controller, "firmware_version", "unknown"))
+        compatibility = describe_device_update(APP_VERSION, firmware, connected)
+        if (connected and compatibility.compatible_clock_styles is not None
+                and index >= compatibility.compatible_clock_styles):
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "VuNMix Clock",
+                "This firmware does not support that clock style. "
+                "Update firmware first.",
+                parent=self._window,
+            )
+            return
+        self._clock_style_var.set(CLOCK_STYLE_NAMES[index])
 
     def build_fluent_update_actions(self):
         row = ctk.CTkFrame(self._updates_left, fg_color="transparent")
@@ -563,6 +585,8 @@ class FluentViewsMixin:
         self._overview_connection_var.set(
             f"Online · {port}" if connected else "Disconnected"
         )
+        self._header_status_var.set("● Connected" if connected else "○ Disconnected")
+        self._fluent_highlight_nav()
         self._overview_firmware_var.set(firmware if connected else "Not verified")
         clock_name = self._clock_style_var.get()
         self._overview_clock_var.set(clock_name)
