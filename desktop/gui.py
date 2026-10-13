@@ -514,6 +514,7 @@ class SettingsDialog(FluentViewsMixin):
         # Keep the interpreter alive from process start, but do not show
         # Settings until the tray callback asks for it.  This avoids creating
         # or destroying Tcl interpreters from worker/pystray threads.
+        self.build_fluent_update_actions()
         self.build_fluent_updates_settings()
         self._fluent_highlight_nav()
         self._window.withdraw()
