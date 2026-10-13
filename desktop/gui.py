@@ -808,6 +808,7 @@ class SettingsDialog:
                 self._firmware_status_var.set(
                     f"FW {current_fw} · PC {APP_VERSION}"
                 )
+        self._refresh_control_center()
         self._window.after(500, self._update_status_loop)
 
     def _ui_call(self, callback):
