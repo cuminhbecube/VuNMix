@@ -210,15 +210,110 @@ class FluentViewsMixin:
                          ).pack(side="left", fill="x", expand=True, padx=5, pady=4)
 
     def build_fluent_audio(self, parent):
-        self._fluent_header(parent, "Audio Control Center",
-                            "Output · Input · Applications · Game · OBS · Media")
-        self._audio_list = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        self._audio_list.pack(fill="both", expand=True, padx=5, pady=3)
-        self._audio_detail_host = ctk.CTkFrame(self._audio_list, fg_color="transparent")
-        self._audio_detail_host.pack(fill="x")
-        self._fluent_build_audio_utilities(self._audio_list)
+        """One activity per viewport, not four eight-row mixers plus tools."""
+        self._fluent_header(parent, "Audio Control Center")
+        self._audio_page = "Mixer"
+        self._audio_page_switcher = ctk.CTkSegmentedButton(
+            parent, values=["Mixer", "Profiles", "Media / OBS"],
+            height=29, command=self._fluent_show_audio_page,
+        )
+        self._audio_page_switcher.pack(fill="x", padx=7, pady=(0, 6))
+        self._audio_pages_host = ctk.CTkFrame(parent, fg_color="transparent")
+        self._audio_pages_host.pack(fill="both", expand=True, padx=5, pady=(0, 3))
+        self._audio_mixer_page = ctk.CTkFrame(
+            self._audio_pages_host, fg_color="transparent",
+        )
+        self._audio_profiles_page = ctk.CTkFrame(
+            self._audio_pages_host, fg_color="transparent",
+        )
+        self._audio_media_page = ctk.CTkFrame(
+            self._audio_pages_host, fg_color="transparent",
+        )
+        self._audio_page_frames = {
+            "Mixer": self._audio_mixer_page,
+            "Profiles": self._audio_profiles_page,
+            "Media / OBS": self._audio_media_page,
+        }
+        self._audio_page_index = 0
+        self._audio_source_var = tk.StringVar(value="Output")
+        selector = ctk.CTkFrame(self._audio_mixer_page, fg_color="transparent")
+        selector.pack(fill="x", padx=4, pady=(1, 3))
+        ctk.CTkLabel(
+            selector, text="Source", text_color=MUTED, width=50,
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(2, 4))
+        self._audio_mode_menu = ctk.CTkOptionMenu(
+            selector, values=["Output", "Input", "Applications", "Game Mixer"],
+            variable=self._audio_source_var, width=140, height=27,
+            command=self._fluent_audio_source_changed,
+        )
+        self._audio_mode_menu.pack(side="left")
+        ctk.CTkLabel(
+            selector, text="4 items per page · More via Next",
+            text_color=MUTED, font=ctk.CTkFont(size=10),
+        ).pack(side="right", padx=4)
+        self._audio_detail_host = ctk.CTkFrame(
+            self._audio_mixer_page, fg_color="transparent",
+        )
+        self._audio_detail_host.pack(fill="both", expand=True, padx=3, pady=1)
+        pager = ctk.CTkFrame(self._audio_mixer_page, fg_color="transparent")
+        pager.pack(fill="x", padx=7, pady=4)
+        self._audio_page_label = tk.StringVar(value="Page 1 / 1")
+        ctk.CTkButton(
+            pager, text="‹ Previous", width=96, height=27,
+            fg_color="#183D5E",
+            command=lambda: self._fluent_audio_change_page(-1),
+        ).pack(side="left", padx=(0, 5))
+        ctk.CTkLabel(
+            pager, textvariable=self._audio_page_label,
+            text_color=MUTED, font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            pager, text="Next ›", width=80, height=27,
+            fg_color="#183D5E",
+            command=lambda: self._fluent_audio_change_page(1),
+        ).pack(side="left", padx=5)
+        self._fluent_build_audio_utilities(
+            self._audio_profiles_page, self._audio_media_page,
+        )
+        self._fluent_show_audio_page("Mixer")
+        self._audio_page_switcher.set("Mixer")
 
-    def _fluent_build_audio_utilities(self, parent):
+    def _fluent_show_audio_page(self, name):
+        if name not in self._audio_page_frames:
+            return
+        self._audio_page = name
+        for title, page in self._audio_page_frames.items():
+            if title == name:
+                page.pack(fill="both", expand=True)
+            else:
+                page.pack_forget()
+        self._audio_render_signature = None
+        self._last_audio_snapshot = 0.0
+
+    def _fluent_audio_source_changed(self, name):
+        self._audio_source_var.set(name)
+        self._audio_page_index = 0
+        self._audio_render_signature = None
+        self._last_audio_snapshot = 0.0
+
+    def _fluent_audio_change_page(self, direction):
+        modes = {
+            "Output": DisplayMode.MODE_OUTPUT,
+            "Input": DisplayMode.MODE_INPUT,
+            "Applications": DisplayMode.MODE_APPLICATION,
+            "Game Mixer": DisplayMode.MODE_GAME,
+        }
+        mode = modes[self._audio_source_var.get()]
+        total = len(self.controller.audio.get_sessions_for_mode(mode))
+        last = max(0, (total - 1) // 4)
+        self._audio_page_index = max(0, min(
+            last, self._audio_page_index + direction
+        ))
+        self._audio_render_signature = None
+        self._last_audio_snapshot = 0.0
+
+    def _fluent_build_audio_utilities(self, parent, media_parent=None):
         tools = self._fluent_card(parent)
         tools.pack(fill="x", padx=4, pady=8)
         self._fluent_header(tools, "Profiles · Automation")
@@ -246,8 +341,8 @@ class FluentViewsMixin:
                     op, lambda: getattr(self.controller, op)()),
             ).pack(side="left", padx=3)
 
-        media = self._fluent_card(parent)
-        media.pack(fill="x", padx=4, pady=8)
+        media = self._fluent_card(media_parent or parent)
+        media.pack(fill="x", padx=4, pady=4)
         self._fluent_header(media, "Media & OBS Studio")
         row = ctk.CTkFrame(media, fg_color="transparent")
         row.pack(fill="x", padx=8, pady=(0, 8))
