@@ -10,14 +10,21 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "src" / "ui" / "modules" / "DisplayCoreState.inc"
+DMA = ROOT / "src" / "ui" / "modules" / "DisplayDma.inc"
 PIO = ROOT / "platformio.ini"
 
 
 class St7789DmaContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.core = CORE.read_text(encoding="utf-8")
+        cls.assembler = CORE.read_text(encoding="utf-8")
+        cls.core = cls.assembler + "\n" + DMA.read_text(encoding="utf-8")
         cls.pio = PIO.read_text(encoding="utf-8")
+
+    def test_dma_is_isolated_from_the_thin_display_assembler(self):
+        self.assertIn('#include "DisplayDma.inc"', self.assembler)
+        self.assertIn("initializeDma();", self.assembler)
+        self.assertLessEqual(len(self.assembler.splitlines()), 240)
 
     def test_dma_is_enabled_for_spi3_and_write_only_st7789(self):
         for setting in (
