@@ -2,7 +2,6 @@
 #include "Input.h"
 #include <TFT_eSPI.h>
 #include <lvgl.h>
-#include <esp_heap_caps.h>
 
 LV_FONT_DECLARE(lv_font_dseg_90_bpp1);
 
@@ -51,8 +50,19 @@ namespace Display {
     static const int16_t CONTENT_H = SH - HEADER_H - STRIP_H - NAVBAR_H;
     static const int16_t PAD       = 6;
 
-    // LVGL SPI DMA flushing and safe fallback live in a separate module.
-    #include "DisplayDma.inc"
+    // =========================================================
+    // TFT Flush Callback
+    // =========================================================
+    static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p)
+    {
+        uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
+        uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
+        tft.startWrite();
+        tft.setAddrWindow(area->x1, area->y1, w, h);
+        tft.pushColors((uint16_t *)color_p, w * h, true);
+        tft.endWrite();
+        lv_disp_flush_ready(drv);
+    }
 
     // =========================================================
     // Init
@@ -70,8 +80,6 @@ namespace Display {
 
         tft.fillScreen(TFT_BLACK);
 
-        initializeDma();
-
         lv_init();
 
         lv_disp_draw_buf_init(&s_dispBuf, s_buf1, s_buf2, (uint32_t)SW * BUF_LINES);
@@ -80,7 +88,6 @@ namespace Display {
         s_dispDrv.hor_res  = SW;
         s_dispDrv.ver_res  = SH;
         s_dispDrv.flush_cb = flushCB;
-        s_dispDrv.wait_cb = waitFlushCB;
         s_dispDrv.draw_buf = &s_dispBuf;
         lv_disp_drv_register(&s_dispDrv);
 
@@ -88,9 +95,6 @@ namespace Display {
 
     void Update() {
         lv_task_handler();
-        // Also release the last tile of a refresh when LVGL didn't need to
-        // wait for another draw buffer. No DMA transaction outlives Update().
-        finishDmaFlush();
     }
 
     void Sleep() {

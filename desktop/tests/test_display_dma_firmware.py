@@ -1,74 +1,69 @@
-"""Regression contracts for the ESP32-S3 LVGL/TFT SPI DMA backend.
+"""Black-screen hotfix regression gate for ST7789 after boot intro.
 
-These structural assertions catch lost DMA flags, early LVGL flush completion,
-unsafe PSRAM buffers, or an accidentally disabled synchronous fallback.
-Hardware-level throughput and panel integrity still require a real board.
+v0.4.27 enabled TFT_eSPI::initDMA() on an SPIClass-owned bus. The library
+uses ESP_ERROR_CHECK on spi_bus_initialize which can abort when the bus is
+already initialized. This guard keeps the *known-good* v0.4.26 rendering
+path until a hardware-validated replacement has been implemented.
 """
 from pathlib import Path
-import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "src" / "ui" / "modules" / "DisplayCoreState.inc"
-DMA = ROOT / "src" / "ui" / "modules" / "DisplayDma.inc"
 PIO = ROOT / "platformio.ini"
+VIDEO = ROOT / "src" / "VideoPlayer.cpp"
+BOOT = ROOT / "src" / "main.cpp"
 
 
-class St7789DmaContracts(unittest.TestCase):
+class DisplayBootRecoveryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.assembler = CORE.read_text(encoding="utf-8")
-        cls.core = cls.assembler + "\n" + DMA.read_text(encoding="utf-8")
+        cls.core = CORE.read_text(encoding="utf-8")
         cls.pio = PIO.read_text(encoding="utf-8")
+        cls.video = VIDEO.read_text(encoding="utf-8")
+        cls.boot = BOOT.read_text(encoding="utf-8")
 
-    def test_dma_is_isolated_from_the_thin_display_assembler(self):
-        self.assertIn('#include "DisplayDma.inc"', self.assembler)
-        self.assertIn("initializeDma();", self.assembler)
-        self.assertLessEqual(len(self.assembler.splitlines()), 240)
-
-    def test_dma_is_enabled_for_spi3_and_write_only_st7789(self):
-        for setting in (
+    def test_original_spi_bus_and_screen_wiring_restored(self):
+        for flag in (
             "-D ST7789_DRIVER=1",
-            "-D USE_HSPI_PORT=1",
-            "-D TFT_MISO=-1",
+            "-D TFT_MOSI=17",
+            "-D TFT_SCLK=16",
+            "-D TFT_DC=15",
+            "-D TFT_RST=18",
+            "-D TFT_CS=-1",
             "-D SPI_FREQUENCY=27000000",
-            "-D VUNMIX_TFT_DMA=1",
         ):
-            self.assertIn(setting, self.pio)
+            self.assertIn(flag, self.pio)
+        self.assertNotIn("-D USE_HSPI_PORT=1", self.pio)
+        self.assertNotIn("-D VUNMIX_TFT_DMA=1", self.pio)
+        self.assertNotIn("-D TFT_MISO=-1", self.pio)
 
-    def test_internal_dma_staging_preserves_lvgl_buffers_and_colors(self):
-        self.assertIn("MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA", self.core)
-        self.assertIn("DMA_PIXELS * sizeof(uint16_t)", self.core)
-        self.assertIn("static_assert(LV_COLOR_DEPTH == 16", self.core)
-        self.assertIn("s_dmaPixels[i] = (uint16_t)((pixel << 8) | (pixel >> 8))", self.core)
-        self.assertNotIn("tft.pushPixelsDMA((uint16_t*)color_p", self.core)
-
-    def test_flush_not_ready_before_dma_finishes(self):
-        finish = self.core.split("static void finishDmaFlush()", 1)[1].split(
-            "static void waitFlushCB(", 1)[0]
-        self.assertLess(finish.index("tft.dmaWait()"), finish.index("lv_disp_flush_ready("))
-        self.assertLess(finish.index("tft.endWrite()"), finish.index("lv_disp_flush_ready("))
-        self.assertIn("s_dispDrv.wait_cb = waitFlushCB;", self.core)
-        self.assertIn("finishDmaFlush();", self.core)
-        self.assertIn("tft.pushPixelsDMA(s_dmaPixels, count)", self.core)
-
-    def test_fallback_when_dma_unavailable_and_old_spi_colors_retained(self):
-        self.assertIn("#if VUNMIX_TFT_DMA", self.core)
-        self.assertIn("s_dmaEnabled = tft.initDMA(false);", self.core)
-        self.assertIn("if (s_dmaEnabled && count <= DMA_PIXELS)", self.core)
-        self.assertIn("tft.pushColors((uint16_t*)color_p, count, true)", self.core)
+    def test_lvgl_flush_stays_blocking_until_explicit_dma_validation(self):
+        self.assertIn("tft.pushColors((uint16_t *)color_p, w * h, true)", self.core)
+        self.assertIn("tft.startWrite();", self.core)
+        self.assertIn("tft.endWrite();", self.core)
         self.assertIn("lv_disp_flush_ready(drv);", self.core)
-        self.assertIn('s_dmaEnabled ? "enabled" : "SPI fallback"', self.core)
+        self.assertLess(self.core.index("tft.endWrite();"),
+                        self.core.index("lv_disp_flush_ready(drv);"))
+        for unsupported in ("tft.initDMA(", "pushPixelsDMA(", "dmaWait(",
+                            "DisplayDma.inc", "waitFlushCB", "s_dmaInFlight"):
+            self.assertNotIn(unsupported, self.core)
+        self.assertFalse((ROOT / "src" / "ui" / "modules" / "DisplayDma.inc").exists())
 
-    def test_only_one_dma_transfer_owns_lvgl_buffer_at_a_time(self):
-        flush = self.core.split("static void flushCB(", 1)[1].split(
-            "// =========================================================\n    // Init", 1
-        )[0]
-        self.assertLess(flush.index("finishDmaFlush();"),
-                        flush.index("tft.pushPixelsDMA("))
-        self.assertLess(flush.index("s_dmaPendingDrv = drv"),
-                        flush.index("s_dmaInFlight = true"))
-        self.assertGreaterEqual(self.core.count("finishDmaFlush();"), 3)
+    def test_known_good_lvgl_buffers_and_driver(self):
+        self.assertIn("static lv_color_t s_buf1[", self.core)
+        self.assertIn("static lv_color_t s_buf2[", self.core)
+        self.assertIn("lv_disp_draw_buf_init(&s_dispBuf, s_buf1, s_buf2", self.core)
+        self.assertIn("s_dispDrv.flush_cb = flushCB;", self.core)
+        self.assertIn("lv_disp_drv_register(&s_dispDrv)", self.core)
+        self.assertLessEqual(len(self.core.splitlines()), 240)
+
+    def test_intro_and_lvgl_still_run_sequentially(self):
+        self.assertLess(self.boot.index('VideoPlayer::Play("/intro.avi")'),
+                        self.boot.index("Display::Initialize();"))
+        self.assertLess(self.boot.index("Display::Initialize();"),
+                        self.boot.index("Display::SplashScreen();"))
+        self.assertIn("s_tft.init();", self.video)
 
 
 if __name__ == "__main__":
