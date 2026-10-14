@@ -1,69 +1,66 @@
-# ST7789 320x240 LVGL SPI DMA — ESP32-S3 implementation and hardware QA
+# VuNMix ST7789 DMA incident — v0.4.27 black screen hotfix
 
-Baseline: VuNMix v0.4.26, ESP32-S3 N16R8, TFT_eSPI pinned at
-`16e37595040eac69cd628e4bffb56fc30cad6299`, LVGL 8.3.11,
-PlatformIO Arduino ESP32 `espressif32@6.9.0`.
+**Status: DMA ROLLED BACK.** The v0.4.27 display-DMA experiment caused
+a **user-confirmed regression:** the AVI intro plays, then the ST7789 screen
+is black when control passes to LVGL. Until hardware validation can be
+performed, no new release may enable the experimental SPI DMA backend.
 
-## Audit of the released code
-- Main LVGL renderer: `src/ui/modules/DisplayCoreState.inc` ->
-  `flushCB` used `tft.pushColors(..., true)` (CPU-driven SPI), then marked
-  LVGL flush ready. **No DMA allocation or init in the released code.**
-- Two LVGL draw buffers each contain 320 x 24 RGB565 pixels (15,360 bytes).
-- SPI clock fixed at 27 MHz; ST7789 240x320 rotated landscape to 320x240.
-- The boot AVI uses `VideoPlayer.cpp` and a separate TFT_eSPI object
-  sequentially *before* LVGL initializes. AVI decoding remains unchanged.
+## Findings from source inspection
 
-## Changed rendering path
-1. Use HSPI/SPI3 with SCLK GPIO16, MOSI GPIO17, DC GPIO15, reset
-   GPIO18, CS=-1, MISO=-1; SPI clock stays 27 MHz.
-2. `-D VUNMIX_TFT_DMA=1` enables DMA by default. Set to `0` if
-   hardware needs immediate rollback to the blocking SPI flush. If switching
-   back to the *original* SPI bus as well, remove `USE_HSPI_PORT=1`.
-3. Allocate **15 KiB internal DMA-capable staging** with
-   `heap_caps_malloc(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)`.
-   Never DMA directly from PSRAM and never overwrite LVGL's draw buffers.
-4. Swap RGB565 byte order into the staging buffer, preserving the
-   `pushColors(..., true)` visual convention without modifying LVGL pixels.
-5. Queue `tft.pushPixelsDMA` only for a tile fitting staging capacity.
-   `finishDmaFlush` waits for the transaction, releases SPI and **then**
-   calls `lv_disp_flush_ready`.
-6. LVGL 8 `wait_cb` completes pending DMA when rendering requires the
-   next buffer. End-of-update completion covers the final tile as well.
-7. If DMA-capable internal RAM allocation fails, keep the previous
-   synchronous `pushColors` path. Driver init also has its own false-
-   result fallback. The driver may assert on lower-level SPI bus errors;
-   **an initDMA internal assert cannot be recovered in firmware**.
-8. Boot logs include `[DISPLAY] ST7789 SPI ...; LVGL DMA: enabled|SPI fallback`.
+The v0.4.27 firmware:
+- Switched TFT_eSPI from the previous default SPI bus to ESP32-S3 HSPI/SPI3.
+- Called `tft.init()` (which initializes SPIClass's bus), then called
+  `tft.initDMA(false)` in DisplayDma.inc.
+- The pinned TFT_eSPI ESP32-S3 DMA implementation calls
+  `spi_bus_initialize(spi_host, ...)` **again on the same host**, and then
+  `ESP_ERROR_CHECK(ret)`. If the bus is already initialized, this can cause
+  a fatal assertion/reset instead of the intended fallback.
+- The video player initializes and draws before the LVGL startup, so this
+  is consistent with an intro that plays but no following display. The
+  exact hardware reset reason is **not proven without the USB Serial log**.
 
-## Safety, caveats and real-world validation
-- DMA reduces CPU copying overhead and permits overlap with LVGL draw work,
-  but 27MHz is unchanged: bandwidth and effective FPS are *not guaranteed*
-  to improve until measured.
-- TFT_eSPI on ESP32-S3 has community reports of DMA freezes/one-frame
-  failures, especially on various SPI hosts/versions. See Bodmer
-  TFT_eSPI discussion #2233, issues #3414 and #3759.
-- There are **no hardware logs or oscilloscope observations in CI**:
-  do not claim a device has DMA working merely because code compiles.
-- Do not raise SPI frequency until hardware signal-integrity tests PASS.
-- Physically validate both firmware and user input before publishing a
-  hardware-certified release:
+Other potential causes still require hardware tests, including SPI host
+pin routing, CS-less bus behavior, or RGB565 transfer ordering.
 
-| ID | Procedure | Acceptance |
-| --- | --- | --- |
-| D01 | Cold boot 20 times | Intro video, subsequent LVGL refresh every time |
-| D02 | Serial log at boot | DMA enabled, no SPI bus init assertion |
-| D03 | Cycle all 16 clock styles | No freezes, missing tiles, RGB/BGR inversion |
-| D04 | Switch Output/Input/App/Game/Health | Text and meters respond, stable color |
-| D05 | Move volume slider fast, touch/keys together | No stale frame, no input lag |
-| D06 | Wake/sleep 100 cycles | Screen refreshes, LED state and no deadlocks |
-| D07 | 24h runtime, rapidly changing VU | No increasing heap use, crash, DMA hang |
-| D08 | FPS before/after at same 27 MHz | Compare measured frame duration and CPU |
-| D09 | Build with `VUNMIX_TFT_DMA=0` | Sync fallback still fully functional |
+## Hotfix: return to last known working implementation
 
-## Source and tests
-- Config: `platformio.ini`.
-- DMA implementation: `src/ui/modules/DisplayDma.inc`, included by the
-  thin `src/ui/modules/DisplayCoreState.inc` composition module (<=240 lines).
-- Static QA: `desktop/tests/test_display_dma_firmware.py`.
-- CI: full ESP32-S3 compile + 16-clock contracts, desktop tests, five
-  isolated connection/crash suites; physical matrix remains to be run.
+- Revert `platformio.ini` exactly to the released **v0.4.26** file.
+  This restores its original SPI host and 27 MHz ST7789 configuration.
+- Revert `src/ui/modules/DisplayCoreState.inc` **byte-for-byte** to
+  v0.4.26, including the synchronous LVGL `pushColors(...,true)` flush.
+- Remove the unsafe experimental `DisplayDma.inc`.
+- Add source-level regression gates in
+  `desktop/tests/test_display_dma_firmware.py`; these forbid accidental
+  reintroduction of DMA and verify intro-before-LVGL startup.
+- Leave the existing AVI, 16 clocks, USB protocol, PC application,
+  OTA behavior and persistent DeviceSettings unchanged.
+
+This is an intentional safety rollback of **only** the unvalidated DMA
+experiment, not a performance improvement. No claims of increased FPS.
+
+## Physical verification after flashing
+
+1. Keep `v0.4.26` firmware available as a recovery image:
+   https://github.com/cuminhbecube/VuNMix/releases/tag/v0.4.26
+2. Flash the hotfix firmware and power cycle. Check that the intro video
+   **and** following 'Waiting for connection' splash are visible.
+3. Connect the Windows desktop app and cycle Output, Input, Application,
+   Game, Health and all 16 clock styles.
+4. Check touch and buttons, LED/backlight wake and sleep, and colors.
+5. If the screen stays black, collect USB serial logs at **115200 baud**
+   from power-up. Look for `ESP_ERROR_CHECK failed`, backtrace, panic and
+   brownout/reset reason. Do not assert a root cause until logs confirm it.
+6. Run 24-hour stability validation before calling the device hardware
+   validated.
+
+## Future DMA research branch — separate from the recovery firmware
+
+A safe future architecture must avoid initializing a second ESP-IDF SPI
+device on an SPIClass-owned host without bus coordination. Consider a
+single owner for the SPI bus with esp_lcd DMA, or a proven display library
+integration. Hardware-test bus ownership, buffered RGB565 bytes, LVGL
+flush lifetime, video-to-LVGL handoff and 16 clock transitions. Only
+enable DMA again after physical panel testing, with a retained rollback.
+
+CI validates firmware compilation, regression contracts, desktop tests
+and crash-reconnect stress. **CI does not validate TFT electrical output.**
