@@ -431,49 +431,68 @@ class FluentViewsMixin:
             log.exception("Could not copy diagnostics to clipboard")
 
     def build_fluent_update_heading(self, parent):
-        self._fluent_header(parent, "Update Center",
-                            "Desktop + ESP32-S3 firmware · SHA-256 verified")
-        self._update_center_var = tk.StringVar(value="Checking device compatibility...")
-        ctk.CTkLabel(parent, textvariable=self._update_center_var,
-                     text_color=MUTED, anchor="w", justify="left",
-                     wraplength=700, font=ctk.CTkFont(size=11)
-                     ).pack(fill="x", padx=11, pady=(0, 6))
+        """Compact updater with no duplicate four-row Clock Gallery."""
+        self._fluent_header(parent, "Update Center")
+        self._update_center_var = tk.StringVar(value="Checking compatibility...")
+        ctk.CTkLabel(
+            parent, textvariable=self._update_center_var, text_color=MUTED,
+            anchor="w", font=ctk.CTkFont(size=11), wraplength=600,
+        ).pack(fill="x", padx=9, pady=(0, 4))
         cols = ctk.CTkFrame(parent, fg_color="transparent")
-        cols.pack(fill="x", padx=7, pady=3)
+        cols.pack(fill="x", padx=5, pady=2)
         cols.grid_columnconfigure(0, weight=3)
         cols.grid_columnconfigure(1, weight=2)
         self._updates_left = self._fluent_card(cols)
-        self._updates_left.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        self._updates_left.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         self._updates_right = self._fluent_card(cols)
-        self._updates_right.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        ctk.CTkLabel(self._updates_left, text="Desktop & Firmware",
-                     text_color=TEXT, font=ctk.CTkFont(size=14, weight="bold")
-                     ).pack(fill="x", padx=10, pady=(10, 2))
-        ctk.CTkLabel(self._updates_right, text="Device Preview & Health",
-                     text_color=TEXT, font=ctk.CTkFont(size=14, weight="bold")
-                     ).pack(fill="x", padx=10, pady=(10, 2))
-        self._updates_device_status = tk.StringVar(value="ESP32-S3 — Disconnected")
-        ctk.CTkLabel(self._updates_right, textvariable=self._updates_device_status,
-                     text_color=MUTED, anchor="w", justify="left",
-                     wraplength=300).pack(fill="x", padx=10, pady=(4, 2))
-        self._updates_health = tk.StringVar(value="PC health metrics: pending")
-        ctk.CTkLabel(self._updates_right, textvariable=self._updates_health,
-                     text_color=MUTED, anchor="w", justify="left",
-                     wraplength=300).pack(fill="x", padx=10, pady=(1, 9))
+        self._updates_right.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        ctk.CTkLabel(
+            self._updates_left, text="Desktop & Firmware",
+            text_color=TEXT, font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(fill="x", padx=8, pady=(6, 0))
+        ctk.CTkLabel(
+            self._updates_right, text="Device Health & Power",
+            text_color=TEXT, font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(fill="x", padx=8, pady=(6, 0))
+        self._updates_device_status = tk.StringVar(value="ESP32-S3 · Offline")
+        ctk.CTkLabel(
+            self._updates_right, textvariable=self._updates_device_status,
+            text_color=MUTED, anchor="w",
+            font=ctk.CTkFont(size=11), wraplength=225,
+        ).pack(fill="x", padx=8, pady=(1, 0))
+        self._updates_health = tk.StringVar(value="PC: waiting for metrics")
+        ctk.CTkLabel(
+            self._updates_right, textvariable=self._updates_health,
+            text_color=MUTED, anchor="w", wraplength=225,
+            font=ctk.CTkFont(size=11),
+        ).pack(fill="x", padx=8, pady=(1, 1))
         self._updates_gallery_area = self._fluent_card(parent)
-        self._updates_gallery_area.pack(fill="x", padx=7, pady=(6, 7))
+        self._updates_gallery_area.pack(fill="x", padx=5, pady=(4, 0))
+
+    def build_fluent_update_clock_shortcuts(self):
+        """The entire 16-clock gallery remains in Clock, one click away."""
+        row = ctk.CTkFrame(self._updates_gallery_area, fg_color="transparent")
+        row.pack(fill="x", padx=7, pady=6)
+        ctk.CTkLabel(
+            row, text="Clock Gallery · 16 styles", text_color=TEXT,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(2, 8))
+        ctk.CTkButton(
+            row, text="Open Clock Gallery  →", fg_color="#183D5E",
+            height=27, width=155, command=lambda: self._fluent_navigate("Clock"),
+        ).pack(side="right", padx=2)
 
     def build_fluent_clock_gallery(self, parent, *, include_preview=False):
-        self._fluent_header(parent, "Clock Style Gallery · 16 styles")
+        self._fluent_header(parent, "Clock Gallery · 16 styles")
         if include_preview:
             self._clock_preview_var = tk.StringVar()
             ctk.CTkLabel(
-                parent, textvariable=self._clock_preview_var, height=43,
+                parent, textvariable=self._clock_preview_var, height=34,
                 fg_color="#07101C", text_color="#7DD5FF",
-                font=ctk.CTkFont(size=20, weight="bold"), corner_radius=8,
-            ).pack(fill="x", padx=9, pady=(0, 8))
+                font=ctk.CTkFont(size=17, weight="bold"), corner_radius=7,
+            ).pack(fill="x", padx=6, pady=(0, 3))
         grid = ctk.CTkFrame(parent, fg_color="transparent")
-        grid.pack(fill="x", padx=8, pady=(2, 10))
+        grid.pack(fill="x", padx=4, pady=(0, 2))
         for c in range(4):
             grid.grid_columnconfigure(c, weight=1, uniform="clocks")
         tones = ("#50C8FB", "#C9E1F3", "#B9CDD9", "#C8DBE8",
@@ -487,17 +506,17 @@ class FluentViewsMixin:
         for index, name in enumerate(CLOCK_STYLE_NAMES):
             frame = self._fluent_card(grid)
             frame.grid(row=index // 4, column=index % 4,
-                       sticky="nsew", padx=3, pady=3)
+                       sticky="nsew", padx=2, pady=2)
             ctk.CTkButton(
-                frame, text=previews[index], height=35, fg_color="#09131F",
+                frame, text=previews[index], height=25, fg_color="#09131F",
                 hover_color="#183D5E", text_color=tones[index],
-                font=ctk.CTkFont(size=15, weight="bold"),
+                font=ctk.CTkFont(size=12, weight="bold"),
                 command=lambda i=index: self._fluent_choose_clock(i),
-            ).pack(fill="x", padx=3, pady=(4, 0))
+            ).pack(fill="x", padx=2, pady=(2, 0))
             ctk.CTkLabel(
-                frame, text=f"{index+1}. {name}", text_color=MUTED,
-                font=ctk.CTkFont(size=10)
-            ).pack(pady=(3, 5))
+                frame, text=f"{index+1}. {name[:15]}", text_color=MUTED,
+                font=ctk.CTkFont(size=10), height=15,
+            ).pack(pady=(1, 2))
         if include_preview:
             self._clock_style_var.trace_add(
                 "write", lambda *_: self._clock_preview_var.set(
