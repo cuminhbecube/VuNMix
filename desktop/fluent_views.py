@@ -66,6 +66,7 @@ class FluentViewsMixin:
         sidebar.pack_propagate(False)
         self._sidebar = sidebar
         self._sidebar_collapsed = False
+        self._sidebar_manual_override = False
         self._sidebar_buttons = {}
         self._sidebar_workspace_label = ctk.CTkLabel(
             sidebar, text="WORKSPACE", anchor="w", text_color=MUTED,
@@ -114,7 +115,18 @@ class FluentViewsMixin:
         )
 
     def _toggle_fluent_sidebar(self):
+        self._sidebar_manual_override = True
         self._set_fluent_sidebar_collapsed(not self._sidebar_collapsed)
+
+    def _fluent_window_resized(self, event):
+        """Keep content wide when the user resizes below desktop width."""
+        if (event.widget is not self._window or
+                getattr(self, "_sidebar_manual_override", False)):
+            return
+        if event.width < 940 and not self._sidebar_collapsed:
+            self._set_fluent_sidebar_collapsed(True)
+        elif event.width > 1060 and self._sidebar_collapsed:
+            self._set_fluent_sidebar_collapsed(False)
 
     def build_fluent_overview(self, parent):
         body = ctk.CTkFrame(parent, fg_color="transparent")
