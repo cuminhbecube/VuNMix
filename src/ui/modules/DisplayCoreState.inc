@@ -159,7 +159,7 @@ namespace Display {
             }
         }
         Serial.printf(
-            "[DISPLAY] ST7789 SPI %lu Hz; LVGL DMA: %s; tile: %lu pixels\\n",
+            "[DISPLAY] ST7789 SPI %lu Hz; LVGL DMA: %s; tile: %lu pixels\n",
             (unsigned long)SPI_FREQUENCY,
             s_dmaEnabled ? "enabled" : "SPI fallback",
             (unsigned long)DMA_PIXELS
