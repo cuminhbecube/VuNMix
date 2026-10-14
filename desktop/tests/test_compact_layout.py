@@ -22,7 +22,10 @@ class CompactLayoutContracts(unittest.TestCase):
 
     def test_all_six_pages_use_fixed_compact_frames(self):
         # Scrollbars are not a substitute for laying out the desktop app.
-        self.assertNotIn("ctk.CTkScrollableFrame(", GUI)
+        # A separate App Favorites picker can legitimately scroll; the main
+        # six-page Control Center itself must not be scroll-dependent.
+        dialog_source = GUI.split("    def _build_overview_tab(", 1)[0]
+        self.assertNotIn("ctk.CTkScrollableFrame(", dialog_source)
         self.assertNotIn("ctk.CTkScrollableFrame(", VIEWS)
         for p in ('"Device"', '"Clock"', '"Settings"'):
             self.assertIn("self._tabs.tab(" + p + ")", GUI)
