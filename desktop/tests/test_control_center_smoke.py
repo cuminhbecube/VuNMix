@@ -52,10 +52,39 @@ class ControlCenterSmokeTests(unittest.TestCase):
             self.assertIn("disconnected", dialog._update_center_var.get().lower())
             self.assertEqual(len(dialog._sidebar_buttons), 6)
             self.assertTrue(dialog._window.winfo_exists())
+            was_collapsed = dialog._sidebar_collapsed
             dialog._toggle_fluent_sidebar()
-            self.assertTrue(dialog._sidebar_collapsed)
+            self.assertNotEqual(dialog._sidebar_collapsed, was_collapsed)
             dialog._toggle_fluent_sidebar()
-            self.assertFalse(dialog._sidebar_collapsed)
+            self.assertEqual(dialog._sidebar_collapsed, was_collapsed)
+
+            # The four audio sources and tools are available without a tall
+            # four-column/eight-session scrolling mixer.
+            for page in ("Mixer", "Profiles", "Media / OBS"):
+                dialog._fluent_show_audio_page(page)
+                self.assertEqual(dialog._audio_page, page)
+            dialog._fluent_show_audio_page("Mixer")
+            for source in ("Output", "Input", "Applications", "Game Mixer"):
+                dialog._fluent_audio_source_changed(source)
+                self.assertEqual(dialog._audio_source_var.get(), source)
+                self.assertEqual(dialog._audio_page_index, 0)
+
+            import customtkinter as ctk
+            self.assertIsInstance(dialog._tabs.tab("Overview").winfo_children()[0],
+                                  ctk.CTkFrame)
+            # Verify the page bodies are not scrollable frames.
+            for page in ("Device", "Clock", "Settings"):
+                body = dialog._tabs.tab(page).winfo_children()[0]
+                self.assertIsInstance(body, ctk.CTkFrame)
+                self.assertNotIsInstance(body, ctk.CTkScrollableFrame)
+
+            # Layout remains navigable on a 960x650 compact screen.
+            dialog._window.geometry("960x650+0+0")
+            dialog._window.update_idletasks()
+            for page in ("Overview", "Audio", "Clock", "Device", "Updates", "Settings"):
+                dialog._fluent_navigate(page)
+                dialog._window.update_idletasks()
+                self.assertEqual(dialog._tabs.get(), page)
         finally:
             dialog._shutdown_from_ui()
 

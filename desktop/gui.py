@@ -285,19 +285,23 @@ class SettingsDialog(FluentViewsMixin):
             self._tabs.add(name)
         self._tabs.set("Overview")
         self._build_fluent_sidebar(shell)
+        self._set_fluent_sidebar_collapsed(geometry.compact)
+        self._window.bind("<Configure>", self._fluent_window_resized)
         self._tabs.pack(side="left", fill="both", expand=True, padx=(0, 2))
         # Replace the visible top tab strip with our compact left navigation.
         self._tabs._segmented_button.grid_forget()
 
-        content = ctk.CTkScrollableFrame(
+        # Settings forms are short. Fixed frames remove unnecessary
+        # nested scrollbars and keep every field visible on compact displays.
+        content = ctk.CTkFrame(
             self._tabs.tab("Device"), fg_color="transparent"
         )
         content.pack(fill='both', expand=True)
-        clock_content = ctk.CTkScrollableFrame(
+        clock_content = ctk.CTkFrame(
             self._tabs.tab("Clock"), fg_color="transparent"
         )
         clock_content.pack(fill='both', expand=True)
-        preferences_content = ctk.CTkScrollableFrame(
+        preferences_content = ctk.CTkFrame(
             self._tabs.tab("Settings"), fg_color="transparent"
         )
         preferences_content.pack(fill='both', expand=True)
@@ -383,7 +387,7 @@ class SettingsDialog(FluentViewsMixin):
         ))
 
         self._build_clock_preview(clock_content)
-        self.build_fluent_clock_gallery(self._updates_gallery_area)
+        self.build_fluent_update_clock_shortcuts()
 
         # Continuous Scroll
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
@@ -414,7 +418,9 @@ class SettingsDialog(FluentViewsMixin):
         add_row(preferences_content, "Auto Sleep", lambda r: ctk.CTkSwitch(r, text="", variable=self._sleep_enabled_var, switch_width=36, switch_height=18))
 
         # Favorite apps
-        favorites_frame = ctk.CTkFrame(self._tabs.tab("Audio"), fg_color="#17283b", corner_radius=10)
+        # Favorites belong to the Audio / Profiles page; otherwise they
+        # occupy the footer area even when the mixer is selected.
+        favorites_frame = ctk.CTkFrame(self._audio_profiles_page, fg_color=CARD, corner_radius=8)
         favorites_frame.pack(fill='x', padx=10, pady=(8, 4))
         favorites_top = ctk.CTkFrame(favorites_frame, fg_color="transparent")
         favorites_top.pack(fill='x', padx=8, pady=(4, 0))

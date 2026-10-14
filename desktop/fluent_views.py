@@ -61,55 +61,84 @@ class FluentViewsMixin:
 
     def _build_fluent_sidebar(self, parent):
         sidebar = ctk.CTkFrame(parent, fg_color=BG, width=SIDEBAR_WIDTH,
-                               corner_radius=9)
-        sidebar.pack(side="left", fill="y", padx=(2, 8), pady=2)
+                               corner_radius=8)
+        sidebar.pack(side="left", fill="y", padx=(1, 5), pady=1)
         sidebar.pack_propagate(False)
         self._sidebar = sidebar
         self._sidebar_collapsed = False
+        self._sidebar_manual_override = False
         self._sidebar_buttons = {}
-        ctk.CTkLabel(
+        self._sidebar_workspace_label = ctk.CTkLabel(
             sidebar, text="WORKSPACE", anchor="w", text_color=MUTED,
-            font=ctk.CTkFont(size=10, weight="bold")
-        ).pack(fill="x", padx=14, pady=(13, 8))
-        for i, name in enumerate(SECTIONS):
+            font=ctk.CTkFont(size=10, weight="bold"),
+        )
+        self._sidebar_workspace_label.pack(fill="x", padx=10, pady=(8, 5))
+        for index, name in enumerate(SECTIONS):
             button = ctk.CTkButton(
-                sidebar, text=f"{NAV_ICONS[i]}   {name}", width=140, height=37,
-                corner_radius=8, anchor="w", fg_color="transparent",
+                sidebar, text=f"{NAV_ICONS[index]}   {name}", width=135, height=34,
+                corner_radius=7, anchor="w", fg_color="transparent",
                 text_color=MUTED, hover_color=CARD_HOVER,
                 font=ctk.CTkFont(size=12),
-                command=lambda target=name: self._fluent_navigate(target),
+                command=lambda page=name: self._fluent_navigate(page),
             )
-            button.pack(fill="x", padx=7, pady=2)
+            button.pack(fill="x", padx=5, pady=1)
             self._sidebar_buttons[name] = button
-        ctk.CTkButton(
+        self._sidebar_toggle_button = ctk.CTkButton(
             sidebar, text="‹  Collapse", fg_color="transparent",
             text_color=MUTED, hover_color=CARD_HOVER,
-            height=29, command=self._toggle_fluent_sidebar
-        ).pack(side="bottom", fill="x", padx=8, pady=10)
+            height=27, command=self._toggle_fluent_sidebar,
+        )
+        self._sidebar_toggle_button.pack(side="bottom", fill="x", padx=5, pady=6)
         self._fluent_highlight_nav()
 
-    def _toggle_fluent_sidebar(self):
-        self._sidebar_collapsed = not self._sidebar_collapsed
+    def _set_fluent_sidebar_collapsed(self, collapsed):
+        """Preserve one-click access to all six routes on narrow screens."""
+        collapsed = bool(collapsed)
+        self._sidebar_collapsed = collapsed
         self._sidebar.configure(
-            width=SIDEBAR_COLLAPSED_WIDTH if self._sidebar_collapsed else SIDEBAR_WIDTH
+            width=SIDEBAR_COLLAPSED_WIDTH if collapsed else SIDEBAR_WIDTH
         )
+        if collapsed:
+            self._sidebar_workspace_label.pack_forget()
+        elif not self._sidebar_workspace_label.winfo_manager():
+            self._sidebar_workspace_label.pack(fill="x", padx=10, pady=(8, 5),
+                                                before=self._sidebar_buttons[SECTIONS[0]])
         for index, name in enumerate(SECTIONS):
             self._sidebar_buttons[name].configure(
-                text=NAV_ICONS[index] if self._sidebar_collapsed
-                else f"{NAV_ICONS[index]}   {name}"
+                text=NAV_ICONS[index] if collapsed else f"{NAV_ICONS[index]}   {name}",
+                width=36 if collapsed else 135,
+                anchor="center" if collapsed else "w",
             )
+        self._sidebar_toggle_button.configure(
+            text="›" if collapsed else "‹  Collapse",
+            width=35 if collapsed else 135,
+        )
+
+    def _toggle_fluent_sidebar(self):
+        self._sidebar_manual_override = True
+        self._set_fluent_sidebar_collapsed(not self._sidebar_collapsed)
+
+    def _fluent_window_resized(self, event):
+        """Keep content wide when the user resizes below desktop width."""
+        if (event.widget is not self._window or
+                getattr(self, "_sidebar_manual_override", False)):
+            return
+        if event.width < 940 and not self._sidebar_collapsed:
+            self._set_fluent_sidebar_collapsed(True)
+        elif event.width > 1060 and self._sidebar_collapsed:
+            self._set_fluent_sidebar_collapsed(False)
 
     def build_fluent_overview(self, parent):
-        body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=4, pady=3)
-        self._fluent_header(body, "Overview", "Audio mixer · Clock · Device · Quick actions")
+        body = ctk.CTkFrame(parent, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+        self._fluent_header(body, "Overview")
 
         self._overview_connection_var = tk.StringVar(value="Disconnected")
         self._overview_firmware_var = tk.StringVar(value="Not verified")
         self._overview_clock_var = tk.StringVar(value="Clock not selected")
         self._overview_memory_var = tk.StringVar(value="PC memory unavailable")
         summaries = ctk.CTkFrame(body, fg_color="transparent")
-        summaries.pack(fill="x", padx=6, pady=(2, 7))
+        summaries.pack(fill="x", padx=4, pady=(0, 4))
         for i in range(4):
             summaries.grid_columnconfigure(i, weight=1, uniform="status")
         for col, (label, icon, value) in enumerate((
@@ -122,26 +151,26 @@ class FluentViewsMixin:
             card.grid(row=0, column=col, sticky="nsew", padx=3)
             ctk.CTkLabel(card, text=f"{icon}  {label}", text_color=MUTED,
                          anchor="w", font=ctk.CTkFont(size=11)
-                         ).pack(fill="x", padx=10, pady=(9, 2))
+                         ).pack(fill="x", padx=8, pady=(4, 0))
             ctk.CTkLabel(card, textvariable=value, text_color=TEXT,
                          anchor="w", font=ctk.CTkFont(size=13, weight="bold"),
                          wraplength=165
-                         ).pack(fill="x", padx=10, pady=(0, 10))
+                         ).pack(fill="x", padx=8, pady=(0, 5))
 
         center = ctk.CTkFrame(body, fg_color="transparent")
-        center.pack(fill="both", expand=True, padx=6, pady=3)
+        center.pack(fill="both", expand=True, padx=4, pady=1)
         center.grid_columnconfigure(0, weight=3)
         center.grid_columnconfigure(1, weight=1)
         audio_box = self._fluent_card(center)
         audio_box.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         self._fluent_header(audio_box, "Audio Mixer")
         self._overview_audio_host = ctk.CTkFrame(audio_box, fg_color="transparent")
-        self._overview_audio_host.pack(fill="both", expand=True, padx=5, pady=(0, 8))
+        self._overview_audio_host.pack(fill="both", expand=True, padx=3, pady=(0, 2))
         ctk.CTkButton(
-            audio_box, text="All audio / Game Mixer  →", height=28,
+            audio_box, text="All audio / Game Mixer  →", height=26,
             fg_color="#183D5E", text_color=TEXT,
             command=lambda: self._fluent_navigate("Audio"),
-        ).pack(fill="x", padx=9, pady=(0, 9))
+        ).pack(fill="x", padx=6, pady=(0, 5))
 
         clock = self._fluent_card(center)
         clock.grid(row=0, column=1, sticky="nsew")
@@ -150,8 +179,8 @@ class FluentViewsMixin:
         ctk.CTkLabel(clock, textvariable=self._overview_clock_face,
                      fg_color="#07101C", text_color="#78CCF3",
                      font=ctk.CTkFont(family="Segoe UI", size=34, weight="bold"),
-                     corner_radius=10, height=110
-                     ).pack(fill="x", padx=9, pady=(5, 8))
+                     corner_radius=8, height=64
+                     ).pack(fill="x", padx=6, pady=(0, 4))
         self._overview_clock_caption = tk.StringVar(value="Neon Digital")
         ctk.CTkLabel(clock, textvariable=self._overview_clock_caption,
                      text_color=MUTED, font=ctk.CTkFont(size=11)
@@ -159,15 +188,15 @@ class FluentViewsMixin:
         ctk.CTkButton(clock, text="Clock gallery  →", height=28,
                       fg_color="#183D5E", text_color=TEXT,
                       command=lambda: self._fluent_navigate("Clock")
-                      ).pack(fill="x", padx=9, pady=(0, 10))
+                      ).pack(fill="x", padx=6, pady=(0, 5))
 
         actions = self._fluent_card(body)
-        actions.pack(fill="x", padx=6, pady=(8, 5))
+        actions.pack(fill="x", padx=4, pady=(3, 3))
         ctk.CTkLabel(actions, text="Quick Actions", text_color=TEXT,
                      anchor="w", font=ctk.CTkFont(size=13, weight="bold")
-                     ).pack(fill="x", padx=10, pady=(8, 4))
+                     ).pack(fill="x", padx=8, pady=(4, 1))
         row = ctk.CTkFrame(actions, fg_color="transparent")
-        row.pack(fill="x", padx=8, pady=(0, 9))
+        row.pack(fill="x", padx=5, pady=(0, 5))
         for label, callback in (
             ("Update Center", lambda: self._fluent_navigate("Updates")),
             ("Flash Firmware", self._select_firmware),
@@ -175,13 +204,13 @@ class FluentViewsMixin:
             ("Diagnostics", self._fluent_diagnostics),
         ):
             ctk.CTkButton(
-                row, text=label, height=33, fg_color="#183D5E",
+                row, text=label, height=27, fg_color="#183D5E",
                 hover_color=CARD_HOVER, font=ctk.CTkFont(size=11),
                 command=callback,
             ).pack(side="left", fill="x", expand=True, padx=3)
 
         strip = self._fluent_card(body)
-        strip.pack(fill="x", padx=6, pady=(1, 5))
+        strip.pack(fill="x", padx=4, pady=(1, 2))
         self._overview_obs = tk.StringVar(value="OBS: Disconnected")
         self._overview_media = tk.StringVar(value="Media: Idle")
         self._overview_profile = tk.StringVar(value="Profile: Default")
@@ -190,18 +219,113 @@ class FluentViewsMixin:
             ctk.CTkLabel(strip, textvariable=variable, anchor="w",
                          text_color=MUTED, font=ctk.CTkFont(size=11),
                          width=190
-                         ).pack(side="left", fill="x", expand=True, padx=10, pady=9)
+                         ).pack(side="left", fill="x", expand=True, padx=5, pady=4)
 
     def build_fluent_audio(self, parent):
-        self._fluent_header(parent, "Audio Control Center",
-                            "Output · Input · Applications · Game · OBS · Media")
-        self._audio_list = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        self._audio_list.pack(fill="both", expand=True, padx=5, pady=3)
-        self._audio_detail_host = ctk.CTkFrame(self._audio_list, fg_color="transparent")
-        self._audio_detail_host.pack(fill="x")
-        self._fluent_build_audio_utilities(self._audio_list)
+        """One activity per viewport, not four eight-row mixers plus tools."""
+        self._fluent_header(parent, "Audio Control Center")
+        self._audio_page = "Mixer"
+        self._audio_page_switcher = ctk.CTkSegmentedButton(
+            parent, values=["Mixer", "Profiles", "Media / OBS"],
+            height=29, command=self._fluent_show_audio_page,
+        )
+        self._audio_page_switcher.pack(fill="x", padx=7, pady=(0, 6))
+        self._audio_pages_host = ctk.CTkFrame(parent, fg_color="transparent")
+        self._audio_pages_host.pack(fill="both", expand=True, padx=5, pady=(0, 3))
+        self._audio_mixer_page = ctk.CTkFrame(
+            self._audio_pages_host, fg_color="transparent",
+        )
+        self._audio_profiles_page = ctk.CTkFrame(
+            self._audio_pages_host, fg_color="transparent",
+        )
+        self._audio_media_page = ctk.CTkFrame(
+            self._audio_pages_host, fg_color="transparent",
+        )
+        self._audio_page_frames = {
+            "Mixer": self._audio_mixer_page,
+            "Profiles": self._audio_profiles_page,
+            "Media / OBS": self._audio_media_page,
+        }
+        self._audio_page_index = 0
+        self._audio_source_var = tk.StringVar(value="Output")
+        selector = ctk.CTkFrame(self._audio_mixer_page, fg_color="transparent")
+        selector.pack(fill="x", padx=4, pady=(1, 3))
+        ctk.CTkLabel(
+            selector, text="Source", text_color=MUTED, width=50,
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(2, 4))
+        self._audio_mode_menu = ctk.CTkOptionMenu(
+            selector, values=["Output", "Input", "Applications", "Game Mixer"],
+            variable=self._audio_source_var, width=140, height=27,
+            command=self._fluent_audio_source_changed,
+        )
+        self._audio_mode_menu.pack(side="left")
+        ctk.CTkLabel(
+            selector, text="4 items per page · More via Next",
+            text_color=MUTED, font=ctk.CTkFont(size=10),
+        ).pack(side="right", padx=4)
+        self._audio_detail_host = ctk.CTkFrame(
+            self._audio_mixer_page, fg_color="transparent",
+        )
+        self._audio_detail_host.pack(fill="both", expand=True, padx=3, pady=1)
+        pager = ctk.CTkFrame(self._audio_mixer_page, fg_color="transparent")
+        pager.pack(fill="x", padx=7, pady=4)
+        self._audio_page_label = tk.StringVar(value="Page 1 / 1")
+        ctk.CTkButton(
+            pager, text="‹ Previous", width=96, height=27,
+            fg_color="#183D5E",
+            command=lambda: self._fluent_audio_change_page(-1),
+        ).pack(side="left", padx=(0, 5))
+        ctk.CTkLabel(
+            pager, textvariable=self._audio_page_label,
+            text_color=MUTED, font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            pager, text="Next ›", width=80, height=27,
+            fg_color="#183D5E",
+            command=lambda: self._fluent_audio_change_page(1),
+        ).pack(side="left", padx=5)
+        self._fluent_build_audio_utilities(
+            self._audio_profiles_page, self._audio_media_page,
+        )
+        self._fluent_show_audio_page("Mixer")
+        self._audio_page_switcher.set("Mixer")
 
-    def _fluent_build_audio_utilities(self, parent):
+    def _fluent_show_audio_page(self, name):
+        if name not in self._audio_page_frames:
+            return
+        self._audio_page = name
+        for title, page in self._audio_page_frames.items():
+            if title == name:
+                page.pack(fill="both", expand=True)
+            else:
+                page.pack_forget()
+        self._audio_render_signature = None
+        self._last_audio_snapshot = 0.0
+
+    def _fluent_audio_source_changed(self, name):
+        self._audio_source_var.set(name)
+        self._audio_page_index = 0
+        self._audio_render_signature = None
+        self._last_audio_snapshot = 0.0
+
+    def _fluent_audio_change_page(self, direction):
+        modes = {
+            "Output": DisplayMode.MODE_OUTPUT,
+            "Input": DisplayMode.MODE_INPUT,
+            "Applications": DisplayMode.MODE_APPLICATION,
+            "Game Mixer": DisplayMode.MODE_GAME,
+        }
+        mode = modes[self._audio_source_var.get()]
+        total = len(self.controller.audio.get_sessions_for_mode(mode))
+        last = max(0, (total - 1) // 4)
+        self._audio_page_index = max(0, min(
+            last, self._audio_page_index + direction
+        ))
+        self._audio_render_signature = None
+        self._last_audio_snapshot = 0.0
+
+    def _fluent_build_audio_utilities(self, parent, media_parent=None):
         tools = self._fluent_card(parent)
         tools.pack(fill="x", padx=4, pady=8)
         self._fluent_header(tools, "Profiles · Automation")
@@ -229,8 +353,8 @@ class FluentViewsMixin:
                     op, lambda: getattr(self.controller, op)()),
             ).pack(side="left", padx=3)
 
-        media = self._fluent_card(parent)
-        media.pack(fill="x", padx=4, pady=8)
+        media = self._fluent_card(media_parent or parent)
+        media.pack(fill="x", padx=4, pady=4)
         self._fluent_header(media, "Media & OBS Studio")
         row = ctk.CTkFrame(media, fg_color="transparent")
         row.pack(fill="x", padx=8, pady=(0, 8))
@@ -319,49 +443,68 @@ class FluentViewsMixin:
             log.exception("Could not copy diagnostics to clipboard")
 
     def build_fluent_update_heading(self, parent):
-        self._fluent_header(parent, "Update Center",
-                            "Desktop + ESP32-S3 firmware · SHA-256 verified")
-        self._update_center_var = tk.StringVar(value="Checking device compatibility...")
-        ctk.CTkLabel(parent, textvariable=self._update_center_var,
-                     text_color=MUTED, anchor="w", justify="left",
-                     wraplength=700, font=ctk.CTkFont(size=11)
-                     ).pack(fill="x", padx=11, pady=(0, 6))
+        """Compact updater with no duplicate four-row Clock Gallery."""
+        self._fluent_header(parent, "Update Center")
+        self._update_center_var = tk.StringVar(value="Checking compatibility...")
+        ctk.CTkLabel(
+            parent, textvariable=self._update_center_var, text_color=MUTED,
+            anchor="w", font=ctk.CTkFont(size=11), wraplength=600,
+        ).pack(fill="x", padx=9, pady=(0, 4))
         cols = ctk.CTkFrame(parent, fg_color="transparent")
-        cols.pack(fill="x", padx=7, pady=3)
+        cols.pack(fill="x", padx=5, pady=2)
         cols.grid_columnconfigure(0, weight=3)
         cols.grid_columnconfigure(1, weight=2)
         self._updates_left = self._fluent_card(cols)
-        self._updates_left.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        self._updates_left.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         self._updates_right = self._fluent_card(cols)
-        self._updates_right.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        ctk.CTkLabel(self._updates_left, text="Desktop & Firmware",
-                     text_color=TEXT, font=ctk.CTkFont(size=14, weight="bold")
-                     ).pack(fill="x", padx=10, pady=(10, 2))
-        ctk.CTkLabel(self._updates_right, text="Device Preview & Health",
-                     text_color=TEXT, font=ctk.CTkFont(size=14, weight="bold")
-                     ).pack(fill="x", padx=10, pady=(10, 2))
-        self._updates_device_status = tk.StringVar(value="ESP32-S3 — Disconnected")
-        ctk.CTkLabel(self._updates_right, textvariable=self._updates_device_status,
-                     text_color=MUTED, anchor="w", justify="left",
-                     wraplength=300).pack(fill="x", padx=10, pady=(4, 2))
-        self._updates_health = tk.StringVar(value="PC health metrics: pending")
-        ctk.CTkLabel(self._updates_right, textvariable=self._updates_health,
-                     text_color=MUTED, anchor="w", justify="left",
-                     wraplength=300).pack(fill="x", padx=10, pady=(1, 9))
+        self._updates_right.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        ctk.CTkLabel(
+            self._updates_left, text="Desktop & Firmware",
+            text_color=TEXT, font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(fill="x", padx=8, pady=(6, 0))
+        ctk.CTkLabel(
+            self._updates_right, text="Device Health & Power",
+            text_color=TEXT, font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(fill="x", padx=8, pady=(6, 0))
+        self._updates_device_status = tk.StringVar(value="ESP32-S3 · Offline")
+        ctk.CTkLabel(
+            self._updates_right, textvariable=self._updates_device_status,
+            text_color=MUTED, anchor="w",
+            font=ctk.CTkFont(size=11), wraplength=225,
+        ).pack(fill="x", padx=8, pady=(1, 0))
+        self._updates_health = tk.StringVar(value="PC: waiting for metrics")
+        ctk.CTkLabel(
+            self._updates_right, textvariable=self._updates_health,
+            text_color=MUTED, anchor="w", wraplength=225,
+            font=ctk.CTkFont(size=11),
+        ).pack(fill="x", padx=8, pady=(1, 1))
         self._updates_gallery_area = self._fluent_card(parent)
-        self._updates_gallery_area.pack(fill="x", padx=7, pady=(6, 7))
+        self._updates_gallery_area.pack(fill="x", padx=5, pady=(4, 0))
+
+    def build_fluent_update_clock_shortcuts(self):
+        """The entire 16-clock gallery remains in Clock, one click away."""
+        row = ctk.CTkFrame(self._updates_gallery_area, fg_color="transparent")
+        row.pack(fill="x", padx=7, pady=6)
+        ctk.CTkLabel(
+            row, text="Clock Gallery · 16 styles", text_color=TEXT,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(2, 8))
+        ctk.CTkButton(
+            row, text="Open Clock Gallery  →", fg_color="#183D5E",
+            height=27, width=155, command=lambda: self._fluent_navigate("Clock"),
+        ).pack(side="right", padx=2)
 
     def build_fluent_clock_gallery(self, parent, *, include_preview=False):
-        self._fluent_header(parent, "Clock Style Gallery · 16 styles")
+        self._fluent_header(parent, "Clock Gallery · 16 styles")
         if include_preview:
             self._clock_preview_var = tk.StringVar()
             ctk.CTkLabel(
-                parent, textvariable=self._clock_preview_var, height=43,
+                parent, textvariable=self._clock_preview_var, height=34,
                 fg_color="#07101C", text_color="#7DD5FF",
-                font=ctk.CTkFont(size=20, weight="bold"), corner_radius=8,
-            ).pack(fill="x", padx=9, pady=(0, 8))
+                font=ctk.CTkFont(size=17, weight="bold"), corner_radius=7,
+            ).pack(fill="x", padx=6, pady=(0, 3))
         grid = ctk.CTkFrame(parent, fg_color="transparent")
-        grid.pack(fill="x", padx=8, pady=(2, 10))
+        grid.pack(fill="x", padx=4, pady=(0, 2))
         for c in range(4):
             grid.grid_columnconfigure(c, weight=1, uniform="clocks")
         tones = ("#50C8FB", "#C9E1F3", "#B9CDD9", "#C8DBE8",
@@ -375,17 +518,17 @@ class FluentViewsMixin:
         for index, name in enumerate(CLOCK_STYLE_NAMES):
             frame = self._fluent_card(grid)
             frame.grid(row=index // 4, column=index % 4,
-                       sticky="nsew", padx=3, pady=3)
+                       sticky="nsew", padx=2, pady=2)
             ctk.CTkButton(
-                frame, text=previews[index], height=35, fg_color="#09131F",
+                frame, text=previews[index], height=25, fg_color="#09131F",
                 hover_color="#183D5E", text_color=tones[index],
-                font=ctk.CTkFont(size=15, weight="bold"),
+                font=ctk.CTkFont(size=12, weight="bold"),
                 command=lambda i=index: self._fluent_choose_clock(i),
-            ).pack(fill="x", padx=3, pady=(4, 0))
+            ).pack(fill="x", padx=2, pady=(2, 0))
             ctk.CTkLabel(
-                frame, text=f"{index+1}. {name}", text_color=MUTED,
-                font=ctk.CTkFont(size=10)
-            ).pack(pady=(3, 5))
+                frame, text=f"{index+1}. {name[:15]}", text_color=MUTED,
+                font=ctk.CTkFont(size=10), height=15,
+            ).pack(pady=(1, 2))
         if include_preview:
             self._clock_style_var.trace_add(
                 "write", lambda *_: self._clock_preview_var.set(
@@ -508,34 +651,62 @@ class FluentViewsMixin:
         self._audio_slider_jobs = pending
 
     def _render_fluent_audio(self, host, count):
+        """Render one selected Audio mode or a one-row Overview summary.
+
+        `count == 0` means paginated Audio Mixer, four sessions visible.
+        Always preserve the original session index when sending user commands.
+        """
         for child in host.winfo_children():
             child.destroy()
-        groups = [
-            ("Output", DisplayMode.MODE_OUTPUT),
-            ("Input", DisplayMode.MODE_INPUT),
-            ("Applications", DisplayMode.MODE_APPLICATION),
-        ]
-        if count > 2:
-            groups.append(("Game Mixer", DisplayMode.MODE_GAME))
-        for n, (heading, mode) in enumerate(groups):
+        if count == 0:
+            modes = {
+                "Output": DisplayMode.MODE_OUTPUT,
+                "Input": DisplayMode.MODE_INPUT,
+                "Applications": DisplayMode.MODE_APPLICATION,
+                "Game Mixer": DisplayMode.MODE_GAME,
+            }
+            title = self._audio_source_var.get()
+            groups = [(title, modes[title])]
+        else:
+            groups = [
+                ("Output", DisplayMode.MODE_OUTPUT),
+                ("Input", DisplayMode.MODE_INPUT),
+                ("Applications", DisplayMode.MODE_APPLICATION),
+            ]
+        for column, (heading, mode) in enumerate(groups):
             card = self._fluent_card(host)
-            card.grid(row=0, column=n, sticky="nsew", padx=3)
-            host.grid_columnconfigure(n, weight=1, uniform="audio")
-            ctk.CTkLabel(card, text=heading, text_color=TEXT,
-                         font=ctk.CTkFont(size=12, weight="bold")
-                         ).pack(fill="x", padx=7, pady=(7, 5))
-            items = self.controller.audio.get_sessions_for_mode(mode)[:count]
+            card.grid(row=0, column=column, sticky="nsew", padx=2)
+            host.grid_columnconfigure(column, weight=1, uniform="audio")
+            ctk.CTkLabel(
+                card, text=heading, text_color=TEXT,
+                font=ctk.CTkFont(size=12, weight="bold"),
+            ).pack(fill="x", padx=5, pady=(4, 2))
+            all_items = self.controller.audio.get_sessions_for_mode(mode)
+            if count == 0:
+                total_pages = max(1, (len(all_items) + 3) // 4)
+                self._audio_page_index = min(
+                    self._audio_page_index, total_pages - 1,
+                )
+                start = self._audio_page_index * 4
+                items = list(enumerate(all_items))[start:start + 4]
+                self._audio_page_label.set(
+                    f"Page {self._audio_page_index + 1} / {total_pages}"
+                    f" · {len(all_items)} items"
+                )
+            else:
+                items = list(enumerate(all_items[:count]))
             if not items:
-                ctk.CTkLabel(card, text="No active sessions", text_color=MUTED,
-                             font=ctk.CTkFont(size=10)
-                             ).pack(padx=6, pady=7)
-            for index, item in enumerate(items):
-                section = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=6)
-                section.pack(fill="x", padx=5, pady=3)
-                heading_row = ctk.CTkFrame(section, fg_color="transparent")
-                heading_row.pack(fill="x", padx=5, pady=(4, 0))
                 ctk.CTkLabel(
-                    heading_row, text=str(item.name)[:28], text_color=TEXT,
+                    card, text="No active sessions", text_color=MUTED,
+                    font=ctk.CTkFont(size=10),
+                ).pack(padx=5, pady=5)
+            for index, item in items:
+                section = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=6)
+                section.pack(fill="x", padx=4, pady=2)
+                heading_row = ctk.CTkFrame(section, fg_color="transparent")
+                heading_row.pack(fill="x", padx=4, pady=(2, 0))
+                ctk.CTkLabel(
+                    heading_row, text=str(item.name)[:32], text_color=TEXT,
                     font=ctk.CTkFont(size=11), anchor="w",
                 ).pack(side="left", fill="x", expand=True)
                 if mode != DisplayMode.MODE_APPLICATION and not item.is_default:
@@ -548,30 +719,29 @@ class FluentViewsMixin:
                             ),
                     ).pack(side="right")
                 vol_row = ctk.CTkFrame(section, fg_color="transparent")
-                vol_row.pack(fill="x", padx=4, pady=(0, 4))
-                amount = ctk.CTkLabel(vol_row, text=f"{item.volume}%",
-                                      text_color=MUTED, width=33,
-                                      font=ctk.CTkFont(size=10))
-                # Bind the read snapshot identity, never mutable list position
-                ctk.CTkSlider(
-                    vol_row, from_=0, to=100, width=95, height=15,
+                vol_row.pack(fill="x", padx=4, pady=(0, 3))
+                amount = ctk.CTkLabel(
+                    vol_row, text=f"{item.volume}%", text_color=MUTED,
+                    width=32, font=ctk.CTkFont(size=10),
+                )
+                slider = ctk.CTkSlider(
+                    vol_row, from_=0, to=100, width=80, height=14,
                     command=lambda value, m=mode, idx=index, target=item,
                                    muted=item.is_muted, lbl=amount:
                         self._fluent_audio_drag(None, m, idx, target,
                                                 muted, value, lbl),
-                ).pack(side="left", fill="x", expand=True, padx=(1, 2))
-                # Set initial slider value without dispatching a real change.
-                slider = vol_row.winfo_children()[-1]
+                )
+                slider.pack(side="left", fill="x", expand=True, padx=(1, 2))
                 slider.set(audio_percentage(item.volume))
                 amount.pack(side="left")
                 ctk.CTkButton(
                     vol_row, text="M" if item.is_muted else "♪",
-                    width=26, height=24, fg_color="#223951",
+                    width=25, height=23, fg_color="#223951",
                     command=lambda m=mode, idx=index, target=item:
                         self._audio_dispatcher.submit(
                             AudioIntent("volume", int(m), idx, target,
                                         int(target.volume), not bool(target.is_muted))
-                        )
+                        ),
                 ).pack(side="right", padx=(2, 0))
 
     def refresh_fluent_content(self):
@@ -637,6 +807,8 @@ class FluentViewsMixin:
             )
             self._last_fluent_strip = now
         current = self._tabs.get()
+        if current == "Audio" and self._audio_page != "Mixer":
+            return
         if current not in ("Overview", "Audio") or now - self._last_audio_snapshot < 2.5:
             return
         if now - getattr(self, "_last_audio_interaction", 0) < 1.4:
@@ -654,9 +826,14 @@ class FluentViewsMixin:
                      item.name, item.volume, item.is_muted, item.is_default)
                     for item in self.controller.audio.get_sessions_for_mode(mode)[:8]
                 )
-            signature = (current, tuple(snapshot))
+            signature = (
+                current,
+                self._audio_source_var.get() if current == "Audio" else "",
+                self._audio_page_index if current == "Audio" else 0,
+                tuple(snapshot),
+            )
             if signature != self._audio_render_signature:
-                self._render_fluent_audio(target_host, 2 if current == "Overview" else 8)
+                self._render_fluent_audio(target_host, 1 if current == "Overview" else 0)
                 self._audio_render_signature = signature
             self._last_audio_snapshot = now
         except Exception:
