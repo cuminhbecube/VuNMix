@@ -21,8 +21,9 @@ BORDER = "#2B4059"
 SECTIONS = ("Overview", "Audio", "Clock", "Device", "Updates", "Settings")
 NAV_ICONS = ("⌂", "◖", "◷", "▣", "↻", "⚙")
 
-DEFAULT_SIZE = (1120, 740)
-COMPACT_SIZE = (960, 650)
+# Single-viewport control center: fit normal laptop screens without zoom.
+DEFAULT_SIZE = (1040, 680)
+COMPACT_SIZE = (960, 640)
 MINIMUM_SIZE = (780, 560)
 SIDEBAR_WIDTH = 156
 SIDEBAR_COLLAPSED_WIDTH = 52
