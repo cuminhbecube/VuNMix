@@ -286,6 +286,7 @@ class SettingsDialog(FluentViewsMixin):
         self._tabs.set("Overview")
         self._build_fluent_sidebar(shell)
         self._set_fluent_sidebar_collapsed(geometry.compact)
+        self._window.bind("<Configure>", self._fluent_window_resized)
         self._tabs.pack(side="left", fill="both", expand=True, padx=(0, 2))
         # Replace the visible top tab strip with our compact left navigation.
         self._tabs._segmented_button.grid_forget()
