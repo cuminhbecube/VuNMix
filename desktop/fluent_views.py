@@ -639,34 +639,62 @@ class FluentViewsMixin:
         self._audio_slider_jobs = pending
 
     def _render_fluent_audio(self, host, count):
+        """Render one selected Audio mode or a one-row Overview summary.
+
+        `count == 0` means paginated Audio Mixer, four sessions visible.
+        Always preserve the original session index when sending user commands.
+        """
         for child in host.winfo_children():
             child.destroy()
-        groups = [
-            ("Output", DisplayMode.MODE_OUTPUT),
-            ("Input", DisplayMode.MODE_INPUT),
-            ("Applications", DisplayMode.MODE_APPLICATION),
-        ]
-        if count > 2:
-            groups.append(("Game Mixer", DisplayMode.MODE_GAME))
-        for n, (heading, mode) in enumerate(groups):
+        if count == 0:
+            modes = {
+                "Output": DisplayMode.MODE_OUTPUT,
+                "Input": DisplayMode.MODE_INPUT,
+                "Applications": DisplayMode.MODE_APPLICATION,
+                "Game Mixer": DisplayMode.MODE_GAME,
+            }
+            title = self._audio_source_var.get()
+            groups = [(title, modes[title])]
+        else:
+            groups = [
+                ("Output", DisplayMode.MODE_OUTPUT),
+                ("Input", DisplayMode.MODE_INPUT),
+                ("Applications", DisplayMode.MODE_APPLICATION),
+            ]
+        for column, (heading, mode) in enumerate(groups):
             card = self._fluent_card(host)
-            card.grid(row=0, column=n, sticky="nsew", padx=3)
-            host.grid_columnconfigure(n, weight=1, uniform="audio")
-            ctk.CTkLabel(card, text=heading, text_color=TEXT,
-                         font=ctk.CTkFont(size=12, weight="bold")
-                         ).pack(fill="x", padx=7, pady=(7, 5))
-            items = self.controller.audio.get_sessions_for_mode(mode)[:count]
+            card.grid(row=0, column=column, sticky="nsew", padx=2)
+            host.grid_columnconfigure(column, weight=1, uniform="audio")
+            ctk.CTkLabel(
+                card, text=heading, text_color=TEXT,
+                font=ctk.CTkFont(size=12, weight="bold"),
+            ).pack(fill="x", padx=5, pady=(4, 2))
+            all_items = self.controller.audio.get_sessions_for_mode(mode)
+            if count == 0:
+                total_pages = max(1, (len(all_items) + 3) // 4)
+                self._audio_page_index = min(
+                    self._audio_page_index, total_pages - 1,
+                )
+                start = self._audio_page_index * 4
+                items = list(enumerate(all_items))[start:start + 4]
+                self._audio_page_label.set(
+                    f"Page {self._audio_page_index + 1} / {total_pages}"
+                    f" · {len(all_items)} items"
+                )
+            else:
+                items = list(enumerate(all_items[:count]))
             if not items:
-                ctk.CTkLabel(card, text="No active sessions", text_color=MUTED,
-                             font=ctk.CTkFont(size=10)
-                             ).pack(padx=6, pady=7)
-            for index, item in enumerate(items):
-                section = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=6)
-                section.pack(fill="x", padx=5, pady=3)
-                heading_row = ctk.CTkFrame(section, fg_color="transparent")
-                heading_row.pack(fill="x", padx=5, pady=(4, 0))
                 ctk.CTkLabel(
-                    heading_row, text=str(item.name)[:28], text_color=TEXT,
+                    card, text="No active sessions", text_color=MUTED,
+                    font=ctk.CTkFont(size=10),
+                ).pack(padx=5, pady=5)
+            for index, item in items:
+                section = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=6)
+                section.pack(fill="x", padx=4, pady=2)
+                heading_row = ctk.CTkFrame(section, fg_color="transparent")
+                heading_row.pack(fill="x", padx=4, pady=(2, 0))
+                ctk.CTkLabel(
+                    heading_row, text=str(item.name)[:32], text_color=TEXT,
                     font=ctk.CTkFont(size=11), anchor="w",
                 ).pack(side="left", fill="x", expand=True)
                 if mode != DisplayMode.MODE_APPLICATION and not item.is_default:
@@ -679,30 +707,29 @@ class FluentViewsMixin:
                             ),
                     ).pack(side="right")
                 vol_row = ctk.CTkFrame(section, fg_color="transparent")
-                vol_row.pack(fill="x", padx=4, pady=(0, 4))
-                amount = ctk.CTkLabel(vol_row, text=f"{item.volume}%",
-                                      text_color=MUTED, width=33,
-                                      font=ctk.CTkFont(size=10))
-                # Bind the read snapshot identity, never mutable list position
-                ctk.CTkSlider(
-                    vol_row, from_=0, to=100, width=95, height=15,
+                vol_row.pack(fill="x", padx=4, pady=(0, 3))
+                amount = ctk.CTkLabel(
+                    vol_row, text=f"{item.volume}%", text_color=MUTED,
+                    width=32, font=ctk.CTkFont(size=10),
+                )
+                slider = ctk.CTkSlider(
+                    vol_row, from_=0, to=100, width=80, height=14,
                     command=lambda value, m=mode, idx=index, target=item,
                                    muted=item.is_muted, lbl=amount:
                         self._fluent_audio_drag(None, m, idx, target,
                                                 muted, value, lbl),
-                ).pack(side="left", fill="x", expand=True, padx=(1, 2))
-                # Set initial slider value without dispatching a real change.
-                slider = vol_row.winfo_children()[-1]
+                )
+                slider.pack(side="left", fill="x", expand=True, padx=(1, 2))
                 slider.set(audio_percentage(item.volume))
                 amount.pack(side="left")
                 ctk.CTkButton(
                     vol_row, text="M" if item.is_muted else "♪",
-                    width=26, height=24, fg_color="#223951",
+                    width=25, height=23, fg_color="#223951",
                     command=lambda m=mode, idx=index, target=item:
                         self._audio_dispatcher.submit(
                             AudioIntent("volume", int(m), idx, target,
                                         int(target.volume), not bool(target.is_muted))
-                        )
+                        ),
                 ).pack(side="right", padx=(2, 0))
 
     def refresh_fluent_content(self):
@@ -768,6 +795,8 @@ class FluentViewsMixin:
             )
             self._last_fluent_strip = now
         current = self._tabs.get()
+        if current == "Audio" and self._audio_page != "Mixer":
+            return
         if current not in ("Overview", "Audio") or now - self._last_audio_snapshot < 2.5:
             return
         if now - getattr(self, "_last_audio_interaction", 0) < 1.4:
@@ -785,9 +814,14 @@ class FluentViewsMixin:
                      item.name, item.volume, item.is_muted, item.is_default)
                     for item in self.controller.audio.get_sessions_for_mode(mode)[:8]
                 )
-            signature = (current, tuple(snapshot))
+            signature = (
+                current,
+                self._audio_source_var.get() if current == "Audio" else "",
+                self._audio_page_index if current == "Audio" else 0,
+                tuple(snapshot),
+            )
             if signature != self._audio_render_signature:
-                self._render_fluent_audio(target_host, 2 if current == "Overview" else 8)
+                self._render_fluent_audio(target_host, 1 if current == "Overview" else 0)
                 self._audio_render_signature = signature
             self._last_audio_snapshot = now
         except Exception:
