@@ -17,7 +17,8 @@ PlatformIO Arduino ESP32 `espressif32@6.9.0`.
 1. Use HSPI/SPI3 with SCLK GPIO16, MOSI GPIO17, DC GPIO15, reset
    GPIO18, CS=-1, MISO=-1; SPI clock stays 27 MHz.
 2. `-D VUNMIX_TFT_DMA=1` enables DMA by default. Set to `0` if
-   hardware needs immediate rollback to the prior blocking SPI flush.
+   hardware needs immediate rollback to the blocking SPI flush. If switching
+   back to the *original* SPI bus as well, remove `USE_HSPI_PORT=1`.
 3. Allocate **15 KiB internal DMA-capable staging** with
    `heap_caps_malloc(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)`.
    Never DMA directly from PSRAM and never overwrite LVGL's draw buffers.
@@ -61,7 +62,8 @@ PlatformIO Arduino ESP32 `espressif32@6.9.0`.
 
 ## Source and tests
 - Config: `platformio.ini`.
-- DMA pipeline: `src/ui/modules/DisplayCoreState.inc`.
+- DMA implementation: `src/ui/modules/DisplayDma.inc`, included by the
+  thin `src/ui/modules/DisplayCoreState.inc` composition module (<=240 lines).
 - Static QA: `desktop/tests/test_display_dma_firmware.py`.
 - CI: full ESP32-S3 compile + 16-clock contracts, desktop tests, five
   isolated connection/crash suites; physical matrix remains to be run.
