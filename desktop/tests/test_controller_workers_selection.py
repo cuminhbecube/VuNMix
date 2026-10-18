@@ -142,6 +142,36 @@ class PeriodicSelectionSyncTests(unittest.TestCase):
         self.assertFalse(controller._sync_current_volume_once())
         self.assertEqual(controller.serial.volume_frames, [])
 
+    def test_game_mode_syncs_both_independent_windows_channels(self):
+        from protocol import Command
+
+        voice = _Item(11, "Discord", 70)
+        game = _Item(22, "Game", 35)
+        controller = _Harness(_Audio([voice, game]), _Item(11, "Discord", 50))
+        controller._session_info.mode = DisplayMode.MODE_GAME
+        controller._sessions[SessionIndex.INDEX_ALTERNATE] = _Item(22, "Game", 50).to_session_data()
+
+        self.assertTrue(controller._sync_current_volume_once())
+        frames = controller.serial.volume_frames
+        self.assertEqual([cmd for cmd, _ in frames],
+                         [Command.VOLUME_CURR_CHANGE, Command.VOLUME_ALT_CHANGE])
+        self.assertEqual([vol.volume for _, vol in frames], [70, 35])
+        self.assertEqual(controller._sessions[SessionIndex.INDEX_CURRENT].data.volume, 70)
+        self.assertEqual(controller._sessions[SessionIndex.INDEX_ALTERNATE].data.volume, 35)
+
+    def test_game_alternate_sync_rejects_stale_identity(self):
+        from protocol import Command
+
+        voice = _Item(11, "Discord", 50)
+        replaced_game = _Item(33, "New Game", 90)
+        controller = _Harness(_Audio([voice, replaced_game]), _Item(11, "Discord", 50))
+        controller._session_info.mode = DisplayMode.MODE_GAME
+        controller._sessions[SessionIndex.INDEX_ALTERNATE] = _Item(22, "Old Game", 30).to_session_data()
+
+        self.assertFalse(controller._sync_current_volume_once())
+        self.assertEqual(controller.serial.volume_frames, [])
+        self.assertEqual(controller._sessions[SessionIndex.INDEX_ALTERNATE].data.volume, 30)
+
 
 if __name__ == "__main__":
     unittest.main()

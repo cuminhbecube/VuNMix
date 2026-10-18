@@ -233,6 +233,17 @@ void loop()
         g_DisplayDirty = true;
     }
 
+    // The Splash key/touch diagnostic is not a permanent operating mode.
+    // Refresh once per second so its inactivity timeout can restore Splash
+    // even after all keys are released and no new input arrives.
+    static uint32_t lastSplashRefresh = 0;
+    if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH &&
+        (uint32_t)(g_Now - lastSplashRefresh) >= 1000U)
+    {
+        lastSplashRefresh = g_Now;
+        g_DisplayDirty = true;
+    }
+
     static uint32_t lastHealthRefresh = 0;
     if (g_SessionInfo.mode == DisplayMode::MODE_HEALTH &&
         (uint32_t)(g_Now - lastHealthRefresh) >= 1000U)
@@ -700,20 +711,35 @@ void UpdateDisplay()
     }
 
     static bool keyTestMode = false;
+    static uint32_t keyTestLastInputAt = 0;
+    static uint32_t lastSplashTouchSample = 0;
     if (g_SessionInfo.mode != DisplayMode::MODE_SPLASH) {
         keyTestMode = false;
+        lastSplashTouchSample = Input::TouchSampleCounter();
     }
 
     if (g_SessionInfo.mode == DisplayMode::MODE_SPLASH)
     {
-        if (!keyTestMode) {
-            keyTestMode = Input::LastTouchEvent() != Input::TouchEvent::None;
-            for (int i = 0; i < 6; i++) {
-                if (Input::g_RawKeyStates[i]) {
-                    keyTestMode = true;
-                    break;
-                }
+        bool anyKeyDown = false;
+        for (int i = 0; i < 6; i++) {
+            if (Input::g_RawKeyStates[i]) {
+                anyKeyDown = true;
+                break;
             }
+        }
+        uint32_t touchSample = Input::TouchSampleCounter();
+        bool touching = Input::LastTouchFingers() != 0;
+        // LastTouchEvent is diagnostic history, not an active press. Reusing
+        // it would immediately re-enter KeyTest after an inactivity timeout.
+        bool newTouch = touching && touchSample != lastSplashTouchSample;
+        lastSplashTouchSample = touchSample;
+
+        if (anyKeyDown || newTouch) {
+            keyTestMode = true;
+            keyTestLastInputAt = g_Now;
+        } else if (keyTestMode && !touching &&
+                   (uint32_t)(g_Now - keyTestLastInputAt) >= 8000U) {
+            keyTestMode = false;
         }
 
         if (keyTestMode) {
