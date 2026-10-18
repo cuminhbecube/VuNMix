@@ -47,5 +47,46 @@ class InputMeterTests(unittest.TestCase):
         )
 
 
+class LiveVolumeFailureTests(unittest.TestCase):
+    def test_disappeared_session_is_not_reported_as_cached_volume(self):
+        from contextlib import nullcontext
+        from audio_service import AudioService, AudioItem
+        from protocol import DisplayMode
+
+        svc = AudioService()
+        selected = AudioItem(
+            id=23, name="Game", volume=91, is_muted=False,
+            _process_id=1002, _session_identifier="game-instance",
+        )
+        svc._app_sessions = [selected]
+        with (
+            patch.object(svc, "_com_scope", return_value=nullcontext()),
+            patch("audio_service.AudioUtilities.GetAllSessions", return_value=[]),
+        ):
+            self.assertIsNone(
+                svc.read_current_volume(DisplayMode.MODE_GAME, 0, expected_item=selected)
+            )
+        self.assertEqual(selected.volume, 91)
+
+    def test_com_enumeration_failure_is_not_reported_as_fresh_volume(self):
+        from contextlib import nullcontext
+        from audio_service import AudioService, AudioItem
+        from protocol import DisplayMode
+
+        svc = AudioService()
+        selected = AudioItem(
+            id=23, name="Game", volume=91, is_muted=False,
+            _process_id=1002, _session_identifier="game-instance",
+        )
+        svc._app_sessions = [selected]
+        with (
+            patch.object(svc, "_com_scope", return_value=nullcontext()),
+            patch("audio_service.AudioUtilities.GetAllSessions", side_effect=OSError("device removed")),
+        ):
+            self.assertIsNone(
+                svc.read_current_volume(DisplayMode.MODE_GAME, 0, expected_item=selected)
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

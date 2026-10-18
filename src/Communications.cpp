@@ -263,10 +263,11 @@ namespace Communications
 
     Command Read(void)
     {
-        while (Serial.available())
+        // Leave unread bytes in the USB CDC driver until complete buffered
+        // frames have been consumed. Discarding the oldest byte of a *valid*
+        // burst previously corrupted packets above 512 bytes.
+        while (Serial.available() && s_rxLength < RX_BUFFER_SIZE)
         {
-            if (s_rxLength >= RX_BUFFER_SIZE)
-                DiscardRx(1);
             s_rxBuffer[s_rxLength++] = (uint8_t)Serial.read();
         }
 

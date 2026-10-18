@@ -140,6 +140,61 @@ class SerialServiceTests(unittest.TestCase):
         serial_factory.assert_not_called()
         self.assertIn("Searching", service.status)
 
+    def test_stale_disconnect_does_not_close_newer_com_connection(self):
+        service = SerialService("COM_TEST", device_identity=None, port_provider=lambda: [])
+        old_handle, new_handle = FakeSerial(), FakeSerial()
+        old_handle.open()
+        new_handle.open()
+        service._serial = new_handle
+        service._connection_generation = 7
+
+        service.disconnect(expected_connection=old_handle)
+
+        self.assertIs(service._serial, new_handle)
+        self.assertTrue(new_handle.is_open)
+        self.assertEqual(service._connection_generation, 7)
+
+        service.disconnect(expected_connection=new_handle)
+        self.assertIsNone(service._serial)
+        self.assertFalse(new_handle.is_open)
+        self.assertEqual(service._connection_generation, 8)
+
+    def test_read_loop_discards_packet_from_closed_connection_generation(self):
+        from protocol import encode_frame
+        import threading
+
+        service = SerialService("COM_TEST", device_identity=None, port_provider=lambda: [])
+        service._running = True
+        service._connection_generation = 1
+
+        class NewHandle(FakeSerial):
+            @property
+            def in_waiting(self):
+                return 0
+            def read(self, count):
+                service._running = False
+                return b""
+
+        replacement = NewHandle()
+        replacement.open()
+
+        class OldHandle(FakeSerial):
+            @property
+            def in_waiting(self):
+                return 6
+            def read(self, count):
+                service._serial = replacement
+                service._connection_generation += 1
+                return encode_frame(Command.OK)
+
+        old = OldHandle()
+        old.open()
+        service._serial = old
+        service._read_loop(threading.Event())
+        self.assertEqual(service.last_ok_response, 0.0)
+        self.assertIs(service._serial, replacement)
+        self.assertTrue(replacement.is_open)
+
 
 if __name__ == "__main__":
     unittest.main()
