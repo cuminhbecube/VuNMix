@@ -54,9 +54,32 @@ def setup_logging(debug: bool = False):
     threading.excepthook = log_thread_exception
 
 
+def _claim_single_instance() -> bool:
+    """Prevent two Windows tray/GUI processes from competing for one USB COM port."""
+    if sys.platform != "win32":
+        return True
+
+    import atexit
+    import win32api
+    import win32event
+    import winerror
+
+    # Local scope is per interactive Windows session, not a machine-wide lock.
+    mutex = win32event.CreateMutex(None, False, "Local\\VuNMixDesktopSingleton")
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        win32api.CloseHandle(mutex)
+        return False
+    atexit.register(win32api.CloseHandle, mutex)
+    return True
+
+
 def main():
     if "--version" in sys.argv:
         print(build_summary())
+        return
+
+    if not _claim_single_instance():
+        print("VuNMix is already running; using the existing tray instance.")
         return
 
     debug = "--debug" in sys.argv

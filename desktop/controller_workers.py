@@ -35,22 +35,22 @@ class SyncWorkersMixin:
         time.sleep(seconds)
         return False
 
-    def _sync_current_volume_once(self, stop=None) -> bool:
-        """Push one Windows volume change only for a stable selected identity.
+    def _sync_volume_index_once(self, session_idx, command, *, stop=None) -> bool:
+        """Sync a selected channel by immutable ID and selection epoch.
 
-        SESSION_INFO and CURRENT_SESSION are delivered as separate protocol
-        frames and are updated by SerialRead while this worker runs in parallel.
-        Capture an epoch+identity, resolve by identity (not numeric index), then
-        revalidate after the Windows read before changing cache or USB state.
+        Both Game Mixer channels are independent Windows sessions. A periodic
+        refresh must not write stale volume data after a mode/session change.
         """
         with self._state_lock:
-            if self._selection_transitioning:
+            if self._selection_transitioning or (stop is not None and stop.is_set()):
                 return False
             mode = self._session_info.mode
             if mode in (DisplayMode.MODE_SPLASH, DisplayMode.MODE_HEALTH):
                 return False
+            if session_idx == SessionIndex.INDEX_ALTERNATE and mode != DisplayMode.MODE_GAME:
+                return False
             epoch = self._selection_epoch
-            selected = self._sessions[SessionIndex.INDEX_CURRENT]
+            selected = self._sessions[session_idx]
             expected_id = int(selected.data.id)
             expected_name = selected.name
 
@@ -69,15 +69,13 @@ class SyncWorkersMixin:
         vol = self.audio.read_current_volume(mode, read_idx, expected_item=items[read_idx])
         if vol is None or int(vol.id) != expected_id:
             log.debug(
-                "Skipped periodic volume sync after identity mismatch: mode=%s expected=%s got=%s",
-                mode,
-                expected_id,
-                getattr(vol, "id", None),
+                "Skipped periodic volume sync after identity mismatch: mode=%s index=%s expected=%s got=%s",
+                mode, session_idx, expected_id, getattr(vol, "id", None),
             )
             return False
 
         with self._state_lock:
-            current = self._sessions[SessionIndex.INDEX_CURRENT]
+            current = self._sessions[session_idx]
             if (
                 self._selection_transitioning
                 or (stop is not None and stop.is_set())
@@ -92,11 +90,24 @@ class SyncWorkersMixin:
             if vol.volume == current.data.volume and vol.is_muted == current.data.is_muted:
                 return False
 
-            self._sessions[SessionIndex.INDEX_CURRENT].data = vol
-            # Keep the state lock through send_volume so SerialRead cannot
-            # commit a new selection locally between revalidation and transmit.
-            self.serial.send_volume(Command.VOLUME_CURR_CHANGE, vol)
+            # Hold the state lock until transmission is committed, so SerialRead
+            # cannot replace a selected channel between verification and send.
+            if not self.serial.send_volume(command, vol):
+                return False
+            self._sessions[session_idx].data = vol
             return True
+
+    def _sync_current_volume_once(self, stop=None) -> bool:
+        """Sync current and (only in Game Mixer) alternate Windows channels."""
+        current_changed = self._sync_volume_index_once(
+            SessionIndex.INDEX_CURRENT, Command.VOLUME_CURR_CHANGE, stop=stop,
+        )
+        # Do not short-circuit if the current channel changed: both channels
+        # may have been adjusted independently on the PC since the last tick.
+        alternate_changed = self._sync_volume_index_once(
+            SessionIndex.INDEX_ALTERNATE, Command.VOLUME_ALT_CHANGE, stop=stop,
+        )
+        return current_changed or alternate_changed
 
     def _heartbeat_loop(self, stop=None):
         """Keep transport liveness independent from WASAPI/audio work.
