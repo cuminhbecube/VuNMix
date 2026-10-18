@@ -66,6 +66,7 @@ class SerialService:
         self._write_lock = threading.Lock()
         self._icon_lock = threading.Lock()
         self._connect_lock = threading.Lock()
+        self._parser_lock = threading.Lock()
         self._parser = FrameParser()
         self._last_protocol_rx = 0.0
         self._last_test_response = 0.0
@@ -231,7 +232,8 @@ class SerialService:
                 time.sleep(0.3)
                 connection.reset_input_buffer()
                 connection.reset_output_buffer()
-                self._parser.reset()
+                with self._parser_lock:
+                    self._parser.reset()
                 self._last_protocol_rx = 0.0
                 self._last_test_response = 0.0
                 self._last_ok_response = 0.0
@@ -268,34 +270,41 @@ class SerialService:
             ).start()
         return True
 
-    def disconnect(self):
-        """Close serial port without forgetting the USB device identity."""
+    def disconnect(self, *, expected_connection=None):
+        """Close the active transport, never one that replaced a stale handle.
+
+        The serial read/write threads can fail after a manual reconnect. Their
+        exception handlers must not tear down the newly opened USB device.
+        """
         with self._connect_lock:
             connection = self._serial
+            if expected_connection is not None and connection is not expected_connection:
+                return
             active_port = self._active_port
             self._serial = None
             self._active_port = None
             self._current_port_info = None
             if connection is not None:
                 self._connection_generation += 1
+                # Closing under the connection lock prevents a fresh connect
+                # racing the OS handle release, especially on Windows COM.
+                try:
+                    connection.close()
+                except (serial.SerialException, OSError) as exc:
+                    log.debug("Error while closing serial port: %s", exc)
+                with self._parser_lock:
+                    self._parser.reset()
+                self._last_protocol_rx = 0.0
+                self._last_test_response = 0.0
+                self._last_ok_response = 0.0
+
         if connection:
-            try:
-                connection.close()
-            except (serial.SerialException, OSError) as exc:
-                log.debug("Error while closing serial port: %s", exc)
-            self._parser.reset()
-            self._last_protocol_rx = 0.0
-            self._last_test_response = 0.0
-            self._last_ok_response = 0.0
             log.info("Disconnected from %s", active_port or self._preferred_port)
             self._set_status("Disconnected")
             if self.on_disconnected:
                 try:
                     self.on_disconnected()
                 except Exception:
-                    # Transport teardown must remain authoritative even when a
-                    # higher-level observer fails. Letting this escape can kill
-                    # SerialRead and permanently stop automatic reconnect.
                     log.exception("Serial disconnected callback failed")
 
     def _start_callback_dispatcher(self):
@@ -402,7 +411,7 @@ class SerialService:
                 return True
             except (serial.SerialException, OSError, ValueError) as e:
                 log.error("Write error: %s", e)
-                self.disconnect()
+                self.disconnect(expected_connection=connection)
                 return False
 
     def send_test(self) -> bool:
@@ -517,6 +526,7 @@ class SerialService:
 
             try:
                 connection = self._serial
+                generation = self._connection_generation
                 if connection is None:
                     continue
                 waiting = connection.in_waiting
@@ -524,7 +534,16 @@ class SerialService:
                 if not raw:
                     continue
 
-                for cmd, payload in self._parser.feed(raw):
+                # A manual disconnect may close the handle while read() is
+                # blocked. Keep parser frames isolated by connection epoch.
+                with self._parser_lock:
+                    if connection is not self._serial or generation != self._connection_generation:
+                        continue
+                    frames = self._parser.feed(raw)
+
+                for cmd, payload in frames:
+                    if connection is not self._serial or generation != self._connection_generation:
+                        break
                     # An open COM handle is not enough to call the device
                     # connected. Only valid framed traffic proves the PC and
                     # VuNMix firmware are actually communicating.
@@ -558,11 +577,11 @@ class SerialService:
                         continue
 
                     if self.on_message:
-                        self._enqueue_message(self._connection_generation, cmd, payload)
+                        self._enqueue_message(generation, cmd, payload)
 
             except (serial.SerialException, OSError) as e:
                 log.error("Serial read error: %s", e, exc_info=True)
-                self.disconnect()
+                self.disconnect(expected_connection=connection)
                 if stop_event.wait(0.5):
                     break
             except Exception as e:

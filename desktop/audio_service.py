@@ -402,39 +402,50 @@ class AudioService:
             log.error(f"Failed to enumerate app sessions: {e}")
 
     def read_current_volume(self, mode: int, index: int, *, expected_item=None) -> Optional[VolumeData]:
-        """Read the current volume from Windows for a specific session."""
+        """Read live Windows volume, refusing to report a stale cache as fresh."""
         with self._com_scope():
             item = self._selected_item(mode, index, expected_item)
             if item is None:
                 return None
 
-            from pycaw.pycaw import AudioUtilities
-            if item._device_id:
-                try:
+            try:
+                if item._device_id:
                     endpoint_vol = self._endpoint_volume(item._device_id)
-                    if endpoint_vol:
-                        item.volume = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
-                        item.is_muted = bool(endpoint_vol.GetMute())
-                except Exception:
-                    pass
-            elif item._process_id:
-                try:
+                    if endpoint_vol is None:
+                        return None
+                    volume = int(endpoint_vol.GetMasterVolumeLevelScalar() * 100)
+                    muted = bool(endpoint_vol.GetMute())
+                elif item._process_id:
                     sessions = AudioUtilities.GetAllSessions()
+                    result = None
                     for session in sessions:
                         try:
-                            if self._session_matches(session, item):
-                                vol_interface = session.SimpleAudioVolume
-                                if vol_interface:
-                                    vol = int(vol_interface.GetMasterVolume() * 100)
-                                    muted = bool(vol_interface.GetMute())
-                                    item.volume = vol
-                                    item.is_muted = muted
-                                break
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                            if not self._session_matches(session, item):
+                                continue
+                            vol_interface = session.SimpleAudioVolume
+                            if vol_interface is None:
+                                continue
+                            result = (
+                                int(vol_interface.GetMasterVolume() * 100),
+                                bool(vol_interface.GetMute()),
+                            )
+                            break
+                        except Exception as exc:
+                            # Session closed between enumeration and COM access.
+                            log.debug("Windows audio session became unavailable: %s", exc)
+                    if result is None:
+                        return None
+                    volume, muted = result
+                else:
+                    return None
+            except Exception as exc:
+                # Sleep/resume and process teardown may invalidate COM objects.
+                # The caller must not sync an old value back to firmware.
+                log.debug("Cannot read live Windows audio volume: %s", exc)
+                return None
 
+            item.volume = max(0, min(100, volume))
+            item.is_muted = muted
             return item.to_session_data().data
 
     def create_peak_meter(self, mode: int, index: int, *, expected_item=None):
