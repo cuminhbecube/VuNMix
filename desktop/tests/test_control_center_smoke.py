@@ -10,6 +10,80 @@ sys.path.insert(0, str(DESKTOP))
 
 @unittest.skipUnless(sys.platform == "win32", "Windows Tk smoke test")
 class ControlCenterSmokeTests(unittest.TestCase):
+    def test_personal_logo_and_native_window_icons_survive_ctk_delay(self):
+        import customtkinter as ctk
+        import tkinter as tk
+        from app_branding import load_logo, resource_path
+        from build_info import APP_VERSION
+        from config import AppConfig
+        from connection_ui import ConnectionSettingsDialog
+        from firmware_release import FirmwareReleaseInfo
+        from tools.capture_control_center import make_controller
+
+        controller, service_calls = make_controller(False)
+        dialog = ConnectionSettingsDialog(AppConfig(), controller, on_save=mock.Mock())
+        callback_errors = []
+        icon_path = pathlib.Path(resource_path("assets/icon.ico")).resolve()
+
+        def assert_icon_after_ctk_delay(window):
+            # CTkToplevel schedules its own icon at 200ms. Query the actual
+            # Windows bitmap after both that callback and our reapply run.
+            settled = tk.BooleanVar(master=dialog._window, value=False)
+            dialog._window.after(350, settled.set, True)
+            dialog._window.wait_variable(settled)
+            dialog._window.update_idletasks()
+            self.assertEqual(pathlib.Path(window.iconbitmap()).resolve(), icon_path)
+
+        try:
+            with mock.patch("gui.serial.tools.list_ports.comports", return_value=[]):
+                dialog.initialize()
+            dialog._window.report_callback_exception = (
+                lambda kind, error, tb: callback_errors.append(f"{kind.__name__}: {error}"))
+            dialog._window.deiconify()
+            dialog._window.update_idletasks()
+
+            self.assertTrue(icon_path.is_file())
+            self.assertIsInstance(dialog._header_logo_image, ctk.CTkImage)
+            self.assertIs(dialog._header_logo_label.cget("image"), dialog._header_logo_image)
+            self.assertEqual(dialog._header_logo_image.cget("size"), (40, 40))
+            header_art = dialog._header_logo_image.cget("dark_image")
+            self.assertEqual(header_art.mode, "RGBA")
+            self.assertEqual(header_art.tobytes(), load_logo(80).tobytes())
+            self.assertTrue(dialog._header_logo_label.winfo_ismapped())
+            assert_icon_after_ctk_delay(dialog._window)
+
+            version = APP_VERSION.lstrip("v")
+            release = FirmwareReleaseInfo(
+                version=version, tag=f"v{version}", release_url="",
+                firmware_name=f"VuNMix-Firmware-{version}.bin",
+                firmware_url="", checksums_url="",
+            )
+            # Open the production pickers from fixture data. Do not invoke
+            # the loaders, installation, selection Apply, or any services.
+            for title, show in (
+                ("Firmware Versions", lambda: dialog._show_firmware_release_picker([release])),
+                ("App Favorites", lambda: dialog._show_favorite_apps_picker(["Spotify", "Discord"])),
+            ):
+                with self.subTest(picker=title):
+                    before = set(dialog._window.winfo_children())
+                    show()
+                    pickers = [child for child in dialog._window.winfo_children()
+                               if child not in before and isinstance(child, ctk.CTkToplevel)]
+                    self.assertEqual(len(pickers), 1)
+                    picker = pickers[0]
+                    try:
+                        self.assertEqual(picker.title(), title)
+                        assert_icon_after_ctk_delay(picker)
+                    finally:
+                        picker.grab_release()
+                        picker.destroy()
+
+            self.assertEqual(service_calls, [])
+            dialog.on_save.assert_not_called()
+            self.assertEqual(callback_errors, [])
+        finally:
+            dialog._shutdown_from_ui()
+
     def test_routes_fit_and_clock_selection_and_save_stay_consistent(self):
         import customtkinter as ctk
         from config import AppConfig

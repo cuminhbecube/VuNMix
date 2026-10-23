@@ -70,6 +70,8 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
 
 - Giao diện dùng các lớp xám tối theo phong cách Windows, chữ Segoe UI,
   sidebar có thể thu gọn và màu nhấn xanh nhạt cho thao tác chính.
+- Logo cá nhân từ `desktop/assets/logo.png` được dùng đồng bộ ở tiêu đề,
+  cửa sổ, system tray, biểu tượng ứng dụng và bộ cài Windows; giữ màu gốc.
 - Overview hiển thị tình trạng kết nối, firmware, RAM app, mixer và hình
   xem trước của đúng kiểu Clock đang chọn.
 - Audio điều chỉnh Output, Input, Applications và Game Mixer bằng slider,
@@ -91,6 +93,8 @@ Các bản sửa USB, cập nhật, cảm ứng và audio automation:
 [Ghi chú v0.4.32](docs/release-v0.4.32.md).
 Giao diện Windows dark và Clock preview:
 [Ghi chú v0.4.33](docs/release-v0.4.33.md).
+Logo cá nhân trong ứng dụng và bộ cài:
+[Ghi chú v0.4.34](docs/release-v0.4.34.md).
 
 ## Chế độ sử dụng
 
