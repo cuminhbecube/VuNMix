@@ -44,7 +44,10 @@ class LedPolicyRegressionTests(unittest.TestCase):
         self.assertIn("LED_FRAME_INTERVAL_MS = 20", config)
         self.assertIn("LightingLedTest()", source)
         self.assertIn("g_Now / 500U", source)
-        self.assertIn("LED Colors V-/V+/A/B", gui)
+        for channel in ("volume_min_color", "volume_max_color",
+                        "mix_channel_a_color", "mix_channel_b_color"):
+            self.assertIn(channel, gui)
+        self.assertIn("self._choose_led_color(selected)", gui)
         self.assertIn("colorchooser.askcolor", gui)
 
 

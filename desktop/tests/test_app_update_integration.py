@@ -1,3 +1,4 @@
+import ast
 import json
 import pathlib
 import sys
@@ -45,7 +46,17 @@ class AppUpdateIntegrationTests(unittest.TestCase):
     def test_firmware_release_controls_and_auto_sync_are_exposed(self):
         source = (REPO_DIR / "desktop" / "gui.py").read_text(encoding="utf-8")
 
-        self.assertIn('"Auto FW Update"', source)
+        # The visible copy can change; keep the automatic firmware preference
+        # connected to a real switch and the existing update workers.
+        switches = [node for node in ast.walk(ast.parse(source))
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "CTkSwitch"]
+        self.assertTrue(any(
+            keyword.arg == "variable"
+            and ast.unparse(keyword.value) == "self._auto_firmware_update_var"
+            for switch in switches for keyword in switch.keywords
+        ))
         self.assertIn('text="Versions"', source)
         self.assertIn('name="FirmwareReleaseList"', source)
         self.assertIn('name="FirmwareReleaseInstall"', source)
