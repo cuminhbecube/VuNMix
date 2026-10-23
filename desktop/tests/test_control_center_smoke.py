@@ -32,7 +32,10 @@ class ControlCenterSmokeTests(unittest.TestCase):
             dialog._window.after(350, settled.set, True)
             dialog._window.wait_variable(settled)
             dialog._window.update_idletasks()
-            self.assertEqual(pathlib.Path(window.iconbitmap()).resolve(), icon_path)
+            # CTk's iconbitmap wrapper does not return Tk's query result.
+            # Inspect the native window manager value directly instead.
+            actual_icon = window.tk.call("wm", "iconbitmap", window._w)
+            self.assertEqual(pathlib.Path(actual_icon).resolve(), icon_path)
 
         try:
             with mock.patch("gui.serial.tools.list_ports.comports", return_value=[]):
