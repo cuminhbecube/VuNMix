@@ -3,6 +3,10 @@
 Work branch: `feat/stability-control-center-20261013`.
 Based on released `v0.4.24`, preserving every published 16-clock style.
 
+The original implementation notes below are historical. For the current
+Windows dark interface, rendered clock previews, persistent Save behavior and
+layout verification, see [v0.4.33](release-v0.4.33.md).
+
 ## Changes in this branch
 
 ### 1. Release safety / feature preservation

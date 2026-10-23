@@ -1,4 +1,4 @@
-"""Enforce the approved Fluent Compact Dark shell structure and controls."""
+"""Keep the Windows dark shell wired to the existing settings and services."""
 import pathlib
 import unittest
 
@@ -18,18 +18,16 @@ class FluentLayoutTests(unittest.TestCase):
         self.assertIn("self._window.minsize(*MINIMUM_SIZE)", self.gui)
         self.assertIn("self._window.title(", self.gui)
         self.assertNotIn("overrideredirect(True)", self.gui)
-        self.assertIn(
-            "save_btn.pack(side='bottom', fill='x', padx=12, pady=(4, 8))",
-            self.gui,
-        )
+        self.assertIn('footer.pack(side="bottom", fill="x", padx=20)', self.gui)
         self.assertLess(
-            self.gui.index("save_btn.pack(side='bottom'"),
-            self.gui.index("self._tabs = ctk.CTkTabview("),
+            self.gui.index('footer.pack(side="bottom"'),
+            self.gui.index("self._tabs = SectionStack("),
         )
 
     def test_sidebar_and_six_routes(self):
         self.assertIn("self._build_fluent_sidebar(shell)", self.gui)
-        self.assertIn("self._tabs._segmented_button.grid_forget()", self.gui)
+        self.assertIn("self._tabs = SectionStack(", self.gui)
+        self.assertNotIn("self._tabs._segmented_button", self.gui)
         self.assertIn("for name in SECTIONS:", self.gui)
         self.assertIn("def _toggle_fluent_sidebar", self.views)
         self.assertIn("self._fluent_highlight_nav()", self.views)
@@ -48,10 +46,10 @@ class FluentLayoutTests(unittest.TestCase):
 
     def test_compact_dashboard_contains_actual_controls(self):
         for part in (
-            "Audio Mixer", "Clock Preview", "Quick Actions",
+            "Audio mixer", "Device clock", "Copy diagnostics",
             "OBS", "Media", "Profiles", "Game Mixer",
-            "toggle_routing", "toggle_ducking",
-            "set_volume(", "16 styles",
+            "_fluent_set_automation", '"routing_enabled"', '"ducking_enabled"',
+            "set_volume(", "16 clock styles",
         ):
             # set_volume is deliberately restricted to the dispatcher.
             if part == "set_volume(":

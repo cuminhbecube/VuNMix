@@ -8,6 +8,7 @@ import logging
 
 from build_info import APP_VERSION
 from gui import SettingsDialog, TrayApp, create_tray_icon
+from fluent_theme import INPUT, CARD_HOVER, TEXT, ACCENT, MUTED
 from media_service import (
     MEDIA_ACTION_NEXT,
     MEDIA_ACTION_PLAY_PAUSE,
@@ -34,12 +35,8 @@ class ConnectionSettingsDialog(SettingsDialog):
 
         if firmware_busy:
             text = "FW Update..."
-            color = "#b8860b"
-            hover = "#a07808"
         elif connected:
             text = "Disconnect"
-            color = "#dc3545"
-            hover = "#c82333"
         else:
             status = (getattr(serial_service, "status", "") or "").lower()
             if "protocol mismatch" in status:
@@ -52,18 +49,18 @@ class ConnectionSettingsDialog(SettingsDialog):
                 text = "Searching"
             else:
                 text = "Connect"
-            color = "#28a745"
-            hover = "#218838"
 
         self.btn_toggle_conn.configure(
             text=text,
-            fg_color=color,
-            hover_color=hover,
+            fg_color=INPUT,
+            hover_color=CARD_HOVER,
+            text_color=MUTED if firmware_busy else TEXT if connected else ACCENT,
             state="disabled" if self.controller.firmware_updating else "normal",
         )
 
         active_port = getattr(serial_service, "port", "")
-        if active_port and hasattr(self, "_com_var"):
+        if (active_port and hasattr(self, "_com_var")
+                and not getattr(self, "_com_selection_pending", False)):
             self._com_var.set(active_port)
 
         if hasattr(self, "btn_firmware"):

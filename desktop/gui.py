@@ -26,8 +26,10 @@ from PIL import Image, ImageDraw
 from build_info import APP_VERSION
 from fluent_theme import (
     BG, SURFACE, CARD, BORDER, TEXT, MUTED, ONLINE, ACCENT, DANGER,
-    SECTIONS, calculate_geometry, MINIMUM_SIZE,
+    INPUT, CARD_HOVER, ACCENT_HOVER, ACCENT_TEXT, FONT_FAMILY,
+    SECTIONS, calculate_geometry, MINIMUM_SIZE, apply_windows_theme,
 )
+from ui_sections import SectionStack
 from fluent_views import FluentViewsMixin
 from fluent_audio import AudioActionDispatcher
 from app_updater import AppUpdater, UpdateInfo, version_tuple
@@ -199,6 +201,7 @@ class SettingsDialog(FluentViewsMixin):
     def _create_window(self):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
+        apply_windows_theme(ctk)
 
         # Use native Windows chrome for real minimize/resize/maximize behavior.
         # A single CTk interpreter remains alive across tray show/hide cycles.
@@ -207,12 +210,12 @@ class SettingsDialog(FluentViewsMixin):
         geometry = calculate_geometry(
             self._window.winfo_screenwidth(),
             self._window.winfo_screenheight(),
+            scale=ctk.ScalingTracker.get_window_scaling(self._window),
         )
         self._window.geometry(
             f"{geometry.width}x{geometry.height}+{geometry.x}+{geometry.y}"
         )
-        if (self._window.winfo_screenwidth() >= MINIMUM_SIZE[0] + 40
-                and self._window.winfo_screenheight() >= MINIMUM_SIZE[1] + 100):
+        if geometry.width >= MINIMUM_SIZE[0] and geometry.height >= MINIMUM_SIZE[1]:
             self._window.minsize(*MINIMUM_SIZE)
         self._window.attributes('-topmost', False)
 
@@ -220,76 +223,75 @@ class SettingsDialog(FluentViewsMixin):
         self._window.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         # Main container
-        main_frame = ctk.CTkFrame(
-            self._window, fg_color=SURFACE, corner_radius=10,
-            border_width=1, border_color=BORDER,
-        )
+        main_frame = ctk.CTkFrame(self._window, fg_color=BG, corner_radius=0)
         main_frame.pack(fill='both', expand=True)
 
-        header = ctk.CTkFrame(main_frame, fg_color="transparent", height=42)
-        header.pack(fill="x", padx=12, pady=(5, 3))
+        header = ctk.CTkFrame(main_frame, fg_color="transparent", height=60)
+        header.pack(fill="x", padx=20)
         header.pack_propagate(False)
         title_lbl = ctk.CTkLabel(
-            header, text="◈  VuNMix", text_color=TEXT,
-            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+            header, text="VuNMix", text_color=TEXT,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=20, weight="bold"),
         )
-        title_lbl.pack(side="left", padx=(3, 12))
+        title_lbl.pack(side="left", padx=(0, 18))
         self._header_status_var = tk.StringVar(value="Disconnected")
+        self._header_status_label = ctk.CTkLabel(
+            header, textvariable=self._header_status_var, text_color=MUTED,
+            font=ctk.CTkFont(size=12),
+        )
+        self._header_status_label.pack(side="left", padx=(0, 12))
         ctk.CTkLabel(
-            header, textvariable=self._header_status_var, text_color=ONLINE,
-            font=ctk.CTkFont(size=11, weight="bold")
-        ).pack(side="left", padx=6)
-        ctk.CTkLabel(
-            header, text=f"ESP32-S3   ·   PC {APP_VERSION}",
-            text_color=MUTED, font=ctk.CTkFont(size=11),
-        ).pack(side="left", padx=10)
-
-        # Connection row: COM Port + dropdown + Connect/Disconnect
-        conn_row = ctk.CTkFrame(main_frame, fg_color=CARD, corner_radius=8, height=38)
-        conn_row.pack(fill="x", padx=12, pady=(1, 5))
-        conn_row.pack_propagate(False)
-        ctk.CTkLabel(conn_row, text="USB / COM", font=ctk.CTkFont(size=11, weight="bold"), text_color=MUTED).pack(side="left", padx=10)
+            header, text=f"v{APP_VERSION.lstrip('v')}",
+            text_color=MUTED, font=ctk.CTkFont(size=12),
+        ).pack(side="left")
         
         self._com_var = tk.StringVar(value=self.config.com_port)
+        self._com_selection_pending = False
         ports = [port.device for port in serial.tools.list_ports.comports()]
         if self.config.com_port not in ports and self.config.com_port:
             ports.append(self.config.com_port)
         
-        self.btn_toggle_conn = ctk.CTkButton(conn_row, text="Connect", command=self._toggle_connect, width=75, height=22,
-                                             font=ctk.CTkFont(size=11, weight="bold"))
-        self.btn_toggle_conn.pack(side='right', padx=(2, 12))
-        
-        ctk.CTkOptionMenu(conn_row, variable=self._com_var, values=ports if ports else ["None"], width=90, height=22).pack(side='right', padx=6)
+        self.btn_toggle_conn = ctk.CTkButton(
+            header, text="Connect", command=self._toggle_connect,
+            width=104, height=32, text_color=ACCENT,
+        )
+        self.btn_toggle_conn.pack(side='right')
+        ctk.CTkOptionMenu(
+            header, variable=self._com_var, values=ports if ports else ["None"],
+            width=126, height=32, command=self._on_com_selected,
+        ).pack(side='right', padx=(12, 8))
 
         # Reserve the footer before packing the settings body. This keeps Save
         # visible even when more settings or status rows are added later.
-        save_btn = ctk.CTkButton(
-            main_frame,
-            text="Save Settings",
+        footer = ctk.CTkFrame(main_frame, fg_color="transparent", height=52)
+        footer.pack(side="bottom", fill="x", padx=20)
+        footer.pack_propagate(False)
+        self._save_status_var = tk.StringVar(value="All changes saved")
+        ctk.CTkLabel(
+            footer, textvariable=self._save_status_var, text_color=MUTED,
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left")
+        self._save_button = ctk.CTkButton(
+            footer,
+            text="Save settings",
             command=self._save,
-            height=28,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            width=140, height=32, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            text_color=ACCENT_TEXT, border_width=0,
+            font=ctk.CTkFont(size=13, weight="bold"),
         )
-        save_btn.pack(side='bottom', fill='x', padx=12, pady=(4, 8))
+        self._save_button.pack(side="right")
 
-        # Fluent sidebar mirrors the approved mockup. Keep the six CTkTabview
-        # destinations internally so all existing navigation stays compatible.
+        # Persistent pages use the full body; no hidden tab header or spacer.
         shell = ctk.CTkFrame(main_frame, fg_color="transparent")
-        shell.pack(fill="both", expand=True, padx=10, pady=(0, 4))
-        self._tabs = ctk.CTkTabview(
-            shell, fg_color=SURFACE, border_width=0,
-            segmented_button_fg_color=CARD,
-            segmented_button_selected_color=ACCENT,
-        )
+        shell.pack(fill="both", expand=True, padx=(10, 16))
+        self._tabs = SectionStack(shell, fg_color=SURFACE, corner_radius=8)
         for name in SECTIONS:
             self._tabs.add(name)
         self._tabs.set("Overview")
         self._build_fluent_sidebar(shell)
         self._set_fluent_sidebar_collapsed(geometry.compact)
         self._window.bind("<Configure>", self._fluent_window_resized)
-        self._tabs.pack(side="left", fill="both", expand=True, padx=(0, 2))
-        # Replace the visible top tab strip with our compact left navigation.
-        self._tabs._segmented_button.grid_forget()
+        self._tabs.pack(side="left", fill="both", expand=True)
 
         # Settings forms are short. Fixed frames remove unnecessary
         # nested scrollbars and keep every field visible on compact displays.
@@ -309,11 +311,37 @@ class SettingsDialog(FluentViewsMixin):
         self._build_audio_tab(self._tabs.tab("Audio"))
         self._build_update_heading(self._tabs.tab("Updates"))
 
-        def add_row(parent, label_text, widget_builder):
-            row = ctk.CTkFrame(parent, fg_color="transparent", height=26)
-            row.pack(fill='x', pady=1)
+        def form_card(parent, title, description):
+            ctk.CTkLabel(
+                parent, text=title, anchor="w",
+                font=ctk.CTkFont(size=22, weight="bold"),
+            ).pack(fill="x", padx=18, pady=(14, 0))
+            ctk.CTkLabel(
+                parent, text=description, anchor="w", text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+            ).pack(fill="x", padx=18, pady=(0, 12))
+            card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=6)
+            card.pack(fill="x", padx=18)
+            return card
+
+        device_card = form_card(content, "Device", "Lighting and standby behavior for your VuNMix.")
+        preferences_card = form_card(preferences_content, "Settings", "Choose how VuNMix works on this PC.")
+
+        def add_row(parent, label_text, widget_builder, description=""):
+            row = ctk.CTkFrame(parent, fg_color="transparent", height=56)
+            row.pack(fill='x', padx=14, pady=1)
             row.pack_propagate(False)
-            ctk.CTkLabel(row, text=label_text, font=ctk.CTkFont(size=12)).pack(side='left')
+            labels = ctk.CTkFrame(row, fg_color="transparent")
+            labels.pack(side="left", fill="y")
+            ctk.CTkLabel(
+                labels, text=label_text, anchor="w", height=24,
+                font=ctk.CTkFont(size=13),
+            ).pack(anchor="w", pady=(4 if description else 14, 0))
+            if description:
+                ctk.CTkLabel(
+                    labels, text=description, anchor="w", height=18,
+                    text_color=MUTED, font=ctk.CTkFont(size=12),
+                ).pack(anchor="w")
             widget = widget_builder(row)
             widget.pack(side='right')
             return row
@@ -322,11 +350,11 @@ class SettingsDialog(FluentViewsMixin):
         from protocol import STANDBY_LED_NAMES
         current_led_name = STANDBY_LED_NAMES[self.config.device_settings.standby_led_mode] if self.config.device_settings.standby_led_mode < len(STANDBY_LED_NAMES) else STANDBY_LED_NAMES[0]
         self._led_mode_var = tk.StringVar(value=current_led_name)
-        add_row(content, "Standby LED", lambda r: ctk.CTkOptionMenu(r, variable=self._led_mode_var, values=STANDBY_LED_NAMES, width=120, height=24))
+        add_row(device_card, "Standby lighting", lambda r: ctk.CTkOptionMenu(r, variable=self._led_mode_var, values=STANDBY_LED_NAMES, width=164, height=32), "LED animation while the device is idle")
 
         # LED Brightness
         self._brightness_var = tk.DoubleVar(value=self.config.device_settings.led_brightness)
-        add_row(content, "LED Brightness", lambda r: ctk.CTkSlider(r, from_=0, to=255, variable=self._brightness_var, width=120, height=14, command=self._on_brightness_change))
+        add_row(device_card, "LED brightness", lambda r: ctk.CTkSlider(r, from_=0, to=255, variable=self._brightness_var, width=164, height=18, command=self._on_brightness_change), "Preview changes on a connected device")
 
         # Runtime color controls. Keep all four existing protocol colors but
         # expose them in one compact row so the settings window stays usable.
@@ -341,8 +369,8 @@ class SettingsDialog(FluentViewsMixin):
         def build_led_color_row(parent):
             frame = ctk.CTkFrame(parent, fg_color="transparent")
             for key, label in (
-                ("volume_min_color", "V-"),
-                ("volume_max_color", "V+"),
+                ("volume_min_color", "Low"),
+                ("volume_max_color", "High"),
                 ("mix_channel_a_color", "A"),
                 ("mix_channel_b_color", "B"),
             ):
@@ -351,89 +379,82 @@ class SettingsDialog(FluentViewsMixin):
                 button = ctk.CTkButton(
                     frame,
                     text=label,
-                    width=27,
-                    height=23,
+                    width=38,
+                    height=30,
                     fg_color=hex_color,
                     hover_color=hex_color,
+                    text_color=self._led_text_color(rgb),
+                    font=ctk.CTkFont(size=12, weight="bold"),
                     command=lambda selected=key: self._choose_led_color(selected),
                 )
                 button.pack(side="left", padx=1)
                 self._led_color_buttons[key] = button
             return frame
 
-        add_row(content, "LED Colors V-/V+/A/B", build_led_color_row)
+        add_row(device_card, "LED colors", build_led_color_row, "Volume low / high · Mix channels A / B")
 
         # Sleep Timeout is shown in minutes; the wire/config representation
         # remains seconds for compatibility with existing firmware/configs.
         sleep_seconds = max(0, int(self.config.device_settings.sleep_after_seconds))
         sleep_minutes = math.ceil(sleep_seconds / 60) if sleep_seconds else 0
         self._sleep_var = tk.StringVar(value=str(sleep_minutes))
-        add_row(content, "Sleep Timeout (minutes)", lambda r: ctk.CTkEntry(r, textvariable=self._sleep_var, width=55, height=24))
+        add_row(device_card, "Sleep after", lambda r: ctk.CTkEntry(r, textvariable=self._sleep_var, width=72, height=32, justify="center"), "Minutes of inactivity · Enable auto sleep in Settings")
 
         # Clock Standby Timeout (minutes, 0=disabled, default=10)
         self._clock_standby_var = tk.StringVar(value=str(self.config.device_settings.clock_standby_minutes))
-        add_row(clock_content, "Clock Standby (min)", lambda r: ctk.CTkEntry(r, textvariable=self._clock_standby_var, width=55, height=24))
 
         # Clock visual style
         from protocol import CLOCK_STYLE_NAMES
         clock_style_index = max(0, min(len(CLOCK_STYLE_NAMES) - 1, int(self.config.device_settings.clock_style)))
         self._clock_style_var = tk.StringVar(value=CLOCK_STYLE_NAMES[clock_style_index])
-        add_row(clock_content, "Clock Style", lambda r: ctk.CTkOptionMenu(
-            r,
-            variable=self._clock_style_var,
-            values=CLOCK_STYLE_NAMES,
-            width=120,
-            height=24,
-        ))
 
         self._build_clock_preview(clock_content)
         self.build_fluent_update_clock_shortcuts()
 
         # Continuous Scroll
         self._scroll_var = tk.BooleanVar(value=self.config.device_settings.continuous_scroll)
-        add_row(preferences_content, "Continuous Scroll", lambda r: ctk.CTkSwitch(r, text="", variable=self._scroll_var, switch_width=36, switch_height=18))
+        add_row(preferences_card, "Continuous scroll", lambda r: ctk.CTkSwitch(r, text="", width=40, variable=self._scroll_var, switch_width=40, switch_height=20), "Wrap around when navigating device lists")
 
         # Run on Startup
         self._startup_var = tk.BooleanVar(value=self.config.run_on_startup)
-        add_row(preferences_content, "Run on Startup", lambda r: ctk.CTkSwitch(r, text="", variable=self._startup_var, switch_width=36, switch_height=18))
+        add_row(preferences_card, "Run on startup", lambda r: ctk.CTkSwitch(r, text="", width=40, variable=self._startup_var, switch_width=40, switch_height=20), "Start VuNMix when you sign in to Windows")
 
         # Automatic desktop app release checks
         self._auto_update_var = tk.BooleanVar(value=self.config.auto_update_enabled)
-        add_row(preferences_content, "Auto App Update", lambda r: ctk.CTkSwitch(r, text="", variable=self._auto_update_var, switch_width=36, switch_height=18))
+        add_row(preferences_card, "Check for app updates", lambda r: ctk.CTkSwitch(r, text="", width=40, variable=self._auto_update_var, switch_width=40, switch_height=20), "Notify you when a new desktop release is available")
 
         # Automatic firmware sync to the exact Desktop App release version.
         self._auto_firmware_update_var = tk.BooleanVar(
             value=self.config.auto_firmware_update_enabled
         )
-        add_row(preferences_content, "Auto FW Update", lambda r: ctk.CTkSwitch(
+        add_row(preferences_card, "Sync firmware automatically", lambda r: ctk.CTkSwitch(
             r,
             text="",
             variable=self._auto_firmware_update_var,
-            switch_width=36,
-            switch_height=18,
-        ))
+            width=40, switch_width=40, switch_height=20,
+        ), "Keep device firmware aligned with this desktop version")
 
         # Auto Sleep (default off)
         self._sleep_enabled_var = tk.BooleanVar(value=self.config.device_settings.sleep_enabled)
-        add_row(preferences_content, "Auto Sleep", lambda r: ctk.CTkSwitch(r, text="", variable=self._sleep_enabled_var, switch_width=36, switch_height=18))
+        add_row(preferences_card, "Auto sleep", lambda r: ctk.CTkSwitch(r, text="", width=40, variable=self._sleep_enabled_var, switch_width=40, switch_height=20), "Use the inactivity timeout configured under Device")
 
         # Favorite apps
         # Favorites belong to the Audio / Profiles page; otherwise they
         # occupy the footer area even when the mixer is selected.
-        favorites_frame = ctk.CTkFrame(self._audio_profiles_page, fg_color=CARD, corner_radius=8)
-        favorites_frame.pack(fill='x', padx=10, pady=(8, 4))
+        favorites_frame = ctk.CTkFrame(self._audio_profiles_page, fg_color=CARD, corner_radius=6)
+        favorites_frame.pack(fill='x', pady=(8, 0))
         favorites_top = ctk.CTkFrame(favorites_frame, fg_color="transparent")
-        favorites_top.pack(fill='x', padx=8, pady=(4, 0))
+        favorites_top.pack(fill='x', padx=12, pady=(10, 2))
         ctk.CTkLabel(
             favorites_top,
-            text="App Favorites",
-            font=ctk.CTkFont(size=12),
+            text="Favorite apps",
+            font=ctk.CTkFont(size=13),
         ).pack(side='left')
         ctk.CTkButton(
             favorites_top,
             text="Choose",
             width=78,
-            height=22,
+            height=32,
             command=self._choose_favorite_apps,
         ).pack(side='right')
         self._favorites_status_var = tk.StringVar()
@@ -441,63 +462,66 @@ class SettingsDialog(FluentViewsMixin):
         ctk.CTkLabel(
             favorites_frame,
             textvariable=self._favorites_status_var,
-            font=ctk.CTkFont(size=10),
-            text_color="#a0a0a0",
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED,
             anchor="w",
-        ).pack(fill='x', padx=8, pady=(0, 3))
+        ).pack(fill='x', padx=12, pady=(0, 10))
 
         # Desktop app update
-        update_frame = ctk.CTkFrame(self._updates_left, fg_color=CARD, corner_radius=10)
-        update_frame.pack(fill='x', padx=10, pady=(10, 4))
+        update_frame = ctk.CTkFrame(self._updates_left, fg_color=CARD, corner_radius=6)
+        update_frame.pack(fill='x', pady=(0, 10))
         update_top = ctk.CTkFrame(update_frame, fg_color="transparent")
-        update_top.pack(fill='x', padx=8, pady=(4, 0))
+        update_top.pack(fill='x', padx=12, pady=(10, 2))
         ctk.CTkLabel(
             update_top,
-            text=f"Desktop App  {APP_VERSION}",
-            font=ctk.CTkFont(size=12),
+            text=f"Desktop app  ·  {APP_VERSION}",
+            font=ctk.CTkFont(size=13),
         ).pack(side='left')
         self.btn_app_update = ctk.CTkButton(
             update_top,
             text="Check",
-            width=70,
-            height=22,
+            width=74,
+            height=32,
             command=self._manual_check_app_update,
         )
         self.btn_app_update.pack(side='right')
-        self._app_update_status_var = tk.StringVar(value="Automatic release checks enabled")
-        ctk.CTkLabel(
+        self._app_update_status_var = tk.StringVar(value="Ready to check for updates")
+        update_status = ctk.CTkLabel(
             update_frame,
             textvariable=self._app_update_status_var,
-            font=ctk.CTkFont(size=10),
-            text_color="#a0a0a0",
-            anchor="w",
-        ).pack(fill='x', padx=8, pady=(0, 3))
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED,
+            anchor="w", justify="left", height=36, wraplength=300,
+        )
+        update_status.pack(fill='x', padx=12, pady=(0, 8))
+        update_status.bind("<Configure>", lambda event: update_status.configure(
+            wraplength=max(80, event.width)))
 
         # Firmware update
-        firmware_frame = ctk.CTkFrame(self._updates_left, fg_color=CARD, corner_radius=10)
-        firmware_frame.pack(fill='x', padx=10, pady=(4, 4))
+        firmware_frame = ctk.CTkFrame(self._updates_left, fg_color=CARD, corner_radius=6)
+        firmware_frame.pack(fill='x', pady=(0, 10))
         firmware_top = ctk.CTkFrame(firmware_frame, fg_color="transparent")
-        firmware_top.pack(fill='x', padx=8, pady=(4, 0))
+        firmware_top.pack(fill='x', padx=12, pady=(10, 6))
         ctk.CTkLabel(
             firmware_top,
-            text="Device Firmware",
-            font=ctk.CTkFont(size=12),
+            text="Firmware",
+            font=ctk.CTkFont(size=13),
         ).pack(side='left')
         firmware_actions = ctk.CTkFrame(firmware_top, fg_color="transparent")
         firmware_actions.pack(side='right')
         self.btn_firmware_versions = ctk.CTkButton(
             firmware_actions,
             text="Versions",
-            width=70,
-            height=22,
+            width=80,
+            height=32,
             command=self._choose_firmware_release,
         )
         self.btn_firmware_versions.pack(side='left', padx=(0, 4))
         self.btn_firmware = ctk.CTkButton(
             firmware_actions,
-            text=".bin",
-            width=48,
-            height=22,
+            text="Browse…",
+            width=80,
+            height=32,
             command=self._select_firmware,
         )
         self.btn_firmware.pack(side='left')
@@ -505,17 +529,21 @@ class SettingsDialog(FluentViewsMixin):
         self._firmware_progress = ctk.CTkProgressBar(
             firmware_frame,
             height=4,
-            progress_color="#00bcd4",
+            progress_color=ACCENT,
         )
-        self._firmware_progress.pack(fill='x', padx=8, pady=(1, 1))
+        self._firmware_progress.pack(fill='x', padx=12, pady=(2, 4))
         self._firmware_progress.set(0)
         self._firmware_status_var = tk.StringVar(value="Ready")
-        ctk.CTkLabel(
+        firmware_status = ctk.CTkLabel(
             firmware_frame,
             textvariable=self._firmware_status_var,
-            font=ctk.CTkFont(size=10),
-            text_color="#a0a0a0",
-        ).pack(anchor='w', padx=8, pady=(0, 3))
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED, anchor="w", justify="left", height=36,
+            wraplength=300,
+        )
+        firmware_status.pack(fill="x", padx=12, pady=(0, 8))
+        firmware_status.bind("<Configure>", lambda event: firmware_status.configure(
+            wraplength=max(80, event.width)))
 
         # Keep the interpreter alive from process start, but do not show
         # Settings until the tray callback asks for it.  This avoids creating
@@ -523,6 +551,7 @@ class SettingsDialog(FluentViewsMixin):
         self.build_fluent_update_actions()
         self.build_fluent_updates_settings()
         self._fluent_highlight_nav()
+        self._track_settings_changes()
         self._window.withdraw()
         self._update_status_loop()
         self._process_window_commands()
@@ -615,11 +644,10 @@ class SettingsDialog(FluentViewsMixin):
     def _update_status_loop(self):
         if not self._window or not self._window.winfo_exists():
             return
-        if self.controller._device_connected:
-            self.btn_toggle_conn.configure(text="Disconnect", fg_color="#dc3545", hover_color="#c82333")
-        else:
-            self.btn_toggle_conn.configure(text="Connect", fg_color="#28a745", hover_color="#218838")
         self.btn_toggle_conn.configure(
+            text="Disconnect" if self.controller._device_connected else "Connect",
+            fg_color=INPUT, hover_color=CARD_HOVER,
+            text_color=TEXT if self.controller._device_connected else ACCENT,
             state="disabled" if self.controller.firmware_updating else "normal"
         )
         if hasattr(self, "btn_firmware"):
@@ -1061,6 +1089,7 @@ class SettingsDialog(FluentViewsMixin):
             )
             self.controller.audio.set_favorite_apps(self.config.favorite_apps)
             self._refresh_favorites_label()
+            self._mark_settings_dirty()
             picker.destroy()
 
         ctk.CTkButton(
@@ -1180,7 +1209,9 @@ class SettingsDialog(FluentViewsMixin):
         self._led_color_values[key] = selected
         button = self._led_color_buttons.get(key)
         if button is not None:
-            button.configure(fg_color=hex_color, hover_color=hex_color)
+            button.configure(fg_color=hex_color, hover_color=hex_color,
+                             text_color=self._led_text_color(selected))
+        self._mark_settings_dirty()
 
         # Preview on hardware without mutating the saved config until Save.
         if self.controller._device_connected:
@@ -1199,10 +1230,49 @@ class SettingsDialog(FluentViewsMixin):
                 preview_settings.pack(),
             )
 
+    @staticmethod
+    def _led_text_color(rgb):
+        return "#171717" if sum(value * weight for value, weight in
+            zip(rgb, (0.2126, 0.7152, 0.0722))) > 145 else "#FFFFFF"
+
+    def _track_settings_changes(self):
+        self._settings_vars = (
+            self._startup_var, self._auto_update_var, self._auto_firmware_update_var,
+            self._sleep_var, self._sleep_enabled_var, self._clock_standby_var,
+            self._clock_style_var, self._led_mode_var, self._scroll_var,
+            self._brightness_var,
+        )
+        self._saved_form_snapshot = self._settings_form_snapshot()
+        for variable in self._settings_vars:
+            variable.trace_add("write", self._mark_settings_dirty)
+
+    def _settings_form_snapshot(self):
+        return (
+            tuple(variable.get() for variable in self._settings_vars),
+            tuple((key, tuple(value)) for key, value in self._led_color_values.items()),
+            tuple(sorted(set(self.config.favorite_apps))),
+            self._com_var.get() if self._com_selection_pending else self.config.com_port,
+        )
+
+    def _on_com_selected(self, _value):
+        # An explicit target stays visible even if discovery or a previous
+        # asynchronous restart still reports another active port.
+        self._com_selection_pending = True
+        self._mark_settings_dirty()
+
+    def _mark_settings_dirty(self, *_args):
+        if not hasattr(self, "_saved_form_snapshot"):
+            return
+        changed = self._settings_form_snapshot() != self._saved_form_snapshot
+        self._save_status_var.set("Unsaved changes" if changed else "All changes saved")
+
     def _save(self):
         try:
             old_port = self.config.com_port
             new_port = self._com_var.get().strip()
+            # Validate editable numbers before changing any configuration.
+            sleep_minutes = max(0, int(self._sleep_var.get()))
+            clock_minutes = max(0, min(255, int(self._clock_standby_var.get())))
             
             self.config.com_port = new_port
             self.config.run_on_startup = self._startup_var.get()
@@ -1211,12 +1281,11 @@ class SettingsDialog(FluentViewsMixin):
                 self._auto_firmware_update_var.get()
             )
             self.config.favorite_apps = sorted(set(self.config.favorite_apps))
-            sleep_minutes = max(0, int(self._sleep_var.get()))
             self.config.device_settings.sleep_after_seconds = min(
                 65535, sleep_minutes * 60
             )
             self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
-            self.config.device_settings.clock_standby_minutes = max(0, min(255, int(self._clock_standby_var.get())))
+            self.config.device_settings.clock_standby_minutes = clock_minutes
             from protocol import CLOCK_STYLE_NAMES, STANDBY_LED_NAMES
             clock_style_name = self._clock_style_var.get()
             self.config.device_settings.clock_style = (
@@ -1246,9 +1315,12 @@ class SettingsDialog(FluentViewsMixin):
             if self.on_save:
                 self.on_save(port_changed)
                 
-            self._on_window_close()
+            self._clock_standby_var.set(str(clock_minutes))
+            self._sleep_var.set(str(math.ceil(self.config.device_settings.sleep_after_seconds / 60)))
+            self._saved_form_snapshot = self._settings_form_snapshot()
+            self._save_status_var.set("Settings saved")
         except ValueError as e:
-            messagebox.showerror("Error", f"Invalid value: {e}")
+            messagebox.showerror("Invalid setting", f"Enter whole numbers for the timeouts.\n\n{e}", parent=self._window)
 
     def _on_brightness_change(self, value):
         from protocol import Command
@@ -1279,6 +1351,8 @@ class TrayApp:
         self._auto_firmware_attempted = set()
         self._firmware_auto_thread = None
         self._controller_restart_thread = None
+        self._controller_restart_lock = threading.Lock()
+        self._pending_port_restart = None
         self._ui_watchdog_stop = threading.Event()
         self._ui_watchdog_thread = None
         self.controller.on_device_ready = self._on_device_ready
@@ -1714,25 +1788,17 @@ class TrayApp:
     def _on_settings_saved(self, port_changed: bool):
         log.info("Settings saved. Port changed: %s", port_changed)
         if port_changed:
-            current = self._controller_restart_thread
-            if current is None or not current.is_alive():
-                target_port = self.config.com_port
-
-                def restart():
-                    try:
-                        self.controller.stop()
-                        self.controller.serial.port = target_port
-                        self.controller.start()
-                    except Exception:
-                        log.exception("Controller restart after COM change failed")
-
-                worker = threading.Thread(
-                    target=restart,
-                    daemon=True,
-                    name="ControllerPortRestart",
-                )
-                self._controller_restart_thread = worker
-                worker.start()
+            with self._controller_restart_lock:
+                self._pending_port_restart = self.config.com_port
+                current = self._controller_restart_thread
+                if current is None or not current.is_alive():
+                    worker = threading.Thread(
+                        target=self._apply_pending_port_changes,
+                        daemon=True,
+                        name="ControllerPortRestart",
+                    )
+                    self._controller_restart_thread = worker
+                    worker.start()
         else:
             from protocol import Command
 
@@ -1755,6 +1821,28 @@ class TrayApp:
 
         if self.config.auto_update_enabled:
             self._start_app_update_watcher()
+
+    def _apply_pending_port_changes(self):
+        """Serialize restarts and retain the newest target from repeated saves."""
+        while True:
+            with self._controller_restart_lock:
+                target_port = self._pending_port_restart
+                self._pending_port_restart = None
+                if target_port is None:
+                    # Clear while holding the lock: a concurrent Save either
+                    # wakes this worker or creates the next one, never neither.
+                    self._controller_restart_thread = None
+                    return
+            try:
+                self.controller.stop()
+                with self._controller_restart_lock:
+                    if self._pending_port_restart is not None:
+                        target_port = self._pending_port_restart
+                        self._pending_port_restart = None
+                self.controller.serial.port = target_port
+                self.controller.start()
+            except Exception:
+                log.exception("Controller restart after COM change failed")
 
     def _on_check_app_update(self, icon=None, item=None):
         dialog = self._ensure_settings_dialog()

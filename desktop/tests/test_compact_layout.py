@@ -45,7 +45,7 @@ class CompactLayoutContracts(unittest.TestCase):
             "self._audio_page_index",
             "list(enumerate(all_items))[start:start + 4]",
             'self._fluent_build_audio_utilities(',
-            "toggle_routing", "toggle_ducking",
+            "_fluent_set_automation", '"routing_enabled"', '"ducking_enabled"',
             "toggle_streaming", "toggle_recording",
             "self._fluent_audio_drag(",
         ):
@@ -58,7 +58,7 @@ class CompactLayoutContracts(unittest.TestCase):
         end = VIEWS.index("    def build_fluent_audio(", start)
         overview = VIEWS[start:end]
         self.assertIn('body = ctk.CTkFrame(parent, fg_color="transparent")', overview)
-        for heading in ("Audio Mixer", "Clock Preview", "Quick Actions", "USB Connection"):
+        for heading in ("Audio mixer", "Device clock", "Copy diagnostics", "Firmware"):
             self.assertIn(heading, overview)
         self.assertIn('1 if current == "Overview" else 0', VIEWS)
 

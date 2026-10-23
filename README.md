@@ -68,19 +68,29 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
 Ứng dụng Windows có sáu khu vực cấu hình: **Overview**, **Audio**, **Clock**,
 **Device**, **Updates** và **Settings**. Mở từ biểu tượng VuNMix ở system tray.
 
-- Overview hiển thị tình trạng kết nối, firmware, clock đang chọn và RAM app.
-- Audio cung cấp tổng quan output/input/application; điều khiển âm lượng vẫn
-  do thiết bị và hệ thống worker quản lý, không chỉnh COM trực tiếp từ UI.
-- Clock có toàn bộ 16 kiểu đồng hồ với phần xem trước dạng tên/thời gian;
-  cần firmware >= v0.4.21 cho các kiểu số 8–15.
+- Giao diện dùng các lớp xám tối theo phong cách Windows, chữ Segoe UI,
+  sidebar có thể thu gọn và màu nhấn xanh nhạt cho thao tác chính.
+- Overview hiển thị tình trạng kết nối, firmware, RAM app, mixer và hình
+  xem trước của đúng kiểu Clock đang chọn.
+- Audio điều chỉnh Output, Input, Applications và Game Mixer bằng slider,
+  nút Mute/Unmute và Set default. Các thao tác audio chạy qua worker riêng.
+- Clock có đủ 16 kiểu với hình xem trước theo bố cục firmware 320 × 240,
+  dùng bitmap chữ DSEG/Montserrat thực tế. Ảnh được giữ tỉ lệ 4:3; gallery
+  phân trang, có viền đánh dấu lựa chọn và preview chạy theo giờ PC.
+  Cần firmware >= v0.4.21 cho các kiểu số 8–15.
 - Updates hiển thị phiên bản tương thích và giữ các thao tác tải/cập nhật
   Desktop hoặc firmware với cơ chế kiểm SHA-256.
-- Nút **Save Settings** luôn ở chân cửa sổ, các khu vực cấu hình cuộn riêng.
+- Nút **Save settings** luôn ở chân cửa sổ. Sau khi lưu, cửa sổ vẫn mở và
+  hiển thị trạng thái lưu; thay đổi chưa lưu được đánh dấu rõ.
+- Các trang chính không phụ thuộc vào thanh cuộn. Kích thước và thumbnail
+  có xét tỉ lệ hiển thị của Windows.
 
 Chi tiết: [Stability & Control Center](docs/stability-control-center.md).
 Các bài thử cần board thật: [Hardware QA Matrix](docs/hardware-qa-matrix.md).
 Các bản sửa USB, cập nhật, cảm ứng và audio automation:
 [Ghi chú v0.4.32](docs/release-v0.4.32.md).
+Giao diện Windows dark và Clock preview:
+[Ghi chú v0.4.33](docs/release-v0.4.33.md).
 
 ## Chế độ sử dụng
 
