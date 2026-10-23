@@ -23,8 +23,10 @@ native Windows title bars and Segoe UI.
   launching from another working directory still find the logo. Frozen builds
   continue using PyInstaller's resource directory.
 - Generate the Windows ICO from the PNG at build time, with ten sizes from
-  16 to 256 pixels. The executable, installer, shortcuts and runtime windows
-  share this generated icon.
+  16 to 256 pixels. Use alpha-preserving DIB frames so the older Tk bundled
+  with Python 3.11 can select the correct native size instead of upscaling a
+  small PNG-compressed frame. The executable, installer, shortcuts and runtime
+  windows share this generated icon.
 - Verify that the packaged PNG and ICO exactly match the build's source assets
   before creating the portable ZIP and installer.
 

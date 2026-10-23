@@ -72,7 +72,12 @@ def build_windows_icon(source: Path | None = None,
     with Image.open(source) as original:
         image = _fit_logo(original.convert("RGBA"), max(WINDOWS_ICON_SIZES))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    image.save(destination, format="ICO", sizes=[(size, size) for size in WINDOWS_ICON_SIZES])
+    # The Tk 8.6 build bundled with Python 3.11 reads ICO frame dimensions as
+    # DIB headers. PNG-compressed frames can make it upscale the first 16px
+    # image instead of selecting the native size. DIB retains RGBA and works
+    # with both Tk and the Windows executable/installer icon loaders.
+    image.save(destination, format="ICO", bitmap_format="bmp",
+               sizes=[(size, size) for size in WINDOWS_ICON_SIZES])
     return destination
 
 

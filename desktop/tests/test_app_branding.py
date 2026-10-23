@@ -1,6 +1,7 @@
 """Regressions for original artwork, launcher paths and generated Windows icons."""
 from contextlib import chdir
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
@@ -66,6 +67,17 @@ class AppBrandingTests(unittest.TestCase):
     def test_windows_icon_contains_all_sizes_and_the_original_artwork(self):
         with tempfile.TemporaryDirectory() as directory:
             output = build_windows_icon(destination=Path(directory) / "icon.ico")
+            # Tk's Windows loader needs real DIB dimensions in every frame;
+            # PNG payloads make older Tk versions select the first small icon.
+            encoded = output.read_bytes()
+            count = struct.unpack_from("<H", encoded, 4)[0]
+            self.assertEqual(count, len(WINDOWS_ICON_SIZES))
+            for index in range(count):
+                offset = struct.unpack_from("<I", encoded, 6 + 16 * index + 12)[0]
+                header_size, width, height = struct.unpack_from("<Iii", encoded, offset)
+                self.assertEqual(header_size, 40)
+                self.assertIn(width, WINDOWS_ICON_SIZES)
+                self.assertEqual(height, width * 2)
             with Image.open(output) as icon:
                 self.assertEqual(icon.ico.sizes(), {(size, size) for size in WINDOWS_ICON_SIZES})
                 largest = icon.ico.getimage((256, 256)).convert("RGBA")
