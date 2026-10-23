@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -184,7 +185,6 @@ class AppUpdater:
     ) -> Path:
         UPDATE_DIR.mkdir(parents=True, exist_ok=True)
         final_path = UPDATE_DIR / info.installer_name
-        temp_path = final_path.with_suffix(final_path.suffix + ".part")
 
         request = urllib.request.Request(
             info.installer_url,
@@ -193,10 +193,17 @@ class AppUpdater:
 
         hasher = hashlib.sha256()
         downloaded = 0
+        temp_path = None
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                total = int(response.headers.get("Content-Length") or 0)
-                with open(temp_path, "wb") as handle:
+            # Each attempt owns its staging file. Cleanup from a failed or
+            # cancelled request must never truncate/delete another download.
+            with tempfile.NamedTemporaryFile(
+                mode="wb", prefix=f"{info.installer_name}.", suffix=".part",
+                dir=UPDATE_DIR, delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    total = int(response.headers.get("Content-Length") or 0)
                     while True:
                         chunk = response.read(1024 * 256)
                         if not chunk:
@@ -213,25 +220,23 @@ class AppUpdater:
                             progress(fraction, f"Downloading {info.tag}...")
                     handle.flush()
                     os.fsync(handle.fileno())
+
+            actual_hash = hasher.hexdigest().lower()
+            if actual_hash != expected_hash.lower():
+                raise UpdateError(
+                    "Downloaded installer failed SHA-256 verification. "
+                    f"Expected {expected_hash}, got {actual_hash}."
+                )
+
+            os.replace(temp_path, final_path)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
             raise UpdateError(f"Failed to download {info.installer_name}: {exc}") from exc
-
-        actual_hash = hasher.hexdigest().lower()
-        if actual_hash != expected_hash.lower():
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise UpdateError(
-                "Downloaded installer failed SHA-256 verification. "
-                f"Expected {expected_hash}, got {actual_hash}."
-            )
-
-        os.replace(temp_path, final_path)
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         if progress:
             progress(1.0, "Installer verified.")
         return final_path

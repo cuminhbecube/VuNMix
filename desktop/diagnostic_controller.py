@@ -13,6 +13,7 @@ import time
 from app_controller import AppController
 from diagnostic_serial import DiagnosticSerialService
 from diagnostics import build_diagnostic_report, open_log_folder
+from update_coordinator import start_firmware_thread
 
 
 log = logging.getLogger(__name__)
@@ -72,9 +73,10 @@ class DiagnosticAppController(AppController):
     def open_log_folder(self) -> None:
         open_log_folder()
 
-    def start_firmware_update(self, path, on_progress=None, on_complete=None) -> bool:
+    def start_firmware_update(self, path, on_progress=None, on_complete=None, should_start=None) -> bool:
         """Flash firmware with phase progress, classified errors and reconnect gate."""
-        if not self._firmware_update_lock.acquire(blocking=False):
+        reservation = self.updates.try_begin("firmware", should_start)
+        if reservation is None:
             return False
         self._firmware_updating = True
         self._last_update_error_code = ""
@@ -96,6 +98,9 @@ class DiagnosticAppController(AppController):
                 preferred_port = self.serial.port or self.config.com_port
                 self.serial.stop()
                 time.sleep(0.4)
+                if should_start is not None and not should_start():
+                    message = "Automatic firmware update cancelled."
+                    return
 
                 result = flash_firmware(
                     preferred_port,
@@ -165,7 +170,7 @@ class DiagnosticAppController(AppController):
                 )
             finally:
                 self._firmware_updating = False
-                self._firmware_update_lock.release()
+                self.updates.finish(reservation)
                 if self._running and not self.serial.is_connected:
                     self.serial.start()
                 if on_complete:
@@ -174,9 +179,4 @@ class DiagnosticAppController(AppController):
                     except Exception:
                         log.exception("Firmware completion callback failed")
 
-        threading.Thread(
-            target=worker,
-            daemon=False,
-            name="FirmwareUpdate",
-        ).start()
-        return True
+        return start_firmware_thread(self, reservation, worker)

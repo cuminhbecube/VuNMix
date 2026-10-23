@@ -202,6 +202,7 @@ class AuditRegressions(unittest.TestCase):
         tray.controller = SimpleNamespace(is_connected=True, firmware_updating=False, firmware_version='0.4.17')
         tray._update_stop = mock.Mock()
         tray._update_stop.wait.return_value = False
+        tray._update_stop.is_set.return_value = False
         tray._firmware_auto_lock = threading.Lock()
         tray._auto_firmware_attempted = set()
         tray._dispatch_ui = mock.Mock()

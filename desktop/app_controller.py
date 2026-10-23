@@ -25,6 +25,7 @@ from preset_service import PresetService
 from protocol import MeterData, ModeStates, SessionData, SessionIndex, SessionInfo
 from serial_service import SerialService
 from system_monitor import SystemMonitor
+from update_coordinator import UpdateCoordinator, start_firmware_thread
 from weather_service import WeatherService
 
 
@@ -72,7 +73,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
         self._meter_thread: Optional[threading.Thread] = None
-        self._firmware_update_lock = threading.Lock()
+        self.updates = UpdateCoordinator()
         self._firmware_updating = False
         self._running = False
         self._worker_lock = threading.RLock()
@@ -172,11 +173,13 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
                 self._update_only_connected
                 and self.serial.is_connected
                 and not self._firmware_updating
+                and not self.updates.busy
             )
 
-    def start_firmware_update(self, path, on_progress=None, on_complete=None) -> bool:
+    def start_firmware_update(self, path, on_progress=None, on_complete=None, should_start=None) -> bool:
         """Stop protocol traffic, flash in a worker, then verify reconnect."""
-        if not self._firmware_update_lock.acquire(blocking=False):
+        reservation = self.updates.try_begin("firmware", should_start)
+        if reservation is None:
             return False
         self._firmware_updating = True
 
@@ -188,6 +191,9 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
 
                 self.serial.stop()
                 time.sleep(0.5)
+                if should_start is not None and not should_start():
+                    message = "Automatic firmware update cancelled."
+                    return
                 flash_firmware(
                     self.config.com_port,
                     path,
@@ -217,15 +223,10 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
                 message = str(exc)
             finally:
                 self._firmware_updating = False
-                self._firmware_update_lock.release()
+                self.updates.finish(reservation)
                 if self._running and not self.serial.is_connected:
                     self.serial.start()
                 if on_complete:
                     on_complete(success, message)
 
-        threading.Thread(
-            target=worker,
-            daemon=False,
-            name="FirmwareUpdate",
-        ).start()
-        return True
+        return start_firmware_thread(self, reservation, worker)

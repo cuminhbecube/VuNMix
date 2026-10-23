@@ -105,10 +105,15 @@ class DiagnosticSerialService(SerialService):
             self._connected_since = time.monotonic()
         return result
 
-    def disconnect(self):
-        if self.is_connected:
-            self._connected_since = None
-        return super().disconnect()
+    def disconnect(self, *, expected_connection=None):
+        result = super().disconnect(expected_connection=expected_connection)
+        # The base method can reject a stale handle, and its lifecycle callback
+        # can allow a replacement connection before returning. Do not clear the
+        # replacement's uptime in either case.
+        with self._connect_lock:
+            if self._serial is None:
+                self._connected_since = None
+        return result
 
     def send_command(self, cmd: Command, payload: bytes = b"") -> bool:
         result = super().send_command(cmd, payload)

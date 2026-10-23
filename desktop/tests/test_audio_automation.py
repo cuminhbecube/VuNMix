@@ -72,11 +72,28 @@ class _Audio:
             return list(self.apps)
         return []
 
-    def set_volume(self, mode, index, volume, muted, *, expected_item=None):
+    def set_volume(self, mode, index, volume, muted, *, expected_item=None, preserve_mute=False):
         self.volume_calls.append((mode, index, int(volume), bool(muted)))
         item = self.get_sessions_for_mode(mode)[index]
         item.volume = int(volume)
-        item.is_muted = bool(muted)
+        if not preserve_mute:
+            item.is_muted = bool(muted)
+
+
+class _NativeMuteAudio(_Audio):
+    """Windows mute can change before AudioService refreshes its item cache."""
+
+    def __init__(self, muted):
+        super().__init__()
+        self.apps[1].is_muted = self.native_muted = muted
+        self.native_mute_writes = 0
+
+    def set_volume(self, mode, index, volume, muted, *, expected_item=None, preserve_mute=False):
+        super().set_volume(mode, index, volume, muted, expected_item=expected_item,
+                           preserve_mute=preserve_mute)
+        if not preserve_mute:
+            self.native_muted = bool(muted)
+            self.native_mute_writes += 1
 
 
 class _Router:
@@ -89,6 +106,24 @@ class _Router:
 
     def clear_process_output(self, pid):
         self.clear_calls.append(int(pid))
+
+
+class _RetryRouter(_Router):
+    def __init__(self):
+        super().__init__()
+        self.active = {}
+        self.clear_attempts = 0
+
+    def set_process_output(self, pid, device_id):
+        super().set_process_output(pid, device_id)
+        self.active[int(pid)] = str(device_id)
+
+    def clear_process_output(self, pid):
+        self.clear_attempts += 1
+        if self.clear_attempts == 1:
+            raise OSError("transient routing backend error")
+        super().clear_process_output(pid)
+        self.active.pop(int(pid), None)
 
 
 class AudioAutomationTests(unittest.TestCase):
@@ -118,6 +153,38 @@ class AudioAutomationTests(unittest.TestCase):
             service.set_routing_enabled(False)
             self.assertEqual(service.apply_routing_rules(router), 1)
             self.assertEqual(router.clear_calls, [1001])
+
+    def test_failed_route_removal_is_retried_after_disabling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = self._service(directory)
+            service.save_routing_rule(RoutingRule("Chat", "discord", "headset"))
+            router = _RetryRouter()
+            service.apply_routing_rules(router)
+            self.assertEqual(router.active, {1001: "DEV_HEADSET"})
+
+            service.set_routing_enabled(False)
+            self.assertEqual(service.apply_routing_rules(router), 0)
+            self.assertEqual(router.active, {1001: "DEV_HEADSET"})
+            self.assertIn("transient", service.last_routing_error)
+
+            self.assertEqual(service.apply_routing_rules(router), 1)
+            self.assertEqual(router.active, {})
+            self.assertEqual(router.clear_attempts, 2)
+            self.assertEqual(service.last_routing_error, "")
+
+    def test_explicit_cleanup_retains_failed_route_for_periodic_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = self._service(directory)
+            service.save_routing_rule(RoutingRule("Chat", "discord", "headset"))
+            router = _RetryRouter()
+            service.apply_routing_rules(router)
+            service.set_routing_enabled(False)
+
+            service.clear_applied_routes(router)
+            self.assertEqual(router.active, {1001: "DEV_HEADSET"})
+            service.apply_routing_rules(router)
+            self.assertEqual(router.active, {})
+            self.assertEqual(router.clear_attempts, 2)
 
     def test_ducking_attack_and_release_restore_exact_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -200,6 +267,90 @@ class AudioAutomationTests(unittest.TestCase):
 
             service.tick_ducking({"Discord": 0.5, "Game": 0.5}, 1.0)
             self.assertEqual(audio.apps[1].volume, 32)
+
+    def test_mute_only_changes_survive_release_and_immediate_cleanup(self):
+        for initial_muted in (False, True):
+            for finish in ("release", "cleanup"):
+                with self.subTest(initial_muted=initial_muted, finish=finish):
+                    with tempfile.TemporaryDirectory() as directory:
+                        audio = _Audio()
+                        target = audio.apps[1]
+                        target.is_muted = initial_muted
+                        service = self._service(directory, audio)
+                        service.save_ducking_rule(DuckingRule(
+                            "Chat ducks music", "discord", ["spotify"],
+                            reduction_percent=50, threshold=0.01,
+                            attack_ms=0, release_ms=0,
+                        ))
+                        service.tick_ducking({"Discord": 0.5}, 1.0)
+                        self.assertEqual(target.volume, 40)
+
+                        # A user toggle does not change the numerical volume.
+                        target.is_muted = not initial_muted
+                        if finish == "release":
+                            service.tick_ducking({"Discord": 0.5}, 2.0)
+                            service.tick_ducking({"Discord": 0.0}, 3.0)
+                        else:
+                            # Disable/exit can happen before another worker tick.
+                            service.restore_all_ducked()
+                        self.assertEqual(target.volume, 80)
+                        self.assertEqual(target.is_muted, not initial_muted)
+                        self.assertFalse(service.has_pending_recovery())
+
+    def test_crash_recovery_preserves_mute_only_changes(self):
+        for initial_muted in (False, True):
+            with self.subTest(initial_muted=initial_muted):
+                with tempfile.TemporaryDirectory() as directory:
+                    audio = _Audio()
+                    target = audio.apps[1]
+                    target.is_muted = initial_muted
+                    service = self._service(directory, audio)
+                    service.save_ducking_rule(DuckingRule(
+                        "Chat ducks music", "discord", ["spotify"],
+                        reduction_percent=50, threshold=0.01,
+                        attack_ms=0, release_ms=0,
+                    ))
+                    service.tick_ducking({"Discord": 0.5}, 1.0)
+                    target.is_muted = not initial_muted
+
+                    recovered = self._service(directory, audio)
+                    self.assertEqual(recovered.recover_pending(), 1)
+                    self.assertEqual(target.volume, 80)
+                    self.assertEqual(target.is_muted, not initial_muted)
+                    self.assertFalse(recovered.has_pending_recovery())
+
+    def test_all_ducking_writes_preserve_native_mute_with_stale_cache(self):
+        for initial_muted in (False, True):
+            for phase in ("attack", "release", "cleanup", "recovery"):
+                with self.subTest(initial_muted=initial_muted, phase=phase):
+                    with tempfile.TemporaryDirectory() as directory:
+                        audio = _NativeMuteAudio(initial_muted)
+                        service = self._service(directory, audio)
+                        service.save_ducking_rule(DuckingRule(
+                            "Chat ducks music", "discord", ["spotify"],
+                            reduction_percent=50, threshold=0.01,
+                            attack_ms=1000 if phase == "attack" else 0,
+                            release_ms=0,
+                        ))
+                        service.tick_ducking({"Discord": 0.5}, 1.0)
+                        # The native state changes without a cache refresh.
+                        audio.native_muted = not initial_muted
+                        self.assertEqual(audio.apps[1].is_muted, initial_muted)
+
+                        if phase == "attack":
+                            service.tick_ducking({"Discord": 0.5}, 1.5)
+                            self.assertEqual(audio.apps[1].volume, 60)
+                        elif phase == "release":
+                            service.tick_ducking({}, 2.0)
+                        elif phase == "cleanup":
+                            service.restore_all_ducked()
+                        else:
+                            self._service(directory, audio).recover_pending()
+
+                        self.assertEqual(audio.native_muted, not initial_muted)
+                        self.assertEqual(audio.native_mute_writes, 0)
+                        if phase != "attack":
+                            self.assertEqual(audio.apps[1].volume, 80)
 
     def test_crash_recovery_restores_only_if_volume_still_matches_duck(self):
         with tempfile.TemporaryDirectory() as directory:
