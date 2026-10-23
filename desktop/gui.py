@@ -21,8 +21,7 @@ import customtkinter as ctk
 from typing import Optional
 import serial.tools.list_ports
 
-from PIL import Image, ImageDraw
-
+from app_branding import resource_path, load_logo, create_tray_icon, apply_window_icon
 from build_info import APP_VERSION
 from fluent_theme import (
     BG, SURFACE, CARD, BORDER, TEXT, MUTED, ONLINE, ACCENT, DANGER,
@@ -41,15 +40,6 @@ from firmware_release import (
 from update_center import describe_device_update
 
 log = logging.getLogger(__name__)
-
-
-def resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
 
 
 def set_run_on_startup(enable: bool):
@@ -87,29 +77,6 @@ def set_run_on_startup(enable: bool):
         winreg.CloseKey(key)
     except Exception as e:
         log.error("Failed to update registry for startup: %s", e)
-
-
-def create_tray_icon(connected: bool) -> Image.Image:
-    """Generate a 64x64 tray icon (Red when connected, Grey when disconnected)."""
-    target_color = (255, 60, 60) if connected else (130, 130, 130)
-    
-    try:
-        img = Image.open(resource_path(os.path.join("assets", "logo.png"))).convert("RGBA")
-        img = img.resize((64, 64), Image.Resampling.LANCZOS)
-        
-        # Colorize logo: use target color for RGB, keep original Alpha
-        r, g, b, a = img.split()
-        solid_color = Image.new('RGB', img.size, target_color)
-        img = Image.merge('RGBA', (*solid_color.split(), a))
-    except Exception as e:
-        log.warning(f"Could not load logo: {e}")
-        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        bg_color = target_color + (255,)
-        draw.ellipse([2, 2, 62, 62], fill=bg_color, outline=(60, 60, 80, 255), width=2)
-        draw.text((22, 15), "V", fill=(255, 255, 255, 200))
-
-    return img
 
 
 class SettingsDialog(FluentViewsMixin):
@@ -207,6 +174,7 @@ class SettingsDialog(FluentViewsMixin):
         # A single CTk interpreter remains alive across tray show/hide cycles.
         self._window = ctk.CTk(fg_color=BG)
         self._window.title(f"VuNMix · Desktop {APP_VERSION}")
+        apply_window_icon(self._window)
         geometry = calculate_geometry(
             self._window.winfo_screenwidth(),
             self._window.winfo_screenheight(),
@@ -229,6 +197,14 @@ class SettingsDialog(FluentViewsMixin):
         header = ctk.CTkFrame(main_frame, fg_color="transparent", height=60)
         header.pack(fill="x", padx=20)
         header.pack_propagate(False)
+        logo = load_logo(80)
+        self._header_logo_image = ctk.CTkImage(
+            light_image=logo, dark_image=logo, size=(40, 40),
+        )
+        self._header_logo_label = ctk.CTkLabel(
+            header, text="", image=self._header_logo_image, width=40, height=40,
+        )
+        self._header_logo_label.pack(side="left", padx=(0, 10))
         title_lbl = ctk.CTkLabel(
             header, text="VuNMix", text_color=TEXT,
             font=ctk.CTkFont(family=FONT_FAMILY, size=20, weight="bold"),
@@ -774,6 +750,7 @@ class SettingsDialog(FluentViewsMixin):
 
         picker = ctk.CTkToplevel(self._window)
         picker.title("Firmware Versions")
+        apply_window_icon(picker)
         picker.geometry("290x190")
         picker.attributes("-topmost", True)
         picker.transient(self._window)
@@ -1058,6 +1035,7 @@ class SettingsDialog(FluentViewsMixin):
 
         picker = ctk.CTkToplevel(self._window)
         picker.title("App Favorites")
+        apply_window_icon(picker)
         picker.geometry("260x360")
         picker.attributes("-topmost", True)
         picker.transient(self._window)

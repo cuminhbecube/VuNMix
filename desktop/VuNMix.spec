@@ -24,6 +24,11 @@ def normalize_version(value):
 root = pathlib.Path.cwd()
 sys.path.insert(0, str(root))
 from protocol import PROTOCOL_VERSION
+from app_branding import build_windows_icon
+
+# The executable, installer and runtime windows share the personal PNG artwork.
+# Regenerate before collecting assets so a logo update cannot leave a stale ICO.
+windows_icon = build_windows_icon(root / "assets" / "logo.png", root / "assets" / "icon.ico")
 
 app_version = normalize_version(
     os.environ.get("VUNMIX_VERSION") or os.environ.get("VERSION") or "dev"
@@ -107,7 +112,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=["assets\\icon.ico"],
+    icon=[str(windows_icon)],
 )
 
 coll = COLLECT(

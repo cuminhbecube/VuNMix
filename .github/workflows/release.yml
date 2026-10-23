@@ -268,6 +268,12 @@ jobs:
         run: |
           python tools/verify_packaged_esptool.py "dist\VuNMix"
 
+      - name: Verify packaged personal logo assets
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          python tools/verify_packaged_branding.py "dist\VuNMix"
+
       - name: Package portable app
         working-directory: desktop
         shell: pwsh

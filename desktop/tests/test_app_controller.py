@@ -11,10 +11,11 @@ DESKTOP_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DESKTOP_DIR))
 
 # The selection helper is pure, but app_controller also owns Windows-only
-# integration classes. Minimal stubs keep this regression test independent
-# from a particular Python/pywin32 installation.
-for module_name in ("win32api", "win32con", "win32gui"):
-    sys.modules.setdefault(module_name, types.ModuleType(module_name))
+# integration classes. Stubs support non-Windows source checks without hiding
+# the real pywin32 modules from native Windows tests during shared discovery.
+if sys.platform != "win32":
+    for module_name in ("win32api", "win32con", "win32gui"):
+        sys.modules.setdefault(module_name, types.ModuleType(module_name))
 
 previous_comtypes = sys.modules.get("comtypes")
 comtypes_stub = types.ModuleType("comtypes")
