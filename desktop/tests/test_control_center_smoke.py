@@ -10,41 +10,95 @@ sys.path.insert(0, str(DESKTOP))
 
 @unittest.skipUnless(sys.platform == "win32", "Windows Tk smoke test")
 class ControlCenterSmokeTests(unittest.TestCase):
-    def test_personal_logo_and_native_window_icons_survive_ctk_delay(self):
+    def _assert_personal_logo_and_native_window_icons(self, dialog):
+        from contextlib import ExitStack
         import customtkinter as ctk
         import tkinter as tk
+        import win32con
+        import win32gui
+        import win32ui
+        from PIL import Image
         from app_branding import load_logo, resource_path
         from build_info import APP_VERSION
-        from config import AppConfig
-        from connection_ui import ConnectionSettingsDialog
         from firmware_release import FirmwareReleaseInfo
-        from tools.capture_control_center import make_controller
 
-        controller, service_calls = make_controller(False)
-        dialog = ConnectionSettingsDialog(AppConfig(), controller, on_save=mock.Mock())
-        callback_errors = []
         icon_path = pathlib.Path(resource_path("assets/icon.ico")).resolve()
 
+        def render_icon(hicon, width, height, background):
+            # This display DC is owned (CreateDC), unlike a borrowed GetDC.
+            display_handle = win32gui.CreateDC("DISPLAY", None, None)
+            try:
+                display_dc = win32ui.CreateDCFromHandle(display_handle)
+            except Exception:
+                win32gui.DeleteDC(display_handle)
+                raise
+            with ExitStack() as cleanup:
+                cleanup.callback(display_dc.DeleteDC)
+                memory_dc = display_dc.CreateCompatibleDC()
+                cleanup.callback(memory_dc.DeleteDC)
+                bitmap = win32ui.CreateBitmap()
+                bitmap.CreateCompatibleBitmap(display_dc, width, height)
+                cleanup.callback(win32gui.DeleteObject, bitmap.GetHandle())
+                previous = memory_dc.SelectObject(bitmap)
+                # Restore before deleting the bitmap or either DC.
+                cleanup.callback(memory_dc.SelectObject, previous)
+                memory_dc.FillSolidRect((0, 0, width, height), background)
+                win32gui.DrawIconEx(memory_dc.GetSafeHdc(), 0, 0, hicon,
+                                    width, height, 0, None, win32con.DI_NORMAL)
+                info = bitmap.GetInfo()
+                self.assertIn(info["bmBitsPixel"], (24, 32))
+                raw_mode = "BGRX" if info["bmBitsPixel"] == 32 else "BGR"
+                # Ignore the unused fourth byte of a screen-compatible bitmap.
+                return Image.frombuffer(
+                    "RGB", (width, height), bitmap.GetBitmapBits(True), "raw",
+                    raw_mode, info["bmWidthBytes"], 1,
+                ).tobytes()
+
         def assert_icon_after_ctk_delay(window):
-            # CTkToplevel schedules its own icon at 200ms. Query the actual
-            # Windows bitmap after both that callback and our reapply run.
+            # CTkToplevel sets its own icon at 200ms; our reapply is at 250ms.
             settled = tk.BooleanVar(master=dialog._window, value=False)
             dialog._window.after(350, settled.set, True)
             dialog._window.wait_variable(settled)
             dialog._window.update_idletasks()
-            # CTk's iconbitmap wrapper does not return Tk's query result.
-            # Inspect the native window manager value directly instead.
-            actual_icon = window.tk.call("wm", "iconbitmap", window._w)
-            self.assertEqual(pathlib.Path(actual_icon).resolve(), icon_path)
 
-        try:
-            with mock.patch("gui.serial.tools.list_ports.comports", return_value=[]):
-                dialog.initialize()
-            dialog._window.report_callback_exception = (
-                lambda kind, error, tb: callback_errors.append(f"{kind.__name__}: {error}"))
-            dialog._window.deiconify()
-            dialog._window.update_idletasks()
+            # Tk's ICO setter does not retain a queryable bitmap filename.
+            # Inspect the native wrapper instead; GA_ROOT does not follow a
+            # transient picker's owner back to the main window.
+            wrapper = win32gui.GetAncestor(window.winfo_id(), win32con.GA_ROOT)
+            self.assertTrue(wrapper, f"No native wrapper for {window.title()}")
+            actual_icon = win32gui.SendMessage(
+                wrapper, win32con.WM_GETICON, win32con.ICON_BIG, 0)
+            self.assertTrue(actual_icon, f"No native icon for {window.title()}")
+            # actual_icon is borrowed from the window: never DestroyIcon it.
+            _, _, _, mask, color = win32gui.GetIconInfo(actual_icon)
+            try:
+                info = win32gui.GetObject(color or mask)
+                width = info.bmWidth
+                height = info.bmHeight if color else info.bmHeight // 2
+            finally:
+                # GetIconInfo creates these bitmap copies for the caller.
+                for handle in (color, mask):
+                    if handle:
+                        win32gui.DeleteObject(handle)
+            self.assertGreater(width, 0)
+            self.assertGreater(height, 0)
+            expected_icon = win32gui.LoadImage(
+                0, str(icon_path), win32con.IMAGE_ICON, width, height,
+                win32con.LR_LOADFROMFILE)
+            self.assertTrue(expected_icon)
+            try:
+                # Both backgrounds make transparency differences observable.
+                for background in (0x000000, 0xFFFFFF):
+                    with self.subTest(window=window.title(), background=background):
+                        actual = render_icon(actual_icon, width, height, background)
+                        expected = render_icon(expected_icon, width, height, background)
+                        self.assertEqual(actual, expected,
+                                         "Native window icon differs from the personal ICO")
+            finally:
+                # LoadImage without LR_SHARED returns an owned icon.
+                win32gui.DestroyIcon(expected_icon)
 
+        with self.subTest(branding="header"):
             self.assertTrue(icon_path.is_file())
             self.assertIsInstance(dialog._header_logo_image, ctk.CTkImage)
             self.assertIs(dialog._header_logo_label.cget("image"), dialog._header_logo_image)
@@ -53,39 +107,34 @@ class ControlCenterSmokeTests(unittest.TestCase):
             self.assertEqual(header_art.mode, "RGBA")
             self.assertEqual(header_art.tobytes(), load_logo(80).tobytes())
             self.assertTrue(dialog._header_logo_label.winfo_ismapped())
+        with self.subTest(branding="main window"):
             assert_icon_after_ctk_delay(dialog._window)
 
-            version = APP_VERSION.lstrip("v")
-            release = FirmwareReleaseInfo(
-                version=version, tag=f"v{version}", release_url="",
-                firmware_name=f"VuNMix-Firmware-{version}.bin",
-                firmware_url="", checksums_url="",
-            )
-            # Open the production pickers from fixture data. Do not invoke
-            # the loaders, installation, selection Apply, or any services.
-            for title, show in (
-                ("Firmware Versions", lambda: dialog._show_firmware_release_picker([release])),
-                ("App Favorites", lambda: dialog._show_favorite_apps_picker(["Spotify", "Discord"])),
-            ):
-                with self.subTest(picker=title):
-                    before = set(dialog._window.winfo_children())
-                    show()
-                    pickers = [child for child in dialog._window.winfo_children()
-                               if child not in before and isinstance(child, ctk.CTkToplevel)]
-                    self.assertEqual(len(pickers), 1)
-                    picker = pickers[0]
-                    try:
-                        self.assertEqual(picker.title(), title)
-                        assert_icon_after_ctk_delay(picker)
-                    finally:
-                        picker.grab_release()
-                        picker.destroy()
-
-            self.assertEqual(service_calls, [])
-            dialog.on_save.assert_not_called()
-            self.assertEqual(callback_errors, [])
-        finally:
-            dialog._shutdown_from_ui()
+        version = APP_VERSION.lstrip("v")
+        release = FirmwareReleaseInfo(
+            version=version, tag=f"v{version}", release_url="",
+            firmware_name=f"VuNMix-Firmware-{version}.bin",
+            firmware_url="", checksums_url="",
+        )
+        # Open production pickers with fixtures in the same Tk interpreter as
+        # the route/save checks. Do not invoke loaders or selection Apply.
+        for title, show in (
+            ("Firmware Versions", lambda: dialog._show_firmware_release_picker([release])),
+            ("App Favorites", lambda: dialog._show_favorite_apps_picker(["Spotify", "Discord"])),
+        ):
+            with self.subTest(picker=title):
+                before = set(dialog._window.winfo_children())
+                show()
+                pickers = [child for child in dialog._window.winfo_children()
+                           if child not in before and isinstance(child, ctk.CTkToplevel)]
+                self.assertEqual(len(pickers), 1)
+                picker = pickers[0]
+                try:
+                    self.assertEqual(picker.title(), title)
+                    assert_icon_after_ctk_delay(picker)
+                finally:
+                    picker.grab_release()
+                    picker.destroy()
 
     def test_routes_fit_and_clock_selection_and_save_stay_consistent(self):
         import customtkinter as ctk
@@ -129,6 +178,11 @@ class ControlCenterSmokeTests(unittest.TestCase):
             self.assertEqual(dialog._save_button.cget("text_color"), ACCENT_TEXT)
             self.assertEqual(len(dialog._sidebar_buttons), len(SECTIONS))
             self.assertIn("disconnected", dialog._update_center_var.get().lower())
+
+            self._assert_personal_logo_and_native_window_icons(dialog)
+            self.assertEqual(service_calls, [])
+            on_save.assert_not_called()
+            self.assertEqual(callback_errors, [])
 
             collapsed = dialog._sidebar_collapsed
             dialog._toggle_fluent_sidebar()
