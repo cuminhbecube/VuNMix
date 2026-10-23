@@ -23,7 +23,11 @@ namespace Input {
 
     static volatile bool s_touchInterruptPending = false;
     static bool s_touchAvailable = false;
-    static TouchEvent s_touchEvent = TouchEvent::None;
+    static constexpr uint32_t DOUBLE_TAP_INTERVAL_MS = 350;
+    static constexpr uint8_t TOUCH_EVENT_QUEUE_SIZE = 4;
+    static TouchEvent s_touchEvents[TOUCH_EVENT_QUEUE_SIZE];
+    static uint8_t s_touchEventHead = 0;
+    static uint8_t s_touchEventCount = 0;
     static TouchEvent s_lastTouchEvent = TouchEvent::None;
     static uint8_t s_lastRawGesture = 0;
     static uint8_t s_lastFingers = 0;
@@ -31,16 +35,19 @@ namespace Input {
     static uint16_t s_lastY = 0;
     static uint32_t s_touchSampleCounter = 0;
     static uint8_t s_lastGesture = 0;
-    static uint32_t s_lastGestureAt = 0;
     static uint32_t s_lastTouchPollAt = 0;
     static bool s_touchDown = false;
+    static bool s_touchHandled = false;
+    static bool s_contactHadCoordinates = false;
+    static TouchEvent s_contactGesture = TouchEvent::None;
     static uint16_t s_touchDownX = 0;
     static uint16_t s_touchDownY = 0;
     static uint16_t s_touchLastX = 0;
     static uint16_t s_touchLastY = 0;
     static uint32_t s_touchDownAt = 0;
-    static uint32_t s_lastTapAt = 0;
-    static uint32_t s_lastHwGestureAt = 0;
+    static bool s_pendingTap = false;
+    static uint32_t s_pendingTapAt = 0;
+    static bool s_secondTapCandidate = false;
     static uint8_t s_consecutiveI2cErrors = 0;
 
     volatile int8_t g_EncoderSteps = 0;
@@ -182,36 +189,74 @@ namespace Input {
         if (event == TouchEvent::None)
             return;
 
-        uint32_t now = millis();
-        if (event == s_lastTouchEvent && (uint32_t)(now - s_lastGestureAt) < 90U)
-            return;
-
-        s_touchEvent = event;
+        // Finishing a pending tap and a different gesture can enqueue two
+        // actions in one report. Preserve both for the main loop to consume.
+        if (s_touchEventCount == TOUCH_EVENT_QUEUE_SIZE)
+        {
+            s_touchEventHead = (s_touchEventHead + 1) % TOUCH_EVENT_QUEUE_SIZE;
+            --s_touchEventCount;
+        }
+        uint8_t tail = (s_touchEventHead + s_touchEventCount) % TOUCH_EVENT_QUEUE_SIZE;
+        s_touchEvents[tail] = event;
+        ++s_touchEventCount;
         s_lastTouchEvent = event;
-        s_lastGestureAt = now;
     }
 
-    static void DecodeTouchPoint(uint8_t fingers, uint16_t x, uint16_t y)
+    static void FinishPendingTap()
     {
-        uint32_t now = millis();
-        if (fingers > 0)
+        if (s_pendingTap)
         {
-            if (!s_touchDown)
-            {
-                s_touchDown = true;
-                s_touchDownX = x;
-                s_touchDownY = y;
-                s_touchDownAt = now;
-            }
-            s_touchLastX = x;
-            s_touchLastY = y;
-            return;
+            s_pendingTap = false;
+            QueueTouchEvent(TouchEvent::Tap);
         }
+    }
 
-        if (!s_touchDown)
+    static void UpdatePendingTap(uint32_t now)
+    {
+        // A second contact that began in the double-tap window must finish
+        // before choosing single versus double tap. This also works at the
+        // millis() rollover because no timestamp doubles as a sentinel.
+        if (s_pendingTap && !s_secondTapCandidate &&
+            (uint32_t)(now - s_pendingTapAt) > DOUBLE_TAP_INTERVAL_MS)
+            FinishPendingTap();
+    }
+
+    static void RecognizeTouchGesture(TouchEvent event, uint32_t now)
+    {
+        if (event == TouchEvent::None)
             return;
 
-        s_touchDown = false;
+        if (event == TouchEvent::Tap)
+        {
+            if (s_pendingTap && (s_secondTapCandidate ||
+                (uint32_t)(now - s_pendingTapAt) <= DOUBLE_TAP_INTERVAL_MS))
+            {
+                s_pendingTap = false;
+                QueueTouchEvent(TouchEvent::DoubleTap);
+            }
+            else
+            {
+                FinishPendingTap();
+                s_pendingTap = true;
+                s_pendingTapAt = now;
+            }
+        }
+        else if (event == TouchEvent::DoubleTap)
+        {
+            // Hardware confirmation upgrades the pending single tap, too.
+            s_pendingTap = false;
+            QueueTouchEvent(event);
+        }
+        else
+        {
+            // A separate swipe/hold cannot complete the preceding tap pair.
+            FinishPendingTap();
+            QueueTouchEvent(event);
+        }
+    }
+
+    static TouchEvent GestureFromTouchPoint(uint32_t now)
+    {
         uint32_t duration = now - s_touchDownAt;
         int16_t dx = (int16_t)s_touchLastX - (int16_t)s_touchDownX;
         int16_t dy = (int16_t)s_touchLastY - (int16_t)s_touchDownY;
@@ -241,35 +286,93 @@ namespace Input {
         int16_t adx = abs(dx);
         int16_t ady = abs(dy);
 
-        // If a hardware gesture was recently decoded, suppress software delta gestures to avoid duplicate events
-        if ((uint32_t)(now - s_lastHwGestureAt) < 300U)
-            return;
-
         if (duration <= 800U && (adx > 50 || ady > 50))
         {
             if (adx >= ady)
-                QueueTouchEvent(dx > 0 ? TouchEvent::SwipeRight : TouchEvent::SwipeLeft);
-            else
-                QueueTouchEvent(dy > 0 ? TouchEvent::SwipeDown : TouchEvent::SwipeUp);
-            return;
+                return dx > 0 ? TouchEvent::SwipeRight : TouchEvent::SwipeLeft;
+            return dy > 0 ? TouchEvent::SwipeDown : TouchEvent::SwipeUp;
         }
 
         if (duration <= 650U && adx <= 35 && ady <= 35)
+            return TouchEvent::Tap;
+        if (duration > 650U && adx <= 35 && ady <= 35)
+            return TouchEvent::LongPress;
+        return TouchEvent::None;
+    }
+
+    static void ProcessTouchReport(uint8_t gesture, uint8_t fingers, uint16_t x, uint16_t y)
+    {
+        uint32_t now = millis();
+        bool wasDown = s_touchDown;
+        bool newContact = fingers > 0 && !wasDown;
+        if (newContact)
         {
-            if ((uint32_t)(now - s_lastTapAt) <= 350U)
+            s_touchDown = true;
+            s_touchHandled = false;
+            s_contactHadCoordinates = true;
+            s_contactGesture = TouchEvent::None;
+            s_touchDownX = x;
+            s_touchDownY = y;
+            s_touchDownAt = now;
+            s_secondTapCandidate = s_pendingTap &&
+                (uint32_t)(now - s_pendingTapAt) <= DOUBLE_TAP_INTERVAL_MS;
+        }
+        if (fingers > 0)
+        {
+            s_touchLastX = x;
+            s_touchLastY = y;
+        }
+
+        TouchEvent hardwareEvent = DecodeGesture(gesture);
+        bool newHardwareGesture = gesture != s_lastGesture || newContact;
+        s_lastGesture = gesture;
+        if (hardwareEvent != TouchEvent::None && newHardwareGesture)
+        {
+            if (!s_touchHandled)
             {
-                s_lastTapAt = 0;
-                QueueTouchEvent(TouchEvent::DoubleTap);
+                s_contactGesture = hardwareEvent;
+                // A hardware tap reported while still down is only a hint;
+                // finish the contact before starting the double-tap timeout.
+                if (hardwareEvent != TouchEvent::Tap || !s_touchDown)
+                {
+                    RecognizeTouchGesture(hardwareEvent, now);
+                    s_touchHandled = true;
+                }
             }
-            else
+            else if (hardwareEvent == TouchEvent::DoubleTap && s_pendingTap &&
+                     s_contactGesture == TouchEvent::Tap)
             {
-                s_lastTapAt = now;
-                QueueTouchEvent(TouchEvent::Tap);
+                RecognizeTouchGesture(hardwareEvent, now);
+                s_contactGesture = hardwareEvent;
             }
         }
-        else if (duration > 650U && adx <= 35 && ady <= 35)
+
+        if (fingers == 0 && s_touchDown)
         {
-            QueueTouchEvent(TouchEvent::LongPress);
+            s_touchDown = false;
+            if (!s_touchHandled)
+            {
+                TouchEvent event = s_contactGesture;
+                if (event == TouchEvent::None)
+                    event = GestureFromTouchPoint(now);
+                RecognizeTouchGesture(event, now);
+                s_contactGesture = event;
+                s_touchHandled = event != TouchEvent::None;
+            }
+            // Hardware ownership lasts for the whole contact, however long
+            // the finger remains down after a long-press or swipe event.
+            s_secondTapCandidate = false;
+        }
+        else if (fingers == 0 && !wasDown && hardwareEvent == TouchEvent::None &&
+                 (!s_pendingTap || !s_contactHadCoordinates))
+        {
+            // Some reports contain only a gesture and no down sample. A
+            // cleared gesture register separates those virtual contacts.
+            // Retain a coordinate tap until resolved so a late hardware TAP
+            // confirms it rather than falsely becoming a second tap.
+            s_touchHandled = false;
+            s_contactHadCoordinates = false;
+            s_contactGesture = TouchEvent::None;
         }
     }
 
@@ -367,6 +470,7 @@ namespace Input {
         }
 
         uint32_t now = millis();
+        UpdatePendingTap(now);
         bool intActive = s_touchAvailable && digitalRead(PIN_TOUCH_INT) == LOW;
         bool shouldPollTouch = s_touchAvailable &&
             (s_touchInterruptPending || intActive ||
@@ -388,19 +492,7 @@ namespace Input {
                 s_lastX = (uint16_t)(((report[2] & 0x0F) << 8) | report[3]);
                 s_lastY = (uint16_t)(((report[4] & 0x0F) << 8) | report[5]);
                 ++s_touchSampleCounter;
-                TouchEvent event = DecodeGesture(gesture);
-
-                // One physical gesture can produce several IRQ pulses.
-                if (event != TouchEvent::None &&
-                    (gesture != s_lastGesture ||
-                     (uint32_t)(now - s_lastGestureAt) >= 180U))
-                {
-                    s_lastHwGestureAt = now;
-                    QueueTouchEvent(event);
-                    s_lastGesture = gesture;
-                }
-
-                DecodeTouchPoint(s_lastFingers, s_lastX, s_lastY);
+                ProcessTouchReport(gesture, s_lastFingers, s_lastX, s_lastY);
             }
         }
     }
@@ -412,8 +504,11 @@ namespace Input {
 
     TouchEvent ConsumeTouchEvent()
     {
-        TouchEvent event = s_touchEvent;
-        s_touchEvent = TouchEvent::None;
+        if (s_touchEventCount == 0)
+            return TouchEvent::None;
+        TouchEvent event = s_touchEvents[s_touchEventHead];
+        s_touchEventHead = (s_touchEventHead + 1) % TOUCH_EVENT_QUEUE_SIZE;
+        --s_touchEventCount;
         return event;
     }
 

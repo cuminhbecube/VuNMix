@@ -118,6 +118,7 @@ class AudioAutomationService:
         self.audio = audio_service
         self.path = path or AUTOMATION_FILE
         self._lock = threading.RLock()
+        self._routing_lock = threading.RLock()
         self._last_saved_payload = None
         self.routing_enabled = True
         self.ducking_enabled = True
@@ -266,6 +267,12 @@ class AudioAutomationService:
 
     def apply_routing_rules(self, router) -> int:
         """Apply first matching routing rule per process and clear stale overrides."""
+        # UI disable/cleanup and the periodic worker must agree on which
+        # overrides still belong to us, including failed cleanup attempts.
+        with self._routing_lock:
+            return self._apply_routing_rules_locked(router)
+
+    def _apply_routing_rules_locked(self, router) -> int:
         apps = self.audio.get_sessions_for_mode(DisplayMode.MODE_APPLICATION)
         outputs = self.audio.get_sessions_for_mode(DisplayMode.MODE_OUTPUT)
         with self._lock:
@@ -290,6 +297,7 @@ class AudioAutomationService:
                     break
 
         changes = 0
+        errors = []
         for pid, old_device in list(self._applied_routes.items()):
             if desired.get(pid) == old_device:
                 continue
@@ -297,8 +305,10 @@ class AudioAutomationService:
                 router.clear_process_output(pid)
                 changes += 1
             except Exception as exc:
-                self.last_routing_error = str(exc)
+                errors.append(str(exc))
                 log.warning("Failed to clear route for pid=%d: %s", pid, exc)
+                # Keep ownership so a later worker iteration can retry.
+                continue
             self._applied_routes.pop(pid, None)
 
         for pid, device_id in desired.items():
@@ -307,21 +317,26 @@ class AudioAutomationService:
             try:
                 router.set_process_output(pid, device_id)
                 self._applied_routes[pid] = device_id
-                self.last_routing_error = ""
                 changes += 1
                 log.info("Applied app audio route pid=%d device=%s", pid, device_id)
             except Exception as exc:
-                self.last_routing_error = str(exc)
+                errors.append(str(exc))
                 log.warning("Failed to route pid=%d: %s", pid, exc)
+        self.last_routing_error = errors[-1] if errors else ""
         return changes
 
     def clear_applied_routes(self, router) -> None:
-        for pid in list(self._applied_routes):
-            try:
-                router.clear_process_output(pid)
-            except Exception:
-                log.debug("Failed to clear route pid=%d during shutdown", pid, exc_info=True)
-            self._applied_routes.pop(pid, None)
+        with self._routing_lock:
+            errors = []
+            for pid in list(self._applied_routes):
+                try:
+                    router.clear_process_output(pid)
+                except Exception as exc:
+                    errors.append(str(exc))
+                    log.debug("Failed to clear route pid=%d during shutdown", pid, exc_info=True)
+                    continue
+                self._applied_routes.pop(pid, None)
+            self.last_routing_error = errors[-1] if errors else ""
 
     # ------------------------------------------------------------------
     # Ducking / recovery journal
@@ -413,10 +428,13 @@ class AudioAutomationService:
             current = int(getattr(item, "volume", 0))
             if expected is None or abs(current - int(expected)) <= 1:
                 baseline = _clamp_int(record.get("baseline_volume", current), 0, 100)
-                muted = bool(record.get("baseline_muted", getattr(item, "is_muted", False)))
+                # Ducking owns volume only. Preserve a mute/unmute performed
+                # after a crash even if the volume still matches our journal.
+                muted = bool(getattr(item, "is_muted", record.get("baseline_muted", False)))
                 try:
                     if self.audio.set_volume(
                         DisplayMode.MODE_APPLICATION, index, baseline, muted, expected_item=item,
+                        preserve_mute=True,
                     ) is False:
                         continue
                     restored += 1
@@ -465,6 +483,10 @@ class AudioAutomationService:
         return int(round(start + (target - start) * fraction))
 
     def _manual_baseline_update(self, state: _DuckTargetState, item) -> None:
+        current_muted = bool(getattr(item, "is_muted", state.baseline_muted))
+        if current_muted != state.baseline_muted:
+            state.baseline_muted = current_muted
+            self._write_recovery(state)
         if state.last_applied_volume is None:
             return
         current = int(getattr(item, "volume", state.last_applied_volume))
@@ -561,6 +583,7 @@ class AudioAutomationService:
                         desired,
                         bool(getattr(item, "is_muted", False)),
                         expected_item=item,
+                        preserve_mute=True,
                     ) is False:
                         state.last_applied_volume = previous_applied
                         self._write_recovery(state)
@@ -596,6 +619,7 @@ class AudioAutomationService:
                     desired,
                     state.baseline_muted,
                     expected_item=item,
+                    preserve_mute=True,
                 ) is False:
                     state.last_applied_volume = previous_applied
                     self._write_recovery(state)
@@ -625,9 +649,11 @@ class AudioAutomationService:
                 continue
             index, item = found
             try:
+                self._manual_baseline_update(state, item)
                 if self.audio.set_volume(
                     DisplayMode.MODE_APPLICATION, index, state.baseline_volume,
                     state.baseline_muted, expected_item=item,
+                    preserve_mute=True,
                 ) is False:
                     continue
                 restored += 1

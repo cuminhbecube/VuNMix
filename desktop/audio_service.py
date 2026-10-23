@@ -194,8 +194,16 @@ class AudioService:
                 return item
         return None
 
-    def set_volume(self, mode: int, index: int, volume: int, is_muted: bool, *, expected_item=None):
-        """Apply volume change from hardware to Windows audio."""
+    def set_volume(
+        self, mode: int, index: int, volume: int, is_muted: bool, *,
+        expected_item=None, preserve_mute: bool = False,
+    ):
+        """Apply volume, optionally leaving the native and cached mute untouched.
+
+        Automation that owns only volume must not replay a cached mute flag:
+        the user may have changed Windows mute since the last audio refresh.
+        Hardware/UI callers retain the existing volume-and-mute behavior.
+        """
         with self._com_scope():
             item = self._selected_item(mode, index, expected_item)
             if item is None:
@@ -208,9 +216,11 @@ class AudioService:
                     endpoint_vol = self._endpoint_volume(item._device_id)
                     if endpoint_vol:
                         endpoint_vol.SetMasterVolumeLevelScalar(vol_float, None)
-                        endpoint_vol.SetMute(is_muted, None)
+                        if not preserve_mute:
+                            endpoint_vol.SetMute(is_muted, None)
                         item.volume = volume
-                        item.is_muted = is_muted
+                        if not preserve_mute:
+                            item.is_muted = is_muted
                         return True
                 except Exception as e:
                     log.error(f"Failed to set endpoint volume: {e}")
@@ -223,9 +233,11 @@ class AudioService:
                                 vol_interface = session.SimpleAudioVolume
                                 if vol_interface:
                                     vol_interface.SetMasterVolume(vol_float, None)
-                                    vol_interface.SetMute(is_muted, None)
+                                    if not preserve_mute:
+                                        vol_interface.SetMute(is_muted, None)
                                     item.volume = volume
-                                    item.is_muted = is_muted
+                                    if not preserve_mute:
+                                        item.is_muted = is_muted
                                     return True
                                 break
                         except Exception:

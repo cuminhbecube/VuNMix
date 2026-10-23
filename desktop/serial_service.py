@@ -411,8 +411,12 @@ class SerialService:
                 return True
             except (serial.SerialException, OSError, ValueError) as e:
                 log.error("Write error: %s", e)
-                self.disconnect(expected_connection=connection)
-                return False
+        # Disconnect observers may acquire the controller's icon-cache lock.
+        # An icon sender can already hold that lock while waiting for this
+        # write lock, so callbacks must run after the write lock is released.
+        # Keep the failed handle guard: another thread may reconnect meanwhile.
+        self.disconnect(expected_connection=connection)
+        return False
 
     def send_test(self) -> bool:
         """Send TEST command to verify hardware presence."""

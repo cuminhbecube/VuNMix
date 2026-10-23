@@ -824,6 +824,13 @@ class SettingsDialog(FluentViewsMixin):
         info: FirmwareReleaseInfo,
         automatic: bool = False,
     ):
+        def still_enabled():
+            return not automatic or bool(
+                getattr(self.config, "auto_firmware_update_enabled", True)
+            )
+
+        if not still_enabled() or self._firmware_release_loading:
+            return
         if not self.controller.can_update_firmware:
             if not automatic:
                 messagebox.showwarning(
@@ -852,6 +859,11 @@ class SettingsDialog(FluentViewsMixin):
                     info,
                     progress=on_download,
                 )
+                if not still_enabled():
+                    self._ui_call(lambda: self._firmware_release_start_failed(
+                        "Automatic firmware update cancelled."
+                    ))
+                    return
 
                 def on_flash(value, text):
                     self._ui_call(
@@ -874,12 +886,15 @@ class SettingsDialog(FluentViewsMixin):
                     str(firmware),
                     on_progress=on_flash,
                     on_complete=on_complete,
+                    should_start=still_enabled,
                 )
                 if not started:
+                    message = (
+                        "Another update is already running."
+                        if still_enabled() else "Automatic firmware update cancelled."
+                    )
                     self._ui_call(
-                        lambda: self._firmware_release_start_failed(
-                            "Another firmware update is already running."
-                        )
+                        lambda text=message: self._firmware_release_start_failed(text)
                     )
             except Exception as exc:
                 log.exception("Firmware release update failed")
@@ -897,7 +912,10 @@ class SettingsDialog(FluentViewsMixin):
     def _firmware_release_start_failed(self, message: str):
         self._firmware_release_loading = False
         self._firmware_progress.set(0)
-        self._firmware_status_var.set(f"Firmware update failed: {message}")
+        self._firmware_status_var.set(
+            "Auto FW update cancelled" if message == "Automatic firmware update cancelled."
+            else f"Firmware update failed: {message}"
+        )
 
     def _select_firmware(self):
         if not self.controller.can_update_firmware:
@@ -1090,7 +1108,8 @@ class SettingsDialog(FluentViewsMixin):
                 )
         else:
             self._firmware_status_var.set(
-                "Auto FW update failed" if automatic else "Update failed"
+                "Auto FW update cancelled" if message == "Automatic firmware update cancelled."
+                else "Auto FW update failed" if automatic else "Update failed"
             )
             if not automatic:
                 messagebox.showerror(
@@ -1411,6 +1430,8 @@ class TrayApp:
         # "connect for ~2 seconds, then Waiting" failure seen by users.
         if self._update_stop.wait(10.0):
             return
+        if not getattr(self.config, "auto_firmware_update_enabled", True):
+            return
         if (
             not self.controller.is_connected
             or getattr(self.controller, "firmware_updating", False)
@@ -1434,6 +1455,11 @@ class TrayApp:
 
         try:
             info = self._firmware_release_client.get_version(APP_VERSION)
+            if (
+                self._update_stop.is_set()
+                or not getattr(self.config, "auto_firmware_update_enabled", True)
+            ):
+                return
             if info is None:
                 log.warning(
                     "No firmware asset matches Desktop App %s",
@@ -1456,13 +1482,19 @@ class TrayApp:
             with self._firmware_auto_lock:
                 self._auto_firmware_attempted.add(attempt_key)
                 self._firmware_retry_delay = 60.0
-            self._dispatch_ui(
-                lambda found=info:
-                    self._ensure_settings_dialog().start_firmware_release_update(
-                        found,
-                        automatic=True,
-                    )
-            )
+            def start_if_enabled(found=info):
+                if (
+                    self._update_stop.is_set()
+                    or not getattr(self.config, "auto_firmware_update_enabled", True)
+                ):
+                    with self._firmware_auto_lock:
+                        self._auto_firmware_attempted.discard(attempt_key)
+                    return
+                self._ensure_settings_dialog().start_firmware_release_update(
+                    found, automatic=True,
+                )
+
+            self._dispatch_ui(start_if_enabled)
         except Exception as exc:
             log.warning("Automatic firmware check failed: %s", exc)
             self._schedule_firmware_retry()
@@ -1528,6 +1560,14 @@ class TrayApp:
         ).start()
 
     def _check_app_update_worker(self, manual: bool):
+        if self.controller.updates.busy:
+            if manual:
+                self._dispatch_ui(
+                    lambda: self._ensure_settings_dialog().set_app_update_status(
+                        "Another update is already running."
+                    )
+                )
+            return
         if not self._update_check_lock.acquire(blocking=False):
             if manual:
                 self._dispatch_ui(
@@ -1569,7 +1609,19 @@ class TrayApp:
             self._update_check_lock.release()
 
     def _start_app_update_install(self, info: UpdateInfo):
+        # Reserve before the download, not just before launch: otherwise a
+        # firmware flash could start while the installer is being fetched.
+        reservation = self.controller.updates.try_begin("app")
+        if reservation is None:
+            self._dispatch_ui(
+                lambda: self._ensure_settings_dialog().set_app_update_status(
+                    "Another update is already running."
+                )
+            )
+            return False
+
         def worker():
+            handed_off = False
             try:
                 def on_progress(value, text):
                     self._dispatch_ui(
@@ -1581,6 +1633,7 @@ class TrayApp:
                     info,
                     progress=on_progress,
                 )
+                handed_off = True
                 log.info("App update installer started: %s", path)
                 self._dispatch_ui(
                     lambda found=info: self._finish_app_update_launch(found)
@@ -1593,12 +1646,23 @@ class TrayApp:
                             f"Update failed: {error}"
                         )
                 )
+            finally:
+                # A launched installer may still force-close this process.
+                # Keep its reservation until exit so no firmware write can
+                # begin during that handoff.
+                if not handed_off:
+                    self.controller.updates.finish(reservation)
 
-        threading.Thread(
-            target=worker,
-            daemon=True,
-            name="AppUpdateInstall",
-        ).start()
+        try:
+            threading.Thread(
+                target=worker,
+                daemon=True,
+                name="AppUpdateInstall",
+            ).start()
+        except Exception:
+            self.controller.updates.finish(reservation)
+            raise
+        return True
 
     def _finish_app_update_launch(self, info: UpdateInfo):
         """Show the handoff briefly, then release the running executable."""

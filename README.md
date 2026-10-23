@@ -79,6 +79,8 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
 
 Chi tiết: [Stability & Control Center](docs/stability-control-center.md).
 Các bài thử cần board thật: [Hardware QA Matrix](docs/hardware-qa-matrix.md).
+Các bản sửa USB, cập nhật, cảm ứng và audio automation:
+[Ghi chú v0.4.32](docs/release-v0.4.32.md).
 
 ## Chế độ sử dụng
 
@@ -146,6 +148,9 @@ Khi giữ `Vol -` hoặc `Vol +`, firmware tạo bước lặp liên tục để
 | Thao tác khi màn hình ngủ | Chỉ đánh thức màn hình, không thực hiện lệnh |
 
 Cảm ứng và keypad hoạt động song song. Nếu cảm ứng bị đảo hướng trên biến thể màn hình khác, kiểm tra `TOUCH_ROTATION` trong `src/Config.h`.
+
+Từ v0.4.32, single tap được xác nhận sau cửa sổ double tap 350 ms. Điều này
+giúp double tap chỉ mute/unmute, không thực hiện thao tác Navigate/Edit trước đó.
 
 ### Test phím và cảm ứng khi chưa kết nối PC
 

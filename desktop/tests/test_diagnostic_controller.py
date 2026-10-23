@@ -8,6 +8,7 @@ DESKTOP_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DESKTOP_DIR))
 
 from diagnostic_controller import DiagnosticAppController
+from update_coordinator import UpdateCoordinator
 
 
 class _Config:
@@ -29,7 +30,7 @@ class DiagnosticControllerTests(unittest.TestCase):
         ):
             controller = object.__new__(DiagnosticAppController)
             controller.config = _Config()
-            controller._firmware_update_lock = mock.MagicMock()
+            controller.updates = UpdateCoordinator()
             controller._firmware_updating = False
             controller._firmware_version = "v0.5.0"
             controller._firmware_protocol = 1
