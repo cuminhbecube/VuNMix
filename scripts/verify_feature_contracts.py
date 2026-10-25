@@ -7,6 +7,8 @@ or hardware behavior. Hardware testing remains a separate release gate.
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import pathlib
 import sys
 
@@ -35,6 +37,9 @@ REQUIRED_FILES = (
     "src/ui/modules/DisplayClockArtHelpers.inc",
     "desktop/tests/test_clock_firmware.py",
     "desktop/tests/test_audio_memory_regression.py",
+    "desktop/tests/native_theme/original_clocks.json",
+    "desktop/tests/test_theme_firmware_native.py",
+    "tools/native_theme_regression.py",
 )
 REQUIRED_UI_TOKENS = (
     "DisplayClockStyles.inc", "DisplayClockArt.inc", "DisplayClock.inc",
@@ -63,6 +68,12 @@ def validate() -> None:
     styles = clock_styles()
     require(tuple(styles) == EXPECTED_CLOCKS,
             f"Clock inventory changed: expected 16 published styles, got {styles!r}")
+    clock_baseline = json.loads((ROOT / "desktop/tests/native_theme/original_clocks.json").read_text(encoding="utf-8"))
+    require(clock_baseline.get("baseline_commit") == "4ee00c424cf34e56eec26a383689197b2b47b4e1",
+            "Original clock baseline was replaced")
+    for filename, expected in clock_baseline["immutable_sources_sha256_lf"].items():
+        actual = hashlib.sha256((ROOT / filename).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+        require(actual == expected, f"Original clock/font source changed: {filename}")
     protocol = (ROOT / "desktop/protocol.py").read_text(encoding="utf-8")
     for name in ("MODE_OUTPUT", "MODE_INPUT", "MODE_APPLICATION", "MODE_GAME",
                  "MODE_HEALTH", "CLOCK_STYLE_NAMES"):

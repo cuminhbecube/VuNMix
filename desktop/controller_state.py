@@ -41,7 +41,10 @@ class HardwareStateMixin:
 
     def _on_hw_message(self, cmd: Command, payload: bytes):
         """Process a message received from hardware."""
-        if cmd == Command.SESSION_INFO:
+        if cmd == Command.UI_THEME:
+            if getattr(self, "theme_sync", None) is not None:
+                self.theme_sync.handle_response(payload, self.serial.connection_generation)
+        elif cmd == Command.SESSION_INFO:
             info = SessionInfo.unpack(payload)
             log.debug("HW→PC SESSION_INFO: mode=%s, current=%s", info.mode, info.current)
             self._handle_session_info_from_hw(info)

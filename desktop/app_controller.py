@@ -19,6 +19,7 @@ from controller_device import DeviceLifecycleMixin
 from controller_power import PowerMonitor
 from controller_state import HardwareStateMixin
 from controller_workers import SyncWorkersMixin
+from device_theme import DeviceThemeCoordinator
 from media_service import MediaService
 from obs_service import ObsService
 from preset_service import PresetService
@@ -83,6 +84,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         self._resume_recovering = False
         self._initial_sync_thread: Optional[threading.Thread] = None
         self._initial_sync_token = 0
+        self.theme_sync = DeviceThemeCoordinator(self._send_theme_request, config.device_theme_id)
 
         self.serial.on_connected = self._on_device_connected
         self.serial.on_disconnected = self._on_device_disconnected
@@ -101,6 +103,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         # Mark the controller alive before subscribing to power events. A
         # resume broadcast can arrive immediately after monitor creation.
         self._running = True
+        self._start_theme_sync()
         if self._power_monitor is None:
             self._power_monitor = PowerMonitor(self._on_pc_sleep, self._on_pc_resume)
         self.serial.start()
@@ -123,6 +126,7 @@ class AppController(DeviceLifecycleMixin, HardwareStateMixin, SyncWorkersMixin):
         # them blocked behind a transport or WASAPI call while new workers are
         # starting for the next connection generation.
         self._running = False
+        self._stop_theme_sync()
         self._worker_stop.set()
         self.weather_service.stop()
         self.obs_service.stop()

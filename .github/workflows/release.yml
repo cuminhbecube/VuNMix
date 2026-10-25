@@ -115,6 +115,24 @@ jobs:
       - name: Verify clock, USB and UI feature inventory
         run: python scripts/verify_feature_contracts.py
 
+  native_ui:
+    name: Native themes and unchanged clock pixels
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout including original clock baseline
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify eight live themes and sixteen original clocks
+        run: python tools/native_theme_regression.py --download --verify
+      - name: Exercise actual firmware theme framing and persistence control
+        run: python -m unittest desktop.tests.test_firmware_device_theme_protocol -v
+
   firmware:
     name: ESP32-S3 firmware
     runs-on: ubuntu-latest
@@ -274,6 +292,12 @@ jobs:
         run: |
           python tools/verify_packaged_branding.py "dist\VuNMix"
 
+      - name: Verify packaged native device theme previews
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          python tools/verify_packaged_device_themes.py "dist\VuNMix"
+
       - name: Package portable app
         working-directory: desktop
         shell: pwsh
@@ -407,7 +431,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [prepare, feature_contracts, firmware, desktop, connection_stress]
+    needs: [prepare, feature_contracts, native_ui, firmware, desktop, connection_stress]
     if: needs.prepare.outputs.is_release == 'true'
     permissions:
       contents: write
@@ -416,6 +440,9 @@ jobs:
       TAG: ${{ needs.prepare.outputs.tag }}
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
+      - name: Checkout versioned release notes
+        uses: actions/checkout@v4
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -456,6 +483,11 @@ jobs:
             echo "::error::${TAG} is already published. Create the next patch version."
             exit 1
           fi
+          note_args=(--generate-notes)
+          notes_file="docs/release-${TAG}.md"
+          if [[ -f "${notes_file}" ]]; then
+            note_args=(--notes-file "${notes_file}")
+          fi
           gh release create "${TAG}" \
             "release-assets/VuNMix-Firmware-${VERSION}.bin" \
             "release-assets/VuNMix-Firmware-Full-${VERSION}.zip" \
@@ -465,7 +497,7 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "VuNMix ${TAG}" \
-            --generate-notes
+            "${note_args[@]}"
 
       - name: Verify published release
         shell: bash

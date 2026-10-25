@@ -3,6 +3,13 @@
 #include "Config.h"
 
 namespace Display {
+    // Selection is independent of ClockStyle and does not touch LVGL, audio,
+    // idle timers, or the backlight. Non-clock screen calls apply it lazily.
+    bool SetDeviceTheme(uint8_t id);
+    uint8_t DeviceTheme();
+    // 255 while the original clock is visible or a theme build failed.
+    // Shared original Info/KeyTest are intentional members of every theme.
+    uint8_t ActiveDeviceTheme();
     void Initialize();
     void Update();
     void SplashScreen();

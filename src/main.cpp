@@ -4,6 +4,7 @@
 #include "Display.h"
 #include "VideoPlayer.h"
 #include "Communications.h"
+#include "DeviceThemeControl.h"
 #include "Input.h"
 #include <Adafruit_NeoPixel.h>
 #include <Preferences.h>
@@ -107,6 +108,11 @@ void setup()
 
     Display::Initialize();
 
+    // A separate key preserves the existing SETTINGS/clock record and keeps
+    // old desktop apps from resetting this selection during their handshake.
+    const uint8_t storedTheme = preferences.getUChar("ui_theme", 0);
+    Display::SetDeviceTheme(storedTheme < DeviceThemeProtocol::COUNT ? storedTheme : 0);
+
     Communications::Initialize();
 
     g_Pixels.begin();
@@ -153,7 +159,26 @@ void loop()
     }
 
     Command command = Communications::Read();
-    g_DisplayDirty = g_DisplayDirty || (command != Command::NONE && command != Command::ERROR);
+    g_DisplayDirty = g_DisplayDirty || (command != Command::NONE && command != Command::ERROR
+                                      && command != Command::UI_THEME);
+
+    bool themeReplyPending = false;
+    uint16_t themeRequestId = 0;
+    DeviceThemeProtocol::Status themeStatus = DeviceThemeProtocol::Status::FAILED;
+    if (command == Command::UI_THEME) {
+        DeviceThemeProtocol::Request request = {};
+        if (Communications::TakeDeviceThemeRequest(request)) {
+            const auto prepared = DeviceThemeControl::Prepare(
+                request, Display::DeviceTheme(), g_ClockMode || g_DisplayAsleep,
+                [](uint8_t theme) { return Display::SetDeviceTheme(theme); },
+                [](uint8_t theme) { return preferences.putUChar("ui_theme", theme) == 1; }
+            );
+            themeReplyPending = true;
+            themeRequestId = request.requestId;
+            themeStatus = prepared.status;
+            g_DisplayDirty = g_DisplayDirty || prepared.render;
+        }
+    }
 
     if (command != Command::NONE && command != Command::ERROR) {
         if (command == Command::SETTINGS) {
@@ -260,6 +285,22 @@ void loop()
     Display::Update();
     Display::UpdateTimers(g_Now - last);
     g_DisplayDirty = false;
+
+    if (themeReplyPending) {
+        // The ordinary input/sleep/clock processing above may have changed the
+        // visible mode since the request. A saved choice is deferred while a
+        // clock or sleeping screen is visible, without waking/resetting it.
+        if (themeStatus == DeviceThemeProtocol::Status::APPLIED
+                || themeStatus == DeviceThemeProtocol::Status::SAVED_DEFERRED) {
+            if (g_ClockMode || g_DisplayAsleep)
+                themeStatus = DeviceThemeProtocol::Status::SAVED_DEFERRED;
+            else if (Display::ActiveDeviceTheme() != Display::DeviceTheme())
+                themeStatus = DeviceThemeProtocol::Status::FAILED;
+            else
+                themeStatus = DeviceThemeProtocol::Status::APPLIED;
+        }
+        Communications::SendDeviceThemeStatus(themeRequestId, themeStatus, Display::DeviceTheme());
+    }
 
     // Update lighting at 50 Hz. Meter data arrives slower from Windows, so
     // firmware interpolation keeps motion smooth between USB samples.

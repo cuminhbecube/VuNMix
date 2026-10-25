@@ -108,6 +108,11 @@ class SerialService:
         return self._serial is not None and self._serial.is_open
 
     @property
+    def connection_generation(self) -> int:
+        """Identity for bounded requests that must not cross a reconnect."""
+        return self._connection_generation
+
+    @property
     def last_protocol_rx(self) -> float:
         """Monotonic timestamp of the last valid VuNMix protocol frame."""
         return self._last_protocol_rx
@@ -394,7 +399,7 @@ class SerialService:
         except queue.Empty:
             pass
 
-    def send_command(self, cmd: Command, payload: bytes = b'') -> bool:
+    def send_command(self, cmd: Command, payload: bytes = b'', *, expected_generation=None) -> bool:
         """Send a command byte + optional payload to hardware."""
         if not self.is_connected:
             return False
@@ -402,6 +407,9 @@ class SerialService:
             try:
                 connection = self._serial
                 if connection is None or not connection.is_open:
+                    return False
+                if (expected_generation is not None
+                        and expected_generation != self._connection_generation):
                     return False
                 # write_timeout bounds the only blocking transport operation.
                 # Serial.flush() can wait indefinitely for a disappearing USB
@@ -426,6 +434,10 @@ class SerialService:
         return self.send_command(Command.SETTINGS, settings.pack(
             legacy_clock_styles=not getattr(self, "extended_clock_styles_supported", False)
         ))
+
+    def send_theme_request(self, request, *, expected_generation: int) -> bool:
+        return self.send_command(Command.UI_THEME, request.pack(),
+                                 expected_generation=expected_generation)
 
     def send_session_info(self, info: SessionInfo) -> bool:
         return self.send_command(Command.SESSION_INFO, info.pack())
@@ -581,7 +593,12 @@ class SerialService:
                         continue
 
                     if self.on_message:
-                        self._enqueue_message(generation, cmd, payload)
+                        if cmd == Command.UI_THEME:
+                            # This callback only updates a bounded transaction
+                            # state machine. Do not queue its ACK behind WASAPI.
+                            self.on_message(cmd, payload)
+                        else:
+                            self._enqueue_message(generation, cmd, payload)
 
             except (serial.SerialException, OSError) as e:
                 log.error("Serial read error: %s", e, exc_info=True)

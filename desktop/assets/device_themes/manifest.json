@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "resolution": [
+    320,
+    240
+  ],
+  "scene": "output",
+  "renderer": "LVGL 8.3.11",
+  "themes": [
+    {
+      "id": 0,
+      "name": "Classic",
+      "file": "classic.png",
+      "sha256": "d03bbc9640b72f27a89326b37b9e457c82082209650fa1049272c7fed3c39804",
+      "rgb565_sha256": "a771abff783b22410e4418a59a89675231666a94bbdc3cb9753bb77e7856c42e"
+    },
+    {
+      "id": 1,
+      "name": "Windows Dark",
+      "file": "windows_dark.png",
+      "sha256": "a7b88cabeb81261fc845efb0b9f4b1176850bc8c56a1a59c72e4357f58dcc96b",
+      "rgb565_sha256": "055dcde15d5f0661cc5850639435020b61f15bfafc556508199145fa12bb1a39"
+    },
+    {
+      "id": 2,
+      "name": "Studio",
+      "file": "studio.png",
+      "sha256": "2b496cfb413d7575353d7da5ac24e8521973e5c11eebd77354112165b69d342a",
+      "rgb565_sha256": "dd429ac6d3d51188c3a004781029931f207c17d204a484f3260891705aae0997"
+    },
+    {
+      "id": 3,
+      "name": "Paper",
+      "file": "paper.png",
+      "sha256": "bdb93bf8b025da2cdecc8949cd4fc517f1b46828f31e8a41de68b2bec09b10b3",
+      "rgb565_sha256": "ff7ddacd20dfb7c7b619307d869d0757776230a1a18b462933b134b344fdca2a"
+    },
+    {
+      "id": 4,
+      "name": "Orbit",
+      "file": "orbit.png",
+      "sha256": "5ed78da55c3a90cb9a013333f5bec35a136b57f7e097f7dc36ed8c004aa62944",
+      "rgb565_sha256": "5efdcaa0bc1e17fce319d37d8c4ba16315eb21e182a9a98ee5fce5d672bf0b44"
+    },
+    {
+      "id": 5,
+      "name": "Pixel",
+      "file": "pixel.png",
+      "sha256": "1416cfe7e3d869418f0ce70cacfe0d3f4cccb46b149aa9e233d2d584a0cfffb5",
+      "rgb565_sha256": "f55a3248ec1d2b0feb697ef09bffb7f6b3e554709b8541a7624c011b703b6059"
+    },
+    {
+      "id": 6,
+      "name": "Blocks",
+      "file": "blocks.png",
+      "sha256": "a57dfad4ec1fb1f5147441c046ddb2fa1f5c507513f4b16687be9ccec7bb2ad6",
+      "rgb565_sha256": "fb08594fa849b9c16bb3b103c507732d1cc6b133f04a0710d83039894d44c54d"
+    },
+    {
+      "id": 7,
+      "name": "Terminal",
+      "file": "terminal.png",
+      "sha256": "580a04ffe793b2be7b78f835592b5ca7bbd1e620a4fd2cb98723ddff3963d68e",
+      "rgb565_sha256": "c64e9d5b074a56de4a2f6cc4a8fedc89b859dc81dbe3efa996309d2da0662b39"
+    }
+  ],
+  "provenance": "Actual production Display.cpp/ThemeRenderer.cpp; native RGB565 memory flush",
+  "fixture": {
+    "name": "Realtek USB Audio",
+    "volume": 68,
+    "is_default": true,
+    "is_muted": false,
+    "pc_connected": true,
+    "current_peak": 36,
+    "alternate_peak": 0
+  },
+  "lvgl_archive_sha256": "83b7325a4b78cbb19a39f3ac75346c8086926d7faeab5ff2d825c20da0bbdb46",
+  "rendering_sources_sha256_lf": {
+    "src/Config.h": "07ee2d555fd5cea58abfd45d9717ebbbe42d4af4a7254013b14a017f2519f8ec",
+    "src/Display.cpp": "c2744779c265f226f53237825449b8737514ae84dd3555c19a6c75d7793f21f1",
+    "src/Display.h": "fc8a9a072098b3627770011a6dd8a30766b73fef1b7b3f93caed8133187dc7e0",
+    "src/Enums.h": "3f4c844727f889da88225ae543cf90fde0f062536a0902b80af905b1f8ad9fc8",
+    "src/Structs.h": "7602a3ad1898403574032d961406c0e35fd053c5f215538120d3c8ba1f417253",
+    "src/lv_conf.h": "0c43340cee5a3927bf25b5c6baf676aaab98a122d3f983de6b8bb29882a6c808",
+    "src/lv_font_dseg_90_bpp1.c": "5d3f76eae8c8771a6b28ec88781e0b5f8f468191e437ca8ad2ff1c07eadf8806",
+    "src/lv_font_vn_10.c": "8987b34b9c9f8a21dc937ca816d2bf65032edcfddfc02a56a2f7722bcb9cb397",
+    "src/lv_font_vn_12.c": "b77847fd7042e3a67c14144761f936ede5ff818acc25f81b6e87cd6c0f473251",
+    "src/lv_font_vn_14.c": "ea6da09bed20024857476c0c1ab0550fd3027ae6b06db833e632ce19d1d61191",
+    "src/lv_font_vn_20.c": "f359acd5e99e41ac71013b7c214f9094a06487b374be2151a6f1b3121c6604cc",
+    "src/ui/Display.h": "12b9f81c868ab64f0716a4609947c56b2c1edd4546443ceefcd2f08737f44544",
+    "src/ui/DisplayScreens.inc": "d8a46f40574f40e47d41b9b05b4fec69d943c9962c227cda8b984a7f5ea38e96",
+    "src/ui/Input.h": "cb955ddeb274ada1bc5d3d5ab5f2f80783cbc971b34e4a352c5abd537e024c26",
+    "src/ui/LegacyAliasBegin.inc": "2d588b611028c1e41a37f882c62f212ad266e9a2aad1c4fa33c931e9c4c9c069",
+    "src/ui/LegacyAliasEnd.inc": "1c0dc779faccdfa3bb38592ebe4aadfcc3a645d518efefaa0be7c8428c4f6b45",
+    "src/ui/ThemeDispatch.inc": "0171b7f7fe906940cfae5db31dba946e6f2679716b39ccdecf3b4b0a86384fce",
+    "src/ui/ThemeLogo.c": "e9aa4e1351c92100484caa549e5db6fccd3a5f23170ccb5ee97ed396a53c7c36",
+    "src/ui/ThemeLogo.h": "ae95cc0e0ed589efeebcd54adf147362105ed0306900ebe9ef40f05c7da19d6c",
+    "src/ui/ThemeRenderer.cpp": "a7b661aae5f5e6b8dad5f1f2a5754ffab0ace8a91e0e35360dfb8ecdc35a82a2",
+    "src/ui/ThemeRenderer.h": "47ef14bc2183137a796a32149529d9372b566072d74c74124b8f8e6c52ec73f8",
+    "src/ui/modules/Display.h": "6df6471240ce0b895d87eec67dcf2c9e8db583d8694802f7398e6095b9e9f664",
+    "src/ui/modules/DisplayClock.inc": "d520118cb27f7b282b63eefd6689b7cb996afc9051b78c7794e6e6197e1e0cf4",
+    "src/ui/modules/DisplayClockArt.inc": "9b15db5f4014d910419aac07a4260349c958d838d52a1e7bd456173704d5ba74",
+    "src/ui/modules/DisplayClockArtDigits.inc": "a83c3e10ba2a92aca9cc0560c12282c5b8ce15f7a1c39eeeea8e6e8e9d533301",
+    "src/ui/modules/DisplayClockArtHands.inc": "e279530177142e6b671bdbd3a412c406838388981c3755bfbfb2e675f54d6e5d",
+    "src/ui/modules/DisplayClockArtHelpers.inc": "e0c5aa3779cd2f240dbd13f37a918dce05f1be75c3dec1722ec5697dd68def28",
+    "src/ui/modules/DisplayClockArtWords.inc": "83fa32ccba82317681199813f5eb72b43891f51825eaf55b2fafd24fddb55a52",
+    "src/ui/modules/DisplayClockSelect.inc": "e86db3db081f58a2d246224b75258e8e4900a1ebfd3edb251577b1c578e66898",
+    "src/ui/modules/DisplayClockStyles.inc": "6952555781377a58b848d377a96e8f46832a80f954e09ba46aa56759ae4dddfa",
+    "src/ui/modules/DisplayCoreState.inc": "2f3db0520a67429f569d42c00626570317b409bbdba2b2f619db3ca70fb640dd",
+    "src/ui/modules/DisplayGameLifecycle.inc": "2c757be59d9bdf2dc169b7a43ed34c656fbd47a5d72fe41d382168f0ac615a97",
+    "src/ui/modules/DisplayHealth.inc": "edd5187ed46b2477069c2efc0a1a90df063b58652935bf1347e4cff956c03b7a",
+    "src/ui/modules/DisplayMixerMedia.inc": "df0bde45dfb237badb47a0396d124120f33cc804c1a2aaae57c9e39882dafa01",
+    "src/ui/modules/DisplayShellLifecycle.inc": "bbd2d5dd7d17477519c4177d8e7d71c420f624e4ef876e7693449a8e2db6ac57",
+    "src/ui/modules/DisplayStandalone.inc": "8584c8f1620e50ee476e7302751c05fc0bf4bde042d027acd53c0055c924a5c4",
+    "src/ui/modules/DisplayThemeShell.inc": "ba620efbaf56fbe42f7a7adfe75af6e2dcf7ce0eb46209aecc896e7f273a30ab",
+    "src/ui/modules/Input.h": "83eca7e9c36ce7fdcf36aaa1f074f7a4baef64f0456b7a7f70a569657f247771",
+    "src/ui/themes/Blocks.inc": "c66737176f33cb3e003134fc5c8929176a5cfd2a2aa7915fb871b6a4890048a9",
+    "src/ui/themes/Orbit.inc": "ca81cafd459a6731f3e12634ee3d066162a881b231421b614213a0919fc15c8c",
+    "src/ui/themes/Paper.inc": "2d4a6dbc4fe0be0bafd20984d77eef37ca150cef7fde8f6bbb6555e3ea00be24",
+    "src/ui/themes/Pixel.inc": "b65cb2a3ebb95b4a5888e9b73542bef4f73d5fd25124030cf9fa06319c05df78",
+    "src/ui/themes/Studio.inc": "be9d26d520f0f509cb8da5db35984f21819f5f6a938d5694be8339bec90897a1",
+    "src/ui/themes/Terminal.inc": "4945f6aa40098224c8238720dabaf3350436b5737219f29da09c036e425936d7",
+    "src/ui/themes/WindowsDark.inc": "f8db3459328c700f25d9e4db84775fe93190d0f7d7b82498ce87e58ad2bc13a7"
+  },
+  "native": {
+    "cycles": 24,
+    "theme_mode_rounds": 192,
+    "dynamic_pixel_checks": 1344,
+    "marquee_pixel_checks": 23,
+    "stable_free_bytes": 57896,
+    "stable_largest_free_block": 57896,
+    "stable_objects": 6,
+    "max_host_lvgl_heap_bytes": 19424,
+    "rendered_frames": 5307
+  }
+}

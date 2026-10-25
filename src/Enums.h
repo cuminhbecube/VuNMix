@@ -25,7 +25,8 @@ enum class Command : int8_t
     APP_ICON_CHUNK,
     PC_STATS,
     MEDIA_INFO,
-    MEDIA_CONTROL
+    MEDIA_CONTROL,
+    UI_THEME = 23
 };
 
 enum SessionIndex : uint8_t

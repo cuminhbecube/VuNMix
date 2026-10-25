@@ -39,6 +39,7 @@ class Command(IntEnum):
     PC_STATS           = 20
     MEDIA_INFO         = 21
     MEDIA_CONTROL      = 22
+    UI_THEME           = 23
 
 
 class SessionIndex(IntEnum):
@@ -136,6 +137,82 @@ CLOCK_STYLE_NAMES = [
     "Polygon",
     "Math Clock",
 ]
+
+
+class DeviceTheme(IntEnum):
+    """Stable non-clock appearance IDs, independent of ClockStyle."""
+    CLASSIC = 0
+    WINDOWS_DARK = 1
+    STUDIO = 2
+    PAPER = 3
+    ORBIT = 4
+    PIXEL = 5
+    BLOCKS = 6
+    TERMINAL = 7
+
+
+DEVICE_THEME_NAMES = (
+    "Classic", "Windows Dark", "Studio", "Paper", "Orbit", "Pixel", "Blocks", "Terminal",
+)
+THEME_SCHEMA_VERSION = 1
+
+
+class ThemeOperation(IntEnum):
+    QUERY = 0
+    SET = 1
+
+
+class ThemeStatus(IntEnum):
+    APPLIED = 0
+    SAVED_DEFERRED = 1
+    UNSUPPORTED = 2
+    INVALID = 3
+    BUSY = 4
+    FAILED = 5
+
+
+@dataclass(frozen=True)
+class ThemeRequest:
+    """Optional UI_THEME request: operation, theme, request ID (4 bytes)."""
+    operation: ThemeOperation
+    theme_id: int
+    request_id: int
+
+    def pack(self) -> bytes:
+        operation = ThemeOperation(self.operation)
+        DeviceTheme(self.theme_id)
+        if not 0 <= self.request_id <= 65535:
+            raise ValueError("Theme request ID is outside uint16")
+        return struct.pack('<BBH', operation, self.theme_id, self.request_id)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ThemeRequest':
+        if len(data) != 4:
+            raise ValueError("Theme request must contain exactly 4 bytes")
+        operation, theme_id, request_id = struct.unpack('<BBH', data)
+        return cls(ThemeOperation(operation), int(DeviceTheme(theme_id)), request_id)
+
+
+@dataclass(frozen=True)
+class ThemeResponse:
+    """Correlated configuration result; a generic OK is not a theme ACK."""
+    request_id: int
+    status: ThemeStatus
+    configured_theme_id: int
+    supported_mask: int
+    schema_version: int = THEME_SCHEMA_VERSION
+
+    def pack(self) -> bytes:
+        DeviceTheme(self.configured_theme_id)
+        return struct.pack('<HBBBB', self.request_id, ThemeStatus(self.status),
+                           self.configured_theme_id, self.supported_mask, self.schema_version)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ThemeResponse':
+        if len(data) != 6:
+            raise ValueError("Theme response must contain exactly 6 bytes")
+        request_id, status, theme_id, mask, schema = struct.unpack('<HBBBB', data)
+        return cls(request_id, ThemeStatus(status), int(DeviceTheme(theme_id)), mask, schema)
 
 # Binary frame:
 #   magic[2] | command[1] | payload_length[1] | payload | crc16[2]
@@ -615,6 +692,7 @@ COMMAND_PAYLOAD_SIZE = {
     Command.PC_STATS:           13,
     Command.MEDIA_INFO:         61,
     Command.MEDIA_CONTROL:      1,
+    Command.UI_THEME:           6,   # device response; PC requests contain 4 bytes
 }
 
 # Commands that represent session data (index = cmd - CURRENT_SESSION)

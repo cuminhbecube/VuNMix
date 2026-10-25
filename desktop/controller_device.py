@@ -19,6 +19,19 @@ log = logging.getLogger(__name__)
 class DeviceLifecycleMixin:
     """Power transitions, serial verification and initial-state handshake."""
 
+    def _send_theme_request(self, request, generation):
+        if self._firmware_updating or not self._device_connected:
+            return False
+        return self.serial.send_theme_request(request, expected_generation=generation)
+
+    def _start_theme_sync(self):
+        if getattr(self, "theme_sync", None) is not None:
+            self.theme_sync.start()
+
+    def _stop_theme_sync(self):
+        if getattr(self, "theme_sync", None) is not None:
+            self.theme_sync.stop()
+
     def _notify_connection_changed(self, connected: bool):
         callback = self.on_connection_changed
         if callback is None:
@@ -84,6 +97,8 @@ class DeviceLifecycleMixin:
 
             now = datetime.now()
             self.serial.send_time_sync(now.hour, now.minute, now.second)
+            if getattr(self, "theme_sync", None) is not None:
+                self.theme_sync.retry()
 
             with self._connection_lock:
                 token = self._handshake_token
@@ -232,6 +247,8 @@ class DeviceLifecycleMixin:
                     watchdog.cancel()
 
             self._notify_connection_changed(True)
+            if getattr(self, "theme_sync", None) is not None:
+                self.theme_sync.connected(self.serial.connection_generation)
             self._schedule_initial_state_sync(token)
 
             if self.on_device_ready:
@@ -265,6 +282,8 @@ class DeviceLifecycleMixin:
         else:
             self._sent_icon_ids.clear()
         self._notify_connection_changed(False)
+        if getattr(self, "theme_sync", None) is not None:
+            self.theme_sync.disconnected()
 
     def _on_version(self, version: str):
         firmware_version, separator, protocol_value = version.rpartition(";P=")

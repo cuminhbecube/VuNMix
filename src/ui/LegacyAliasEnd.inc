@@ -1,0 +1,12 @@
+#undef SplashScreen
+#undef KeyTestScreen
+#undef InfoScreen
+#undef ClockScreen
+#undef DeviceSelectScreen
+#undef DeviceEditScreen
+#undef ApplicationSelectScreen
+#undef ApplicationEditScreen
+#undef GameSelectScreen
+#undef GameEditScreen
+#undef HealthScreen
+#undef Update
