@@ -22,6 +22,7 @@ from fluent_theme import (ACCENT, ACCENT_HOVER, BG, BORDER, CARD, CARD_HOVER,
 from fluent_audio import AudioIntent
 from protocol import CLOCK_STYLE_NAMES, DisplayMode
 from update_center import describe_device_update
+from device_theme_ui import DeviceThemeViewsMixin
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def _navigation_icon(name, color=MUTED):
     return ctk.CTkImage(light_image=canvas, dark_image=canvas, size=(20, 20))
 
 
-class FluentViewsMixin:
+class FluentViewsMixin(DeviceThemeViewsMixin):
     """Reusable view builders mixed into SettingsDialog, all Tk-main-thread."""
 
     @staticmethod
@@ -184,7 +185,27 @@ class FluentViewsMixin:
             height=36, command=self._toggle_fluent_sidebar,
         )
         self._sidebar_toggle_button.pack(side="bottom", fill="x", padx=8, pady=12)
+        sidebar.bind("<Configure>", self._fit_fluent_sidebar_height)
         self._fluent_highlight_nav()
+
+    def _fit_fluent_sidebar_height(self, _event=None):
+        """Keep all routes and the menu toggle visible on short DPI layouts."""
+        scale = ctk.ScalingTracker.get_widget_scaling(self._sidebar)
+        height = self._sidebar.winfo_height() / scale
+        short = height > 1 and height < 384
+        if getattr(self, "_sidebar_short", None) != short:
+            self._sidebar_short = short
+            for button in self._sidebar_buttons.values():
+                button.master.pack_configure(pady=1 if short else 2)
+            self._sidebar_toggle_button.pack_configure(pady=8 if short else 12)
+        show_heading = not self._sidebar_collapsed and not short
+        if not show_heading:
+            self._sidebar_workspace_label.pack_forget()
+        elif not self._sidebar_workspace_label.winfo_manager():
+            self._sidebar_workspace_label.pack(
+                fill="x", padx=14, pady=(14, 12),
+                before=self._sidebar_buttons[SECTIONS[0]].master,
+            )
 
     def _set_fluent_sidebar_collapsed(self, collapsed):
         """Preserve one-click access to all six routes on narrow screens."""
@@ -193,13 +214,7 @@ class FluentViewsMixin:
         self._sidebar.configure(
             width=SIDEBAR_COLLAPSED_WIDTH if collapsed else SIDEBAR_WIDTH
         )
-        if collapsed:
-            self._sidebar_workspace_label.pack_forget()
-        elif not self._sidebar_workspace_label.winfo_manager():
-            self._sidebar_workspace_label.pack(
-                fill="x", padx=14, pady=(14, 12),
-                before=self._sidebar_buttons[SECTIONS[0]].master,
-            )
+        self._fit_fluent_sidebar_height()
         for name in SECTIONS:
             self._sidebar_buttons[name].configure(
                 text="" if collapsed else name,
@@ -1069,6 +1084,7 @@ class FluentViewsMixin:
         """Main-thread bounded refresh; never enumerate Windows COM here."""
         if not hasattr(self, "_tabs"):
             return
+        self._refresh_device_theme()
         now = time.monotonic()
         connected = bool(getattr(self.controller, "_device_connected", False))
         firmware = str(getattr(self.controller, "firmware_version", "unknown"))

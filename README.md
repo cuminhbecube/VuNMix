@@ -16,7 +16,9 @@ Dự án lấy cảm hứng từ ý tưởng MaxMix, nhưng firmware ESP32-S3, g
 - Device Health / Debug screen hiển thị kết nối, RAM, serial, lỗi CRC/protocol và trạng thái touch.
 - Cảm ứng CST816S: vuốt, chạm, chạm hai lần và nhấn giữ.
 - Tên thiết bị Input/Output dài tự chạy chữ khi đang ở màn hình thiết bị mặc định.
-- Giao diện Cyber-Tactile bằng LVGL 8.3, màu riêng theo từng chế độ.
+- 8 giao diện thiết bị chọn từ app PC: Classic, Windows Dark, Studio, Paper,
+  Orbit, Pixel, Blocks và Terminal; dựng bằng LVGL ở độ phân giải 320 × 240.
+- Giữ nguyên 16 mặt clock gốc, độc lập với lựa chọn giao diện thiết bị.
 - LED NeoPixel hiển thị trạng thái, hiệu ứng standby và sleep mode.
 - Ứng dụng desktop có system tray, settings popup, auto reconnect và firmware updater.
 - Có thể cập nhật firmware `.bin` từ app desktop mà không cần mở PlatformIO.
@@ -45,7 +47,8 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
 
 - `main.cpp`: vòng lặp chính, xử lý mode, input, sleep, cập nhật display và LED.
 - `Communications.cpp`: giao thức USB-CDC, frame, CRC, queue gửi lệnh.
-- `Display.cpp`: toàn bộ UI LVGL, màn hình mode, VU meter, marquee text.
+- `Display.cpp`: chọn giao diện từ trạng thái thiết bị; giữ luồng clock độc lập.
+- `src/ui/`: màn hình Classic/clock gốc và bộ vẽ bảy giao diện mới.
 - `Input.cpp`: bàn phím ma trận và cảm ứng CST816S.
 - `Config.h`: phiên bản firmware, chân GPIO, thông số phần cứng.
 - `Enums.h`, `Structs.h`: command, mode và cấu trúc dữ liệu chia sẻ với desktop.
@@ -80,6 +83,13 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
   dùng bitmap chữ DSEG/Montserrat thực tế. Ảnh được giữ tỉ lệ 4:3; gallery
   phân trang, có viền đánh dấu lựa chọn và preview chạy theo giờ PC.
   Cần firmware >= v0.4.21 cho các kiểu số 8–15.
+- Device → Appearance chọn một trong tám giao diện. Bấm chọn để xem trước,
+  rồi **Save settings** để lưu và gửi xuống thiết bị. Trạng thái phân biệt
+  đã lưu trên PC, đã xác nhận trên thiết bị và đang chờ kết nối.
+- Khi đang hiện clock hoặc ngủ, thiết bị lưu lựa chọn giao diện mới và dùng
+  khi trở về màn điều khiển; toàn bộ hình vẽ, chữ, màu và hành vi clock giữ nguyên.
+  Tính năng chọn giao diện cần app và firmware v0.5.0; firmware cũ vẫn dùng
+  các chức năng âm thanh/clock bình thường.
 - Updates hiển thị phiên bản tương thích và giữ các thao tác tải/cập nhật
   Desktop hoặc firmware với cơ chế kiểm SHA-256.
 - Nút **Save settings** luôn ở chân cửa sổ. Sau khi lưu, cửa sổ vẫn mở và
@@ -88,6 +98,8 @@ Firmware nằm trong thư mục `src/` và được build bằng PlatformIO.
   có xét tỉ lệ hiển thị của Windows.
 
 Chi tiết: [Stability & Control Center](docs/stability-control-center.md).
+
+Chi tiết giao diện thiết bị: [Device themes v0.5.0](docs/device-themes.md).
 Các bài thử cần board thật: [Hardware QA Matrix](docs/hardware-qa-matrix.md).
 Các bản sửa USB, cập nhật, cảm ứng và audio automation:
 [Ghi chú v0.4.32](docs/release-v0.4.32.md).

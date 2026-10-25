@@ -1,5 +1,7 @@
 .pio
 .cache
+__pycache__/
+*.pyc
 .understand-anything/
 .dummy
 .vscode/.browse.c_cpp.db*

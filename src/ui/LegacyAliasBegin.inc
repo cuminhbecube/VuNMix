@@ -1,0 +1,12 @@
+#define SplashScreen ClassicSplashScreen
+#define KeyTestScreen ClassicKeyTestScreen
+#define InfoScreen ClassicInfoScreen
+#define ClockScreen OriginalClockScreen
+#define DeviceSelectScreen ClassicDeviceSelectScreen
+#define DeviceEditScreen ClassicDeviceEditScreen
+#define ApplicationSelectScreen ClassicApplicationSelectScreen
+#define ApplicationEditScreen ClassicApplicationEditScreen
+#define GameSelectScreen ClassicGameSelectScreen
+#define GameEditScreen ClassicGameEditScreen
+#define HealthScreen ClassicHealthScreen
+#define Update ClassicUpdate

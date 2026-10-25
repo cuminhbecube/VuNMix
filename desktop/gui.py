@@ -271,10 +271,7 @@ class SettingsDialog(FluentViewsMixin):
 
         # Settings forms are short. Fixed frames remove unnecessary
         # nested scrollbars and keep every field visible on compact displays.
-        content = ctk.CTkFrame(
-            self._tabs.tab("Device"), fg_color="transparent"
-        )
-        content.pack(fill='both', expand=True)
+        content = self._build_device_views(self._tabs.tab("Device"))
         clock_content = ctk.CTkFrame(
             self._tabs.tab("Clock"), fg_color="transparent"
         )
@@ -300,7 +297,8 @@ class SettingsDialog(FluentViewsMixin):
             card.pack(fill="x", padx=18)
             return card
 
-        device_card = form_card(content, "Device", "Lighting and standby behavior for your VuNMix.")
+        device_card = ctk.CTkFrame(content, fg_color=CARD, corner_radius=6)
+        device_card.pack(fill="x", padx=16)
         preferences_card = form_card(preferences_content, "Settings", "Choose how VuNMix works on this PC.")
 
         def add_row(parent, label_text, widget_builder, description=""):
@@ -1219,8 +1217,12 @@ class SettingsDialog(FluentViewsMixin):
             self._sleep_var, self._sleep_enabled_var, self._clock_standby_var,
             self._clock_style_var, self._led_mode_var, self._scroll_var,
             self._brightness_var,
-        )
+        ) + ((self._device_theme_var,) if hasattr(self, "_device_theme_var") else ())
         self._saved_form_snapshot = self._settings_form_snapshot()
+        # The three leading preferences are PC-only; theme is also separate.
+        self._device_settings_vars = self._settings_vars[3:10]
+        self._saved_device_form = (tuple(var.get() for var in self._device_settings_vars),
+                                   self._saved_form_snapshot[1])
         for variable in self._settings_vars:
             variable.trace_add("write", self._mark_settings_dirty)
 
@@ -1247,10 +1249,21 @@ class SettingsDialog(FluentViewsMixin):
     def _save(self):
         try:
             old_port = self.config.com_port
+            old_device_settings = self.config.device_settings.pack()
+            old_favorites = self._saved_form_snapshot[2]
+            old_startup = self.config.run_on_startup
+            device_form = (tuple(var.get() for var in self._device_settings_vars),
+                           self._settings_form_snapshot()[1])
+            device_form_changed = device_form != self._saved_device_form
             new_port = self._com_var.get().strip()
             # Validate editable numbers before changing any configuration.
             sleep_minutes = max(0, int(self._sleep_var.get()))
             clock_minutes = max(0, min(255, int(self._clock_standby_var.get())))
+            theme_id = self.config.device_theme_id
+            if hasattr(self, "_device_theme_var"):
+                from protocol import DeviceTheme
+                theme_value = self._device_theme_var.get()
+                theme_id = int(DeviceTheme(int(theme_value))) if theme_value else None
             
             self.config.com_port = new_port
             self.config.run_on_startup = self._startup_var.get()
@@ -1259,43 +1272,47 @@ class SettingsDialog(FluentViewsMixin):
                 self._auto_firmware_update_var.get()
             )
             self.config.favorite_apps = sorted(set(self.config.favorite_apps))
-            self.config.device_settings.sleep_after_seconds = min(
-                65535, sleep_minutes * 60
-            )
-            self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
-            self.config.device_settings.clock_standby_minutes = clock_minutes
-            from protocol import CLOCK_STYLE_NAMES, STANDBY_LED_NAMES
-            clock_style_name = self._clock_style_var.get()
-            self.config.device_settings.clock_style = (
-                CLOCK_STYLE_NAMES.index(clock_style_name)
-                if clock_style_name in CLOCK_STYLE_NAMES
-                else 0
-            )
-            led_name = self._led_mode_var.get()
-            self.config.device_settings.standby_led_mode = STANDBY_LED_NAMES.index(led_name) if led_name in STANDBY_LED_NAMES else 0
-            self.config.device_settings.continuous_scroll = self._scroll_var.get()
-            self.config.device_settings.led_brightness = int(self._brightness_var.get())
-
-            from protocol import Color
-            for key, values in self._led_color_values.items():
-                setattr(
-                    self.config.device_settings,
-                    key,
-                    Color.from_list(values),
+            self.config.device_theme_id = theme_id
+            if device_form_changed:
+                # Preserve exact seconds when an unchanged minutes display was
+                # rounded up (for example a stored 301 seconds displays as 6).
+                if self._sleep_var.get() != self._saved_device_form[0][0]:
+                    self.config.device_settings.sleep_after_seconds = min(65535, sleep_minutes * 60)
+                self.config.device_settings.sleep_enabled = self._sleep_enabled_var.get()
+                self.config.device_settings.clock_standby_minutes = clock_minutes
+                from protocol import CLOCK_STYLE_NAMES, STANDBY_LED_NAMES
+                clock_style_name = self._clock_style_var.get()
+                self.config.device_settings.clock_style = (
+                    CLOCK_STYLE_NAMES.index(clock_style_name)
+                    if clock_style_name in CLOCK_STYLE_NAMES
+                    else 0
                 )
+                led_name = self._led_mode_var.get()
+                self.config.device_settings.standby_led_mode = STANDBY_LED_NAMES.index(led_name) if led_name in STANDBY_LED_NAMES else 0
+                self.config.device_settings.continuous_scroll = self._scroll_var.get()
+                self.config.device_settings.led_brightness = int(self._brightness_var.get())
+
+                from protocol import Color
+                for key, values in self._led_color_values.items():
+                    setattr(self.config.device_settings, key, Color.from_list(values))
 
             self.config.save()
-            self.controller.audio.set_favorite_apps(self.config.favorite_apps)
-            
-            set_run_on_startup(self.config.run_on_startup)
-            
             port_changed = (old_port != new_port)
+            if (port_changed or old_device_settings != self.config.device_settings.pack()
+                    or old_favorites != tuple(self.config.favorite_apps)):
+                self.controller.audio.set_favorite_apps(self.config.favorite_apps)
+            
+            if self.config.run_on_startup != old_startup:
+                set_run_on_startup(self.config.run_on_startup)
+            
             if self.on_save:
                 self.on_save(port_changed)
                 
             self._clock_standby_var.set(str(clock_minutes))
             self._sleep_var.set(str(math.ceil(self.config.device_settings.sleep_after_seconds / 60)))
             self._saved_form_snapshot = self._settings_form_snapshot()
+            self._saved_device_form = (tuple(var.get() for var in self._device_settings_vars),
+                                       self._saved_form_snapshot[1])
             self._save_status_var.set("Settings saved")
         except ValueError as e:
             messagebox.showerror("Invalid setting", f"Enter whole numbers for the timeouts.\n\n{e}", parent=self._window)
@@ -1318,6 +1335,8 @@ class TrayApp:
         self._icon = None
         self._settings_open = False
         self._settings_dialog = None
+        self._last_device_settings_signature = (
+            config.device_settings.pack(), tuple(sorted(set(config.favorite_apps))))
         self._app_updater = AppUpdater(APP_VERSION)
         self._update_check_lock = threading.Lock()
         self._update_stop = threading.Event()
@@ -1765,6 +1784,11 @@ class TrayApp:
 
     def _on_settings_saved(self, port_changed: bool):
         log.info("Settings saved. Port changed: %s", port_changed)
+        if getattr(self.controller, "theme_sync", None) is not None:
+            self.controller.theme_sync.set_desired(self.config.device_theme_id)
+        signature = (self.config.device_settings.pack(), tuple(sorted(set(self.config.favorite_apps))))
+        device_changed = signature != getattr(self, "_last_device_settings_signature", None)
+        self._last_device_settings_signature = signature
         if port_changed:
             with self._controller_restart_lock:
                 self._pending_port_restart = self.config.com_port
@@ -1777,16 +1801,11 @@ class TrayApp:
                     )
                     self._controller_restart_thread = worker
                     worker.start()
-        else:
-            from protocol import Command
-
+        elif device_changed:
             def push_settings():
                 try:
                     if self.controller._device_connected:
-                        self.controller.serial.send_command(
-                            Command.SETTINGS,
-                            self.config.device_settings.pack(),
-                        )
+                        self.controller.serial.send_settings(self.config.device_settings)
                         self.controller._push_updated_state()
                 except Exception:
                     log.exception("Settings state push failed")

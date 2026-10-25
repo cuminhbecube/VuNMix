@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-from protocol import DeviceSettings, Color
+from protocol import DeviceSettings, Color, DeviceTheme
 
 # Runtime files must be user-writable even when VuNMix is installed in
 # C:\Program Files. Keep the old adjacent config as a one-time migration source.
@@ -25,6 +25,7 @@ _DEFAULT_CONFIG = {
     "auto_update_enabled": True,
     "auto_firmware_update_enabled": True,
     "favorite_apps": [],
+    "device_theme_id": None,
     "settings": {
         "sleep_after_seconds": 300,
         "sleep_enabled": True,
@@ -50,6 +51,8 @@ class AppConfig:
     auto_update_enabled: bool = True
     auto_firmware_update_enabled: bool = True
     favorite_apps: list = field(default_factory=list)
+    # None follows the device until the user explicitly saves a choice.
+    device_theme_id: Optional[int] = None
     device_settings: DeviceSettings = field(default_factory=DeviceSettings)
 
     @classmethod
@@ -103,6 +106,7 @@ class AppConfig:
                 for item in data.get("favorite_apps", [])
                 if str(item).strip()
             ],
+            device_theme_id=_theme_preference(data.get('device_theme_id')),
             device_settings=DeviceSettings.from_config(settings_dict),
         )
 
@@ -116,6 +120,7 @@ class AppConfig:
             "auto_update_enabled": self.auto_update_enabled,
             "auto_firmware_update_enabled": self.auto_firmware_update_enabled,
             "favorite_apps": sorted(set(self.favorite_apps)),
+            "device_theme_id": _theme_preference(self.device_theme_id),
             "settings": {
                 "sleep_after_seconds": self.device_settings.sleep_after_seconds,
                 "sleep_enabled": self.device_settings.sleep_enabled,
@@ -137,3 +142,13 @@ class AppConfig:
             f.flush()
             os.fsync(f.fileno())
         os.replace(temp_path, path)
+
+
+def _theme_preference(value):
+    """Migrate missing/bad preferences without resetting unrelated settings."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            return int(DeviceTheme(value))
+        except ValueError:
+            pass
+    return None

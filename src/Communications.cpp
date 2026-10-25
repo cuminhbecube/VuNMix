@@ -38,6 +38,8 @@ namespace Communications
     static uint32_t s_protocolErrors = 0;
     static Command s_lastCommand = Command::NONE;
     static Command s_lastErrorCommand = Command::NONE;
+    static DeviceThemeProtocol::Request s_themeRequest = {};
+    static bool s_themeRequestPending = false;
 
     static uint16_t Crc16(const uint8_t *data, size_t length)
     {
@@ -126,6 +128,14 @@ namespace Communications
             if (settings.standbyLedMode > 16) settings.standbyLedMode = 0;
             settings.reservedSettings = 0;
             g_Settings = settings;
+        }
+        else if (command == Command::UI_THEME)
+        {
+            if (payloadLength != sizeof(DeviceThemeProtocol::Request)) return Command::ERROR;
+            // Read() delivers one frame per main-loop iteration. The main loop
+            // consumes this request before the next Read(), after framing/CRC.
+            memcpy(&s_themeRequest, payload, sizeof(s_themeRequest));
+            s_themeRequestPending = true;
         }
         else if (command == Command::SESSION_INFO)
         {
@@ -249,6 +259,7 @@ namespace Communications
 
     void Initialize(void)
     {
+        s_themeRequestPending = false;
         s_rxLength = 0;
         s_txHead = 0;
         s_txTail = 0;
@@ -335,7 +346,8 @@ namespace Communications
 
     void WriteImmediate(Command command)
     {
-        if (command == Command::ERROR || command == Command::NONE || command == Command::DEBUG)
+        if (command == Command::ERROR || command == Command::NONE || command == Command::DEBUG
+                || command == Command::UI_THEME)
             return;
 
         if (command == Command::TEST)
@@ -392,6 +404,24 @@ namespace Communications
     {
         MediaControlData ctrl(action);
         SendFrame(Command::MEDIA_CONTROL, &ctrl, sizeof(MediaControlData));
+    }
+
+    bool TakeDeviceThemeRequest(DeviceThemeProtocol::Request& request)
+    {
+        if (!s_themeRequestPending) return false;
+        request = s_themeRequest;
+        s_themeRequestPending = false;
+        return true;
+    }
+
+    void SendDeviceThemeStatus(uint16_t requestId, DeviceThemeProtocol::Status status,
+                               uint8_t configuredThemeId)
+    {
+        const DeviceThemeProtocol::Response response = {
+            requestId, static_cast<uint8_t>(status), configuredThemeId,
+            DeviceThemeProtocol::SUPPORTED_MASK, DeviceThemeProtocol::SCHEMA_VERSION
+        };
+        SendFrame(Command::UI_THEME, &response, sizeof(response));
     }
 
     uint32_t ReceivedFrames(void) { return s_receivedFrames; }

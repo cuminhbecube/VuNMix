@@ -115,8 +115,8 @@ class DiagnosticSerialService(SerialService):
                 self._connected_since = None
         return result
 
-    def send_command(self, cmd: Command, payload: bytes = b"") -> bool:
-        result = super().send_command(cmd, payload)
+    def send_command(self, cmd: Command, payload: bytes = b"", *, expected_generation=None) -> bool:
+        result = super().send_command(cmd, payload, expected_generation=expected_generation)
         if result:
             self._tx_frames += 1
             self._tx_bytes += len(encode_frame(cmd, payload))

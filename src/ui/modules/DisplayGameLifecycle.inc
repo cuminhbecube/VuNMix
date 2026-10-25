@@ -36,7 +36,8 @@
         lv_obj_set_style_text_font(val, &lv_font_montserrat_16, LV_PART_MAIN);
         lv_obj_set_style_text_color(val, color, LV_PART_MAIN);
         lv_label_set_text(val, "0");
-        lv_obj_align(val, LV_ALIGN_BOTTOM_MID, 0, -2);
+        // Leave a separate row for the session names below the value.
+        lv_obj_align(val, LV_ALIGN_BOTTOM_MID, 0, -18);
 
         // Return bar so we can update it
         // But we need to return both bar and value label...
